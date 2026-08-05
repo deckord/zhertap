@@ -1,0 +1,115 @@
+x-manual-genplan-volume: &manual-genplan-volume
+  - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: land_scout
+      POSTGRES_USER: land_scout
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U land_scout -d land_scout"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
+      REDIS_URL: redis://redis:6379/0
+      RUN_TASKS_INLINE: "false"
+    ports:
+      - "8000:8000"
+    volumes: *manual-genplan-volume
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 -Q critical
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
+      REDIS_URL: redis://redis:6379/0
+      RUN_TASKS_INLINE: "false"
+    volumes: *manual-genplan-volume
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  auction_worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=1 -Q auctions
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
+      REDIS_URL: redis://redis:6379/0
+      RUN_TASKS_INLINE: "false"
+    volumes: *manual-genplan-volume
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app beat --loglevel=INFO
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
+      REDIS_URL: redis://redis:6379/0
+      RUN_TASKS_INLINE: "false"
+    volumes: *manual-genplan-volume
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  bot:
+    build: .
+    restart: unless-stopped
+    command: python -m app.bot
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
+      REDIS_URL: redis://redis:6379/0
+      RUN_TASKS_INLINE: "false"
+    volumes: *manual-genplan-volume
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

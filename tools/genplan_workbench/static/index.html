@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Genplan Workbench</title>
+  <link rel="stylesheet" href="/static/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>Genplan Workbench</h1>
+      <p>Georeference scanned genplans and PDP maps. Publication and legal approval are separate steps.</p>
+    </div>
+    <div class="status-lock">Only proposed / qa_pending</div>
+  </header>
+
+  <main>
+    <section class="toolbar" aria-label="Workbench settings">
+      <label class="field field-record">
+        <span>Manifest document</span>
+        <select id="recordSelect"></select>
+      </label>
+      <label class="field field-filter">
+        <span>Queue filter</span>
+        <select id="filterSelect">
+          <option value="todo">Needs work</option>
+          <option value="all">All records</option>
+          <option value="manual_georeference_required">Manual GCP</option>
+          <option value="pdf_page_selection_required">PDF page</option>
+          <option value="saved">Saved GCP</option>
+          <option value="qa_pending">QA pending</option>
+          <option value="bbox_resolved">Map area found</option>
+          <option value="bbox_unresolved">Map area needs review</option>
+          <option value="diagnostic_anchors">Diagnostic anchors</option>
+          <option value="autoreg_priority">Autoreg priority</option>
+        </select>
+      </label>
+      <label class="field field-page">
+        <span>Page</span>
+        <input id="pageInput" type="number" value="1" min="1" max="500">
+      </label>
+      <label class="field">
+        <span>Transform</span>
+        <select id="transformSelect">
+          <option value="affine">Affine</option>
+          <option value="projective">Projective</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>New point role</span>
+        <select id="roleSelect">
+          <option value="train">Train GCP</option>
+          <option value="checkpoint">Checkpoint</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Operator</span>
+        <input id="operatorInput" maxlength="200" placeholder="Name or ID">
+      </label>
+      <button id="loadButton" type="button">Open</button>
+      <button id="prevButton" class="secondary" type="button">Previous</button>
+      <button id="nextButton" class="secondary" type="button">Next</button>
+    </section>
+
+    <section id="queueStats" class="queue-stats" aria-live="polite"></section>
+    <section id="recordMeta" class="record-meta" aria-live="polite"></section>
+    <section id="recordLinks" class="record-links" aria-live="polite"></section>
+    <section id="notice" class="notice" aria-live="assertive">
+      Select a document. Then click a point on the scan and the matching point on the map.
+    </section>
+
+    <section class="workspace">
+      <div class="pane source-pane">
+        <div class="pane-header">
+          <div>
+            <h2>Source scan</h2>
+            <span id="imageDimensions">No image loaded</span>
+          </div>
+          <label class="zoom-control">
+            <span>Zoom</span>
+            <input id="zoomInput" type="range" min="30" max="250" value="100">
+            <output id="zoomOutput">100%</output>
+          </label>
+        </div>
+        <div id="sourceViewport" class="source-viewport">
+          <div id="sourceStage" class="source-stage">
+            <img id="sourceImage" alt="Genplan page">
+            <div id="sourceMarkers" class="source-markers"></div>
+            <div id="pendingMarker" class="pending-marker" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane map-pane">
+        <div class="pane-header">
+          <div>
+            <h2>Map</h2>
+            <span>OSM and Esri World Imagery</span>
+          </div>
+          <button id="cancelPairButton" class="secondary" type="button" disabled>
+            Cancel pair
+          </button>
+        </div>
+        <div id="map"></div>
+      </div>
+    </section>
+
+    <section class="results-band">
+      <div class="points-panel">
+        <div class="section-title">
+          <div>
+            <h2>Ground control points</h2>
+            <span id="pointCount">0 points</span>
+          </div>
+          <button id="clearButton" class="danger secondary" type="button">Clear</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Role</th>
+                <th>Pixel X/Y</th>
+                <th>Lon / Lat</th>
+                <th>Residual</th>
+                <th>Label</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="pointsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="metrics-panel">
+        <h2>Calculation and QA</h2>
+        <dl id="metrics">
+          <div><dt>Status</dt><dd>Not calculated yet</dd></div>
+        </dl>
+        <label class="field notes-field">
+          <span>Operator notes</span>
+          <textarea id="notesInput" maxlength="5000" rows="4"></textarea>
+        </label>
+        <div class="action-row">
+          <button id="saveDraftButton" type="button">Save proposed</button>
+          <button id="submitQaButton" class="qa" type="button">Send to QA</button>
+        </div>
+        <div class="export-row">
+          <a id="exportGcps" class="button-link disabled" href="#">Download gcps.json</a>
+          <a id="exportQa" class="button-link disabled" href="#">Download QA JSON</a>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="/static/leaflet.js"></script>
+  <script src="/static/workbench.js"></script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Сравнение лотов — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions/favorites">← В избранное</a>
+      <a class="back-link" href="/cabinet/auctions">Все аукционы</a>
+    </div>
+    <div class="section-title"><span>Аукционы</span><h1>Сравнение избранных лотов</h1></div>
+    {% if not has_paid_unlock %}
+      <div class="locked-preview-note">
+        Сравнение работает после оплаты полного доступа. В бесплатном режиме можно просматривать каталог и карточки лотов.
+      </div>
+    {% endif %}
+    <section class="panel-modern">
+      {% if has_paid_unlock %}
+        <div class="table-scroll">
+        <table>
+          <thead><tr><th>Лот</th><th>Регион</th><th>Площадь</th><th>Цена</th><th>Цена за сотку</th><th>Рейтинг</th></tr></thead>
+          <tbody>
+          {% for lot in lots %}
+            {% set metrics = metrics_by_lot[lot.id] %}
+            <tr>
+              <td><a href="/cabinet/auctions/{{ lot.id }}?back=compare">№{{ lot.auction_number or lot.source_lot_id }}</a></td>
+              <td>{{ lot.region or "—" }}{% if lot.district %} · {{ lot.district }}{% endif %}</td>
+              <td>{{ lot.area_ha or "—" }} га</td>
+              <td>{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") if lot.start_price_kzt is not none else "—" }} ₸</td>
+              <td>{{ "{:,.0f}".format(metrics.price_per_sotka).replace(",", " ") if metrics.price_per_sotka is not none else "—" }} ₸</td>
+              <td>{{ metrics.rating }}/100</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="6">
+                <div class="empty-state in-table">
+                  <strong>Пока нечего сравнивать</strong>
+                  <span>Добавьте два или больше лота в избранное, и здесь появится сравнение цены, площади и рейтинга.</span>
+                  <div class="empty-actions">
+                    <a class="primary-action compact" href="/cabinet/auctions">Найти лоты</a>
+                    <a class="secondary-action compact" href="/cabinet/auctions/favorites">Открыть избранное</a>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <strong>Сравнение закрыто в бесплатном режиме</strong>
+          <span>После оплаты можно сохранять лоты, сравнивать цену за сотку, рейтинг и историю публикаций.</span>
+          <div class="empty-actions">
+            <a class="primary-action compact" href="/cabinet/auctions">Смотреть лоты</a>
+          </div>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}
+

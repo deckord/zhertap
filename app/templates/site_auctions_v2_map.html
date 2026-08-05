@@ -1,0 +1,188 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Карта аукционов v2 — Жертап{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell auction-v2-map-page">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions-v2{% if filter_query %}?{{ filter_query }}{% endif %}">← К списку</a>
+      <a class="back-link" href="/cabinet">В кабинет</a>
+      <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <button class="primary-action compact" type="submit">Обновить данные</button>
+      </form>
+    </div>
+
+    <div class="section-title auction-v2-title">
+      <span>Карта проверки</span>
+      <h1>Карта земельных аукционов</h1>
+      <p>Карта помогает быстро понять, где находится участок, есть ли рядом слои ЕГКН, свободные земли, план детальной планировки, зоны генплана и инженерные объекты.</p>
+    </div>
+
+    {% include "partials/auction_v2_tabs.html" %}
+
+    {% if filter_error %}
+      <div class="form-alert">{{ filter_error }}</div>
+    {% endif %}
+
+    <section class="auction-v2-kpis">
+      <article>
+        <span>На карте</span>
+        <strong>{{ map_data.mapped }}</strong>
+        <small>из {{ map_data.loaded }} загруженных</small>
+      </article>
+      <article>
+        <span>Без координат</span>
+        <strong>{{ map_data.without_coordinates }}</strong>
+        <small>нужна ЕГКН/ручная сверка</small>
+      </article>
+      <article>
+        <span>С границами ЕГКН</span>
+        <strong>{{ map_data.with_boundaries }}</strong>
+        <small>контур участка найден</small>
+      </article>
+      <article>
+        <span>Слои ЕГКН</span>
+        <strong>{{ map_data.egkn_layer_total }}</strong>
+        <small>объекты вокруг лотов</small>
+      </article>
+      <article>
+        <span>Всего по фильтру</span>
+        <strong>{{ map_data.total }}</strong>
+        <small>лимит карты {{ map_data.limit }}</small>
+      </article>
+      <article>
+        <span>Высокий риск</span>
+        <strong>{{ map_data.risk_counts.high }}</strong>
+        <small>среди маркеров</small>
+      </article>
+      <article>
+        <span>Обновлено анализом</span>
+        <strong>{{ refresh_stats.checked }}</strong>
+        <small>при открытии экрана</small>
+      </article>
+    </section>
+
+    <form id="auction-v2-filter-form" class="auction-web-form auction-v2-filter auction-v2-map-filter" method="get" action="/cabinet/auctions-v2/map" data-catalog-form="auctions">
+      <div class="auction-v2-filter-intro">
+        <strong>Фильтр карты</strong>
+        <span>Карта показывает только лоты с координатами. Если нужного лота нет на карте, проверьте его в списке — возможно, координаты еще не найдены.</span>
+      </div>
+      <label class="wide-field">Поиск по номеру лота, кадастру, названию
+        <input name="q" value="{{ filters.q }}" placeholder="Например 01005061079, 01-005-061-079 или номер лота">
+      </label>
+      <label>Список
+        <select name="lot_scope">
+          {% for value, label in lot_scope_labels.items() %}
+            <option value="{{ value }}" {% if (filters.lot_scope or "active") == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Официальный статус
+        <select name="eqazyna_status">
+          <option value="">Все статусы E-Qazyna</option>
+          {% for value, label in eqazyna_status_labels.items() %}
+            <option value="{{ value }}" {% if filters.eqazyna_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Регион
+        <select id="auction-region" name="region" data-selected="{{ filters.region }}">
+          <option value="">Загрузка регионов...</option>
+        </select>
+      </label>
+      <label>Район
+        <select id="auction-district" name="district" data-selected="{{ filters.district }}" disabled>
+          <option value="">Сначала выберите регион</option>
+        </select>
+      </label>
+      <label>Населенный пункт
+        <select id="auction-locality" name="locality" data-selected="{{ filters.locality }}" disabled>
+          <option value="">Сначала выберите район</option>
+        </select>
+      </label>
+      <label>Назначение
+        <select id="auction-purpose" name="purpose" data-selected="{{ filters.purpose }}">
+          <option value="">Все назначения</option>
+        </select>
+      </label>
+      <label>Цена от <input name="min_price_kzt" value="{{ filters.min_price_kzt }}" inputmode="decimal"></label>
+      <label>Цена до <input name="max_price_kzt" value="{{ filters.max_price_kzt }}" inputmode="decimal"></label>
+      <label>Площадь от, га <input name="min_area_ha" value="{{ filters.min_area_ha }}" inputmode="decimal"></label>
+      <label>Площадь до, га <input name="max_area_ha" value="{{ filters.max_area_ha }}" inputmode="decimal"></label>
+      <label>Индекс от <input name="min_score" value="{{ filters.min_score }}" inputmode="numeric"></label>
+      <label>Риск
+        <select name="risk_level">
+          <option value="">Любой</option>
+          {% for value, label in risk_labels.items() %}
+            {% if value != "unknown" %}
+              <option value="{{ value }}" {% if filters.risk_level == value %}selected{% endif %}>{{ label }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <label>Срок
+        <select name="deadline_status">
+          <option value="">Все сроки</option>
+          {% for value, label in deadline_labels.items() %}
+            <option value="{{ value }}" {% if filters.deadline_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Координаты и окружение
+        <select name="geo_status">
+          <option value="">Все гео-статусы</option>
+          {% for value, label in geo_status_labels.items() %}
+            <option value="{{ value }}" {% if filters.geo_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="catalog-note" id="auction-catalog-status" aria-live="polite">Справочники аукционов загружаются из ЕГКН и базы E-Qazyna.</div>
+      <button class="secondary-action compact catalog-retry" type="button" data-catalog-retry="auctions" hidden>Повторить загрузку справочников</button>
+      <button class="primary-action" type="submit">Обновить карту</button>
+      <a class="secondary-action compact" href="/cabinet/auctions-v2/map">Сбросить</a>
+    </form>
+
+    <section class="panel-modern auction-v2-map-board">
+      <div class="panel-head">
+        <h2>Лоты и слои проверки</h2>
+        <span>{{ map_data.mapped }} маркеров · {{ map_data.egkn_layer_total }} объектов ЕГКН · {{ map_data.total }} лотов по фильтру</span>
+      </div>
+      <p class="auction-v2-helper-text">Цвет маркера показывает риск проверки: зеленый — спокойнее, желтый — есть вопросы, красный — сначала разбираться. Переключатель OpenStreetMap/Спутник находится прямо на карте.</p>
+      <div class="auction-v2-map-toolbar" aria-label="Слои карты">
+        <label><input type="checkbox" value="active" data-auction-v2-layer checked> Активные <strong>{{ map_data.scope_counts.active }}</strong></label>
+        <label><input type="checkbox" value="future" data-auction-v2-layer checked> Будущие <strong>{{ map_data.scope_counts.future }}</strong></label>
+        <label><input type="checkbox" value="archive" data-auction-v2-layer checked> Архив <strong>{{ map_data.scope_counts.archive }}</strong></label>
+        <label><input type="checkbox" data-auction-v2-boundary-toggle checked> Границы ЕГКН <strong>{{ map_data.with_boundaries }}</strong></label>
+        <label><input type="checkbox" value="free_lands" data-auction-v2-egkn-layer checked> Свободные <strong>{{ map_data.egkn_layer_counts.free_lands }}</strong></label>
+        <label><input type="checkbox" value="pdp" data-auction-v2-egkn-layer checked> План детальной планировки <strong>{{ map_data.egkn_layer_counts.pdp }}</strong></label>
+        <label><input type="checkbox" value="functional_zones" data-auction-v2-egkn-layer checked> Зоны генплана <strong>{{ map_data.egkn_layer_counts.functional_zones }}</strong></label>
+        <label><input type="checkbox" value="engineering" data-auction-v2-egkn-layer checked> Инженерные <strong>{{ map_data.egkn_layer_counts.engineering }}</strong></label>
+        <button class="secondary-action compact" type="button" data-auction-v2-fit>Показать все</button>
+      </div>
+      <div class="auction-v2-map-workspace">
+        <div class="auction-v2-map-canvas">
+          <div class="auction-v2-leaflet-map" data-auction-v2-map aria-label="Карта земельных аукционов"></div>
+          <div class="auction-v2-map-empty" data-auction-v2-empty hidden>По текущим фильтрам нет лотов с координатами.</div>
+        </div>
+        <aside class="auction-v2-map-card" data-auction-v2-card>
+          <span>Лот не выбран</span>
+          <strong>{{ map_data.mapped }} маркеров на карте</strong>
+          <p>Нажмите на маркер, чтобы увидеть цену, срок, кадастр и быстрые ссылки на карточку, E-Qazyna, ЕГКН и карты.</p>
+        </aside>
+      </div>
+    </section>
+
+    <script id="auction-v2-map-data" type="application/json">{{ map_data.markers | tojson }}</script>
+    <script id="auction-v2-egkn-layer-data" type="application/json">{{ map_data.egkn_layers | tojson }}</script>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/site-catalogs.js?v=20260804b" defer></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+<script src="/static/auction-v2-map.js?v=20260803d" defer></script>
+{% endblock %}
+

@@ -1,0 +1,25 @@
+{
+  "status": "VERIFIED_STRICT",
+  "independent_review": true,
+  "reviewer": "codex-a2-national-wfs-review-20260729",
+  "reviewed_at_utc": "2026-07-29T10:45:00Z",
+  "checks": {
+    "document_identity_verified": true,
+    "legal_act_verified": true,
+    "kato_scope_verified": true,
+    "zone_mapping_verified": true,
+    "geometry_bounds_verified": true,
+    "random_visual_samples_verified": true
+  },
+  "legal_act": {
+    "number": "№461",
+    "date": "2024-06-12",
+    "url": "https://adilet.zan.kz/rus/docs/P2400000461",
+    "status": "active"
+  },
+  "notes": [
+    "AIS GGK document 3596 identifies the Aktobe general plan update and Government Resolution No. 461.",
+    "The legal act URL is the official Adilet page for the Aktobe general plan update.",
+    "The release builder validates active status, KATO scope, zone mapping, geometry bounds and red-line presence before import."
+  ]
+}

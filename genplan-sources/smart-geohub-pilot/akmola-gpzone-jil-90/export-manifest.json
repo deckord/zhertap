@@ -1,0 +1,96 @@
+{
+  "api_base_url": "https://map.iaqmola.kz/api/",
+  "base_url": "https://map.iaqmola.kz/",
+  "collection": "gpzone-jil",
+  "context_admterr_id": "kz",
+  "feature_count": 90,
+  "files": {
+    "features": {
+      "path": "features.geojson",
+      "sha256": "4a5306b5e2c9ba69d8a61e64af850a021696e67c57b9db6658534420bbf2dcbe"
+    }
+  },
+  "generated_at_utc": "2026-07-30T14:33:24.581444+00:00",
+  "generated_by": "smart-geohub-exporter",
+  "geometry_types": {
+    "MultiPolygon": 90
+  },
+  "max_features": 90,
+  "next_step": "Map official zone semantics, split allowed/prohibited/red_line layers, run independent QA, then create a genplan_import release.",
+  "property_counts": {
+    "functional": {
+      "2-х этажное жилье": 11,
+      "3-5 этажное жилье": 52,
+      "3-х этажное жилье": 4,
+      "4-5 этажное жилье": 22,
+      "5- этажное жилье": 1
+    },
+    "gpsubtype_id": {
+      "11020000": 67,
+      "11030000": 23
+    },
+    "name_usl": {
+      "Территория малоэтажной застройки": 67,
+      "Территория среднеэтажной застройки": 23
+    },
+    "object_id_i32": {
+      "39": 1,
+      "40": 1,
+      "41": 1,
+      "42": 1,
+      "43": 1,
+      "44": 1,
+      "45": 1,
+      "46": 1,
+      "47": 1,
+      "48": 1,
+      "49": 1,
+      "50": 1,
+      "51": 1,
+      "52": 1,
+      "53": 1,
+      "54": 1,
+      "55": 1,
+      "56": 1,
+      "57": 1,
+      "58": 1,
+      "59": 1,
+      "60": 1,
+      "61": 1,
+      "62": 1,
+      "63": 1,
+      "64": 1,
+      "65": 1,
+      "66": 1,
+      "67": 1,
+      "68": 1,
+      "69": 1,
+      "70": 1,
+      "71": 1,
+      "72": 1,
+      "73": 1,
+      "74": 1,
+      "75": 1,
+      "76": 1,
+      "77": 1,
+      "78": 1,
+      "79": 1,
+      "80": 1,
+      "81": 1,
+      "82": 1,
+      "83": 1,
+      "84": 1,
+      "85": 1,
+      "86": 1,
+      "87": 1,
+      "88": 1
+    },
+    "usl_i32": {
+      "11020000": 67,
+      "11030000": 23
+    }
+  },
+  "schema_version": "smart-geohub-export/v1",
+  "source_sha256": "4a5306b5e2c9ba69d8a61e64af850a021696e67c57b9db6658534420bbf2dcbe",
+  "truncated_by_limit": true
+}

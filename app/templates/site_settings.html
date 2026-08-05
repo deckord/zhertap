@@ -1,0 +1,74 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Настройки — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet/auctions">Аукционы</a>
+    </div>
+    <div class="section-title">
+      <span>Аккаунт</span>
+      <h1>Настройки</h1>
+      <p>Управление входом, паролем и привязкой Telegram.</p>
+    </div>
+
+    {% if password_changed %}
+      <div class="form-alert neutral">Пароль обновлен. Следующий вход будет уже с новым паролем.</div>
+    {% endif %}
+    {% if password_error %}
+      <div class="form-alert">{{ password_error }}</div>
+    {% endif %}
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Профиль</h2><span>{{ "Telegram привязан" if account.telegram_user_id else "Telegram не привязан" }}</span></div>
+      <div class="fact-grid">
+        <div><span>Телефон</span><strong>{{ account.phone }}</strong></div>
+        <div>
+          <span>Доступ</span>
+          <strong>
+            {% if access_kind == "paid" %}
+              {% if access_expires_at_local %}Активен до {{ access_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по Алматы{% else %}Активен без ограничения срока{% endif %}
+            {% elif access_kind == "trial" %}
+              Тест до {{ trial_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по Алматы
+            {% else %}
+              Бесплатный режим
+            {% endif %}
+          </strong>
+        </div>
+        <div><span>Telegram ID</span><strong>{{ account.telegram_user_id or "Не привязан" }}</strong></div>
+        <div><span>Пароль установлен</span><strong>{{ account.password_set_at.strftime("%d.%m.%Y %H:%M") if account.password_set_at else "—" }}</strong></div>
+      </div>
+      <form class="settings-action-row" method="post" action="/cabinet/telegram/link">
+        <button class="secondary-action" type="submit">{{ "Обновить привязку Telegram" if account.telegram_user_id else "Привязать Telegram" }}</button>
+      </form>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Сменить пароль</h2><span>Без SMS</span></div>
+      <form class="modern-form settings-form" method="post" action="/cabinet/settings/password">
+        <label>Текущий пароль
+          <input name="current_password" type="password" autocomplete="current-password" required>
+        </label>
+        <label>Новый пароль
+          <input name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label>Повторите новый пароль
+          <input name="password_confirm" type="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <button class="primary-action" type="submit">Сохранить пароль</button>
+      </form>
+    </section>
+
+    <section class="panel-modern security-panel">
+      <div class="panel-head"><h2>Безопасность</h2><span>Активная сессия</span></div>
+      <p class="muted-modern">Если вы заходили с чужого устройства, завершите сессию после работы.</p>
+      <form method="post" action="/logout">
+        <button class="secondary-action danger-action" type="submit">Выйти из аккаунта</button>
+      </form>
+    </section>
+  </div>
+</section>
+{% endblock %}
+

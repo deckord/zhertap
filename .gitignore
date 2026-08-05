@@ -1,0 +1,50 @@
+.cache/
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Python caches and build outputs
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Local runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.out.log
+*.err.log
+uvicorn*.log
+uvicorn*.out.log
+uvicorn*.err.log
+
+# Generated, temporary, and local-only files
+.test-tmp*
+tmp/
+tmp_*/
+.codex-remote-attachments/
+var/
+
+# Archives and deployment bundles
+*.tar.gz
+*.zip

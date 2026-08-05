@@ -1,0 +1,68 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Подписки на аукционы — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions">← Ко всем аукционам</a>
+    </div>
+    <div class="section-title"><span>Аукционы</span><h1>Подписки</h1><p>Здесь сохраняются фильтры, по которым нужно отслеживать новые лоты.</p></div>
+    {% if request.query_params.get("subscription") == "saved" %}
+      <div class="form-alert neutral">Подписка сохранена. Новые лоты по этому фильтру будут попадать в отслеживание.</div>
+    {% elif request.query_params.get("subscription") == "enabled" %}
+      <div class="form-alert neutral">Подписка включена.</div>
+    {% elif request.query_params.get("subscription") == "disabled" %}
+      <div class="form-alert neutral">Подписка отключена.</div>
+    {% elif request.query_params.get("subscription") == "deleted" %}
+      <div class="form-alert neutral">Подписка удалена.</div>
+    {% elif request.query_params.get("locked") %}
+      <div class="form-alert">Подписки и уведомления доступны после оплаты полного доступа.</div>
+    {% endif %}
+    {% if not has_paid_unlock %}
+      <div class="locked-preview-note">
+        Подписки на новые лоты выключены в бесплатном режиме. После оплаты можно сохранять фильтры и получать уведомления.
+      </div>
+    {% endif %}
+    <section class="panel-modern">
+      <div class="simple-list">
+        {% for item in subscriptions %}
+          <div class="subscription-row">
+            <div>
+              <strong>{{ item.region or "Весь Казахстан" }}{% if item.district %} · {{ item.district }}{% endif %}{% if item.locality %} · {{ item.locality }}{% endif %}</strong>
+              <span>
+                {{ item.purpose_query or "любое назначение" }}
+                {% if item.min_price_kzt %} · от {{ "{:,.0f}".format(item.min_price_kzt).replace(",", " ") }} ₸{% endif %}
+                {% if item.max_price_kzt %} · до {{ "{:,.0f}".format(item.max_price_kzt).replace(",", " ") }} ₸{% endif %}
+                · {{ "активна" if item.active else "отключена" }}
+              </span>
+            </div>
+            <div class="subscription-actions">
+              <a class="secondary-action compact" href="/cabinet/auctions?region={{ (item.region or '')|urlencode }}&district={{ (item.district or '')|urlencode }}&locality={{ (item.locality or '')|urlencode }}&purpose={{ (item.purpose_query or '')|urlencode }}{% if item.min_price_kzt %}&min_price_kzt={{ item.min_price_kzt }}{% endif %}{% if item.max_price_kzt %}&max_price_kzt={{ item.max_price_kzt }}{% endif %}{% if item.min_area_ha %}&min_area_ha={{ item.min_area_ha }}{% endif %}{% if item.max_area_ha %}&max_area_ha={{ item.max_area_ha }}{% endif %}">Изменить фильтр</a>
+              {% if has_paid_unlock %}
+                {% if item.active %}
+                  <form method="post" action="/cabinet/auctions/subscriptions/{{ item.id }}/disable"><button type="submit">Отключить</button></form>
+                {% else %}
+                  <form method="post" action="/cabinet/auctions/subscriptions/{{ item.id }}/enable"><button type="submit">Включить</button></form>
+                {% endif %}
+                <form method="post" action="/cabinet/auctions/subscriptions/{{ item.id }}/delete"><button class="danger-action" type="submit">Удалить</button></form>
+              {% else %}
+                <button class="locked-action" type="button" disabled>Доступно после оплаты</button>
+              {% endif %}
+            </div>
+          </div>
+        {% else %}
+          <div class="empty-state">
+            <strong>Подписок пока нет</strong>
+            <span>Настройте фильтры в аукционах и сохраните их, чтобы отслеживать новые лоты без ручной проверки.</span>
+            <div class="empty-actions">
+              <a class="primary-action compact" href="/cabinet/auctions">Настроить фильтр</a>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+

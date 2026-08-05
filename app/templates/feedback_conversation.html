@@ -1,0 +1,54 @@
+﻿{% extends "base.html" %}
+{% block title %}Диалог · {{ app_name }}{% endblock %}
+{% block content %}
+<nav class="crumb"><a href="/admin/feedback">← Обратная связь</a></nav>
+
+<section class="section-head">
+  <div>
+    <h1>{{ conversation.phone or conversation.telegram_user_id or "Клиент" }}</h1>
+    <p>
+      Telegram ID {{ conversation.telegram_user_id or "—" }} ·
+      chat {{ conversation.telegram_chat_id or "—" }} ·
+      язык {{ conversation.language }}
+    </p>
+  </div>
+  <div class="access-card">
+    <span>Доступ клиента</span>
+    <strong class="access-badge access-{{ access_summary.kind }}">{{ access_summary.label }}</strong>
+    <small>{{ access_summary.detail }}</small>
+  </div>
+</section>
+
+<section class="panel feedback-dialog">
+  {% for item in conversation.messages %}
+    <article class="admin-feedback-message {{ item.sender_type }}">
+      <div>
+        <strong>
+          {% if item.sender_type == "client" %}Клиент{% elif item.sender_type == "admin" %}Админ{% else %}Система{% endif %}
+        </strong>
+        <span>{{ item.created_at.strftime("%d.%m.%Y %H:%M") }} · {{ item.channel }} · {{ item.delivery_status }}</span>
+      </div>
+      <p>{{ item.text }}</p>
+      {% if item.error_message %}
+        <small>{{ item.error_message }}</small>
+      {% endif %}
+    </article>
+  {% else %}
+    <div class="empty">Сообщений пока нет.</div>
+  {% endfor %}
+</section>
+
+<section class="panel form-panel">
+  <h2>Ответить клиенту</h2>
+  <form action="/admin/feedback/{{ conversation.id }}/reply" method="post" class="feedback-reply-form">
+    <label>Сообщение
+      <textarea name="text" rows="5" required placeholder="Напишите ответ клиенту..."></textarea>
+    </label>
+    <button type="submit" class="primary">Отправить ответ</button>
+  </form>
+  {% if not conversation.telegram_chat_id %}
+    <p class="muted">У диалога нет Telegram chat ID. Ответ сохранится в истории, но не будет доставлен клиенту автоматически.</p>
+  {% endif %}
+</section>
+{% endblock %}
+

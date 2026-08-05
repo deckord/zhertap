@@ -1,0 +1,27 @@
+{
+  "status": "VERIFIED_STRICT",
+  "independent_review": true,
+  "reviewer": "codex-a2-national-wfs-review",
+  "reviewed_at_utc": "2026-07-23T13:52:43Z",
+  "checks": {
+    "document_identity_verified": true,
+    "legal_act_verified": true,
+    "kato_scope_verified": true,
+    "zone_mapping_verified": true,
+    "geometry_bounds_verified": true,
+    "random_visual_samples_verified": true
+  },
+  "legal_act": {
+    "number": "№33",
+    "date": "2024-01-25",
+    "url": "https://adilet.zan.kz/rus/docs/P2400000033",
+    "status": "active"
+  },
+  "notes": [
+    "Document 3607 identifies the Astana general plan and Government Resolution No. 33.",
+    "Adilet gives the legal act date as 2024-01-25; AIS GGK stores 2024-04-25, and the discrepancy is retained in provenance.",
+    "KATO 710000000 is the top-level Astana city scope.",
+    "WFS functional zones and red lines were compared with the official AIS GGK WMS rendering.",
+    "Engineering-availability overlays are retained in provenance but excluded from prohibited geometry."
+  ]
+}

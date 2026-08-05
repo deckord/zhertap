@@ -1,0 +1,9 @@
+﻿{% extends "base.html" %}
+{% block title %}Результат · {{ app_name }}{% endblock %}
+{% block content %}
+<nav class="crumb"><a href="/admin/searches/{{ request_id }}">← Вернуться к заявке</a></nav>
+<section class="section-head"><div><h1>Результат сформирован</h1><p>При наличии Telegram chat ID сообщение отправлено пользователю.</p></div></section>
+<pre class="message-preview">{{ message }}</pre>
+{% endblock %}
+
+

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "land-scout-bot"
+version = "0.1.0"
+description = "Telegram queue and operator workflow for preliminary LPH land scouting in Kazakhstan"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.13,<2",
+  "aiogram>=3.17,<4",
+  "celery[redis]>=5.4,<6",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "jinja2>=3.1,<4",
+  "numpy==1.26.4",
+  "pillow>=10,<12",
+  "pymupdf>=1.24,<2",
+  "pyproj>=3.7,<4",
+  "psycopg[binary]>=3.2,<4",
+  "pydantic-settings>=2.7,<3",
+  "qrcode>=8,<9",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy>=2.0,<3",
+  "shapely>=2.0,<3",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.9,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["templates/*.html", "static/*.css", "static/*.js", "data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]

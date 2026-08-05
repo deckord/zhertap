@@ -1,0 +1,140 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Анализ аукционов — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet/search">Анализ территории</a>
+    </div>
+    <div class="section-title">
+      <span>E-Qazyna</span>
+      <h1>Анализ земельных аукционов</h1>
+      <p>Отбирайте лоты по району, назначению, цене и площади, затем сохраняйте их в избранное, сравнение или подписку.</p>
+    </div>
+    {% if request.query_params.get("favorite") == "added" %}
+      <div class="form-alert neutral">Лот добавлен в избранное.</div>
+    {% elif request.query_params.get("favorite") == "removed" %}
+      <div class="form-alert neutral">Лот убран из избранного.</div>
+    {% elif request.query_params.get("locked") %}
+      <div class="form-alert">Это действие доступно после оплаты полного доступа.</div>
+    {% endif %}
+    {% if filter_error %}
+      <div class="form-alert">{{ filter_error }}</div>
+    {% endif %}
+    {% if not has_paid_unlock %}
+      <div class="locked-preview-note">
+        Бесплатно: список и краткая аналитика. После оплаты: E-Qazyna, документы, избранное, сравнение, подписки и уведомления.
+      </div>
+    {% endif %}
+    <div class="auction-toolbar">
+      {% if has_paid_unlock %}
+        <a class="secondary-action compact" href="/cabinet/auctions/favorites">Избранное</a>
+        <a class="secondary-action compact" href="/cabinet/auctions/subscriptions">Подписки</a>
+        <a class="secondary-action compact" href="/cabinet/auctions/compare">Сравнить</a>
+      {% else %}
+        <button class="secondary-action compact locked-action" type="button" disabled>Избранное</button>
+        <button class="secondary-action compact locked-action" type="button" disabled>Подписки</button>
+        <button class="secondary-action compact locked-action" type="button" disabled>Сравнить</button>
+      {% endif %}
+    </div>
+    <form id="auction-filter-form" class="auction-web-form" method="get" action="/cabinet/auctions" data-catalog-form="auctions">
+      <label>Регион
+        <select id="auction-region" name="region" data-selected="{{ filters.region }}">
+          <option value="">Загрузка регионов...</option>
+        </select>
+      </label>
+      <label>Район
+        <select id="auction-district" name="district" data-selected="{{ filters.district }}" disabled>
+          <option value="">Сначала выберите регион</option>
+        </select>
+      </label>
+      <label>Населенный пункт
+        <select id="auction-locality" name="locality" data-selected="{{ filters.locality }}" disabled>
+          <option value="">Сначала выберите район</option>
+        </select>
+      </label>
+      <label>Назначение
+        <select id="auction-purpose" name="purpose" data-selected="{{ filters.purpose }}">
+          <option value="">Все назначения</option>
+        </select>
+      </label>
+      <label>Цена от <input name="min_price_kzt" value="{{ filters.min_price_kzt }}" inputmode="decimal"></label>
+      <label>Цена до <input name="max_price_kzt" value="{{ filters.max_price_kzt }}" inputmode="decimal"></label>
+      <label>Площадь от, га <input name="min_area_ha" value="{{ filters.min_area_ha }}" inputmode="decimal"></label>
+      <label>Площадь до, га <input name="max_area_ha" value="{{ filters.max_area_ha }}" inputmode="decimal"></label>
+      <div class="catalog-note" id="auction-catalog-status" aria-live="polite">Справочники аукционов загружаются из ЕГКН и базы E-Qazyna.</div>
+      <button class="secondary-action compact catalog-retry" type="button" data-catalog-retry="auctions" hidden>Повторить загрузку справочников</button>
+      <button class="primary-action" type="submit">Отобрать лоты</button>
+      <a class="secondary-action compact" href="/cabinet/auctions">Сбросить</a>
+    </form>
+    {% if has_paid_unlock %}
+      <form class="subscribe-current-form" method="post" action="/cabinet/auctions/subscriptions">
+        <input type="hidden" name="region" value="{{ filters.region }}">
+        <input type="hidden" name="district" value="{{ filters.district }}">
+        <input type="hidden" name="locality" value="{{ filters.locality }}">
+        <input type="hidden" name="purpose" value="{{ filters.purpose }}">
+        <input type="hidden" name="min_price_kzt" value="{{ filters.min_price_kzt }}">
+        <input type="hidden" name="max_price_kzt" value="{{ filters.max_price_kzt }}">
+        <input type="hidden" name="min_area_ha" value="{{ filters.min_area_ha }}">
+        <input type="hidden" name="max_area_ha" value="{{ filters.max_area_ha }}">
+        <button class="secondary-action" type="submit">Уведомлять о новых лотах по этому фильтру</button>
+      </form>
+    {% else %}
+      <div class="subscribe-current-form">
+        <button class="secondary-action locked-action" type="button" disabled>Уведомления о новых лотах после оплаты</button>
+      </div>
+    {% endif %}
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Подходящих лотов: {{ total }}</h2><span>страница {{ page }} · показано {{ lots|length }} из {{ total }}</span></div>
+      <div class="auction-list">
+        {% for lot in lots %}
+          <article class="auction-card">
+            <div>
+              <strong>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}</strong>
+              <h3><a href="/cabinet/auctions/{{ lot.id }}">{{ lot.title }}</a></h3>
+              <p>{{ lot.functional_purpose_level2 or lot.purpose or "Назначение не указано" }}</p>
+            </div>
+            <div class="auction-card-meta">
+              <span>{{ lot.area_ha or "—" }} га</span>
+              <b>{% if lot.start_price_kzt %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}Цена не указана{% endif %}</b>
+              <a href="/cabinet/auctions/{{ lot.id }}">Открыть аналитику</a>
+              {% if has_paid_unlock %}
+                <form method="post" action="/cabinet/auctions/{{ lot.id }}/favorite">
+                  <button type="submit">{{ "Убрать" if lot.id in favorite_ids else "В избранное" }}</button>
+                </form>
+              {% else %}
+                <button class="locked-action" type="button" disabled>Избранное после оплаты</button>
+              {% endif %}
+            </div>
+          </article>
+        {% else %}
+          <div class="empty-state">
+            <strong>По выбранным фильтрам лоты не найдены</strong>
+            <span>Сбросьте часть условий или сохраните текущий фильтр в подписки, чтобы узнать о новых лотах позже.</span>
+            <div class="empty-actions">
+              <a class="secondary-action compact" href="/cabinet/auctions">Сбросить фильтр</a>
+              <button form="auction-filter-form" class="primary-action compact" type="submit">Проверить снова</button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      {% if has_previous_page or has_next_page %}
+        <div class="pagination-actions">
+          {% if has_previous_page %}
+            <a class="secondary-action compact" href="/cabinet/auctions?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page - 1 }}">← Предыдущие 40</a>
+          {% endif %}
+          {% if has_next_page %}
+            <a class="primary-action compact" href="/cabinet/auctions?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page + 1 }}">Показать следующие 40</a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/site-catalogs.js?v=20260804b" defer></script>
+{% endblock %}
+

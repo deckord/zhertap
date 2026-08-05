@@ -1,0 +1,33 @@
+{
+  "schema_version": "genplan-pdf-page-selections/v1",
+  "records": [
+    {
+      "asset_id": "76f0d2080f5e6572b98ae6281b4574c1395abe5b36df19d2361f5663e8aa8ffb",
+      "page": 22,
+      "reason": "Kaskelen page 22 is labeled as the general plan main drawing / planning structure."
+    },
+    {
+      "asset_id": "96a088934c4df646f29d948b888b1bfa0b728fce34947f44a793d31a81472500",
+      "page": 19,
+      "reason": "Semey page 19 is labeled as GP-5 General plan main drawing."
+    },
+    {
+      "asset_id": "cdc0f627c1a15d57165e76de3bb69c6138a918b3caab630763fc8d4dcf13f872",
+      "page_range": {
+        "start": 1,
+        "end": 5
+      },
+      "split_pages": true,
+      "reason": "Kyzylzhar/Roshchinsky PDF contains separate map sheets; each page must be georeferenced as its own workbench record."
+    },
+    {
+      "asset_id": "18fc0db903bc142c9396d08f777cee1a8ce8b8419371bfff5c439c235928dbaf",
+      "page_range": {
+        "start": 1,
+        "end": 39
+      },
+      "split_pages": true,
+      "reason": "Almaty PDP PDF contains multiple area sheets; each page must be georeferenced as its own workbench record."
+    }
+  ]
+}

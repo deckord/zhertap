@@ -1,0 +1,6 @@
+opencv-python-headless>=4.10,<5
+Pillow>=11,<12
+httpx>=0.28,<1
+numpy==1.26.4
+pyproj>=3.7,<4
+shapely>=2,<3

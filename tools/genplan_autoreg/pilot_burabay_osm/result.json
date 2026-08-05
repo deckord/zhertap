@@ -1,0 +1,43 @@
+{
+  "status": "needs_manual",
+  "confidence": 0.19,
+  "confidence_label": "none",
+  "source_sha256": "8b3fd960c3265d1bbb45fb8b51bfadfb72946ac459f4e7b26c45ae9ca190879b",
+  "source_path": "C:\\Users\\medadmin\\Documents\\Codex\\genplan\\extracted\\archive-002\\Акмолинская область\\Бурабайский район\\Бурабай.jpg",
+  "locality": "Бурабай",
+  "bbox": {
+    "west": 70.2879917848877,
+    "south": 53.05482478977724,
+    "east": 70.33287242722872,
+    "north": 53.09799258147612,
+    "source": "egkn",
+    "label": "Бурабай"
+  },
+  "basemap_source": "osm:z15",
+  "basemap_attribution": "© OpenStreetMap contributors",
+  "metrics": {
+    "detector": "SIFT",
+    "plan_keypoints": 12000,
+    "reference_keypoints": 6340,
+    "candidate_matches": 73,
+    "inliers": 10,
+    "inlier_ratio": 0.136986,
+    "reprojection_rmse_px": 1.9698,
+    "plan_coverage": 0.354764,
+    "reference_coverage": 0.133565,
+    "homography_condition": 336774.5458
+  },
+  "proposed_gcps": [],
+  "reasons": [
+    "inliers_below_threshold",
+    "inlier_ratio_below_threshold",
+    "status_is_never_automatically_approved"
+  ],
+  "artifacts": {
+    "basemap": "C:\\Users\\medadmin\\Documents\\Codex\\2026-06-30\\vj\\land-scout-bot\\tools\\genplan_autoreg\\pilot_burabay_osm\\basemap.jpg",
+    "plan_preview": "C:\\Users\\medadmin\\Documents\\Codex\\2026-06-30\\vj\\land-scout-bot\\tools\\genplan_autoreg\\pilot_burabay_osm\\plan_preview.jpg",
+    "matches": "C:\\Users\\medadmin\\Documents\\Codex\\2026-06-30\\vj\\land-scout-bot\\tools\\genplan_autoreg\\pilot_burabay_osm\\matches.jpg",
+    "result": "C:\\Users\\medadmin\\Documents\\Codex\\2026-06-30\\vj\\land-scout-bot\\tools\\genplan_autoreg\\pilot_burabay_osm\\result.json"
+  },
+  "schema_version": "1.0"
+}

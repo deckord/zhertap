@@ -1,0 +1,58 @@
+﻿{
+  "platform": "arcgis",
+  "url": "https://gis.esaulet.kz/server/rest/services/",
+  "service_count": 200,
+  "candidate_service_count": 2,
+  "candidates": [
+    {
+      "name": "dop_sloi_geoportal_otkr",
+      "type": "MapServer",
+      "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer",
+      "layers": [
+        {
+          "id": 20,
+          "name": "Водоохранные зоны/полосы",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/20",
+          "search_text": "водоохранные зоны/полосы "
+        },
+        {
+          "id": 36,
+          "name": "Зоны с особыми условиями",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/36",
+          "search_text": "зоны с особыми условиями "
+        },
+        {
+          "id": 41,
+          "name": "Охранные зоны",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/41",
+          "search_text": "охранные зоны "
+        },
+        {
+          "id": 37,
+          "name": "Санитарная зона ТБО",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/37",
+          "search_text": "санитарная зона тбо "
+        },
+        {
+          "id": 38,
+          "name": "Санитарная зона кладбищ",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/38",
+          "search_text": "санитарная зона кладбищ "
+        }
+      ]
+    },
+    {
+      "name": "GenPlan_NurSultan_2030",
+      "type": "MapServer",
+      "url": "https://gis.esaulet.kz/server/rest/services/GenPlan_NurSultan_2030/MapServer",
+      "layers": [
+        {
+          "id": 0,
+          "name": "GenPlan_NurSultan_2030",
+          "url": "https://gis.esaulet.kz/server/rest/services/GenPlan_NurSultan_2030/MapServer/0",
+          "search_text": "genplan_nursultan_2030 "
+        }
+      ]
+    }
+  ]
+}

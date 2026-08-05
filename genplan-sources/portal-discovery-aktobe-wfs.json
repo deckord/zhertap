@@ -1,0 +1,5 @@
+﻿{
+  "platform": "wfs",
+  "url": "https://geoportal.akt.kz/geoserver/ows",
+  "error": "[Errno 11002] getaddrinfo failed"
+}

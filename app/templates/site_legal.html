@@ -1,0 +1,18 @@
+﻿{% extends "site_base.html" %}
+{% block title %}{{ title }} — Жертап{% endblock %}
+{% block content %}
+<section class="legal-page">
+  <span class="eyebrow">{{ eyebrow }}</span>
+  <h1>{{ title }}</h1>
+  <p class="legal-lead">{{ lead }}</p>
+  {% for section in sections %}
+    <article class="legal-section">
+      <h2>{{ section.title }}</h2>
+      {% for paragraph in section.paragraphs %}
+        <p>{{ paragraph }}</p>
+      {% endfor %}
+    </article>
+  {% endfor %}
+</section>
+{% endblock %}
+

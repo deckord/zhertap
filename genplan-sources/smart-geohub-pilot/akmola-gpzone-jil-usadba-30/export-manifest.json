@@ -1,0 +1,72 @@
+{
+  "api_base_url": "https://map.iaqmola.kz/api/",
+  "base_url": "https://map.iaqmola.kz/",
+  "collection": "gpzone-jil",
+  "context_admterr_id": "kz",
+  "feature_count": 30,
+  "files": {
+    "features": {
+      "path": "features.geojson",
+      "sha256": "e0bf5022552bbbe912d53d5af3a2204644ff3416e7c20ac2ade6d303f32b5ac7"
+    }
+  },
+  "generated_at_utc": "2026-07-30T14:48:37.315421+00:00",
+  "generated_by": "smart-geohub-exporter",
+  "geometry_types": {
+    "MultiPolygon": 30
+  },
+  "max_features": 30,
+  "next_step": "Map official zone semantics, split allowed/prohibited/red_line layers, run independent QA, then create a genplan_import release.",
+  "property_counts": {
+    "functional": {
+      "Усадебный застройка": 30
+    },
+    "gpsubtype_id": {
+      "11010000": 30
+    },
+    "name_usl": {
+      "Территория усадебной застройки": 30
+    },
+    "object_id_i32": {
+      "200": 1,
+      "201": 1,
+      "202": 1,
+      "203": 1,
+      "204": 1,
+      "205": 1,
+      "206": 1,
+      "207": 1,
+      "208": 1,
+      "209": 1,
+      "210": 1,
+      "211": 1,
+      "212": 1,
+      "213": 1,
+      "214": 1,
+      "215": 1,
+      "216": 1,
+      "217": 1,
+      "218": 1,
+      "219": 1,
+      "220": 1,
+      "221": 1,
+      "222": 1,
+      "223": 1,
+      "224": 1,
+      "225": 1,
+      "226": 1,
+      "227": 1,
+      "228": 1,
+      "229": 1
+    },
+    "usl_i32": {
+      "11010000": 30
+    }
+  },
+  "schema_version": "smart-geohub-export/v1",
+  "search": {
+    "usl_i32": "11010000"
+  },
+  "source_sha256": "e0bf5022552bbbe912d53d5af3a2204644ff3416e7c20ac2ade6d303f32b5ac7",
+  "truncated_by_limit": true
+}

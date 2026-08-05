@@ -1,0 +1,609 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Аукционы v2 — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions">← Текущие аукционы</a>
+      <a class="back-link" href="/cabinet">В кабинет</a>
+      <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <button class="primary-action compact" type="submit">Обновить данные</button>
+      </form>
+    </div>
+
+    <div class="section-title auction-v2-title">
+      <span>Рабочий режим</span>
+      <h1>Рабочий стол земельных аукционов</h1>
+      <p>Система собирает лоты, документы, кадастр, карту, проверки и ценовые ориентиры в одном месте. Покупка, заявка и торги остаются только на официальных порталах.</p>
+    </div>
+
+    {% include "partials/auction_v2_tabs.html" %}
+
+    <section class="auction-v2-process-strip" aria-label="Как работать с лотом">
+      <article>
+        <span>1</span>
+        <strong>Найти лот</strong>
+        <small>Фильтры, карта и сохраненный мониторинг показывают подходящие участки.</small>
+      </article>
+      <article>
+        <span>2</span>
+        <strong>Понять смысл</strong>
+        <small>Индекс показывает интерес, риск показывает что нужно проверить руками.</small>
+      </article>
+      <article>
+        <span>3</span>
+        <strong>Сверить источники</strong>
+        <small>E-Qazyna, ЕГКН, gov.kz, генплан, документы и карта собраны в карточке.</small>
+      </article>
+      <article>
+        <span>4</span>
+        <strong>Перейти официально</strong>
+        <small>Когда все понятно, открывается E-Qazyna/eGov для юридического действия.</small>
+      </article>
+    </section>
+
+    {% if filter_error %}
+      <div class="form-alert">{{ filter_error }}</div>
+    {% endif %}
+    {% if request.query_params.get("pipeline") == "saved" %}
+      <div class="form-alert neutral">Статус лота обновлен.</div>
+    {% endif %}
+
+    {% if request.query_params.get("sync") == "queued" %}
+      <div class="form-alert neutral">Синхронизация v2 поставлена в очередь.</div>
+    {% elif request.query_params.get("sync") == "done" %}
+      <div class="form-alert neutral">Синхронизация v2 выполнена: E-Qazyna {{ request.query_params.get("lots_fetched") or 0 }} лотов, новых {{ request.query_params.get("lots_created") or 0 }}, обновлено {{ request.query_params.get("lots_updated") or 0 }}; v2 {{ request.query_params.get("lots_checked") or 0 }} лотов, {{ request.query_params.get("sources_checked") or 0 }} источников, документы {{ request.query_params.get("documents_downloaded") or 0 }}/{{ request.query_params.get("documents_checked") or 0 }}, web {{ request.query_params.get("web_notifications") or 0 }}, Telegram {{ request.query_params.get("telegram_notifications") or 0 }}.</div>
+    {% endif %}
+    {% if request.query_params.get("watchlist") == "saved" %}
+      <div class="form-alert neutral">Мониторинг сохранен.</div>
+    {% elif request.query_params.get("watchlist") == "invalid" %}
+      <div class="form-alert">Проверьте числа в фильтре мониторинга.</div>
+    {% elif request.query_params.get("watchlist") == "enabled" %}
+      <div class="form-alert neutral">Мониторинг включен.</div>
+    {% elif request.query_params.get("watchlist") == "disabled" %}
+      <div class="form-alert neutral">Мониторинг поставлен на паузу.</div>
+    {% endif %}
+    {% if request.query_params.get("notifications") == "seen" %}
+      <div class="form-alert neutral">Новые web-уведомления отмечены просмотренными: {{ request.query_params.get("count") or 0 }}.</div>
+    {% endif %}
+
+    <section class="auction-v2-kpis">
+      <article>
+        <span>Источники</span>
+        <strong>{{ dashboard.sources_total }}</strong>
+        <small>{{ dashboard.sources_live }} в работе · {{ dashboard.sources_planned }} в очереди</small>
+      </article>
+      <article>
+        <span>Проанализировано</span>
+        <strong>{{ dashboard.analysed_lots }}</strong>
+        <small>обновлено сейчас: {{ refresh_stats.checked }}</small>
+      </article>
+      <article>
+        <span>Сильные лоты</span>
+        <strong>{{ dashboard.high_score_lots }}</strong>
+        <small>индекс 75+ — стоит смотреть первыми</small>
+      </article>
+      <article>
+        <span>Готовы к официальному сайту</span>
+        <strong>{{ dashboard.ready_lots }}</strong>
+        <small>можно открывать E-Qazyna после финальной сверки</small>
+      </article>
+      <article>
+        <span>Высокий риск</span>
+        <strong>{{ dashboard.high_risk_lots }}</strong>
+        <small>не входить без проверки</small>
+      </article>
+    </section>
+
+    <div class="auction-v2-sync-note">
+      <span>Последнее обновление</span>
+      <strong>{% if dashboard.last_v2_sync %}{{ dashboard.last_v2_sync.strftime("%d.%m.%Y %H:%M") }}{% else %}еще не запускалась{% endif %}</strong>
+      <em>{{ dashboard.crawl_runs }} запусков по источникам</em>
+    </div>
+
+    <section class="panel-modern auction-v2-process-overview">
+      <div class="panel-head">
+        <h2>Работа до официальной заявки</h2>
+        <span>ZHERTAP не подает заявки и не участвует в торгах</span>
+      </div>
+      <div class="auction-v2-process-grid">
+        <article class="is-done">
+          <span>1</span>
+          <strong>Собрать лоты</strong>
+          <p>E-Qazyna, gov.kz, ЕГКН, акиматы, документы и карты сводятся в один список.</p>
+        </article>
+        <article class="is-done">
+          <span>2</span>
+          <strong>Проверить участок</strong>
+          <p>Кадастр, координаты, документы, сроки, цена за сотку и риск показываются в карточке.</p>
+        </article>
+        <article class="is-progress">
+          <span>3</span>
+          <strong>Оценить район</strong>
+          <p>Сейчас есть базовая цена и история; дальше добиваем районную аналитику и графики.</p>
+        </article>
+        <article class="is-progress">
+          <span>4</span>
+          <strong>Следить первым</strong>
+          <p>Сохраненный фильтр ловит новые лоты, сроки, риски, документы и важные изменения.</p>
+        </article>
+        <article class="is-manual">
+          <span>5</span>
+          <strong>Перейти на официальный портал</strong>
+          <p>Подача заявки, ЭЦП, гарантийный взнос и торги остаются только на E-Qazyna/eGov.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel-modern auction-v2-watchlist-panel">
+      <div class="panel-head">
+        <h2>Лента важных событий</h2>
+        <span>{{ watchlist_notifications|length }} новых событий · {{ watchlist_matches|length }} подходящих лотов</span>
+        {% if watchlist_notifications %}
+          <form class="auction-v2-inline-form" method="post" action="/cabinet/auctions-v2/notifications/seen">
+            <button class="secondary-action compact" type="submit">Отметить события прочитанными</button>
+          </form>
+        {% endif %}
+      </div>
+      <p class="auction-v2-helper-text">Это не “инбокс” и не почта. Это очередь того, что надо посмотреть первым: новый лот по вашему фильтру, близкий срок, изменение цены/даты, новый документ или риск, который нельзя пропустить.</p>
+      <div class="auction-v2-watchlist-grid">
+        <div class="auction-v2-watchlist-matches">
+          {% if watchlist_notifications %}
+            <div class="auction-v2-list-subhead">Срочно проверить</div>
+            {% for notification in watchlist_notifications %}
+              {% set item = notification.item %}
+              {% set lot = item.lot %}
+              {% set event_type = notification.notification.event_type %}
+              {% if event_type == "new_lot" %}
+                {% set event_label = "Новый" %}
+              {% elif event_type in ["price_changed", "result_changed"] %}
+                {% set event_label = "Цена" %}
+              {% elif event_type == "eqazyna_status_changed" %}
+                {% set event_label = "Статус" %}
+              {% elif event_type in ["auction_date_changed", "auction_2h", "auction_room_1h", "registration_24h"] %}
+                {% set event_label = "Срок" %}
+              {% elif event_type == "document_added" %}
+                {% set event_label = "Док" %}
+              {% elif event_type == "akimat_announcement_found" %}
+                {% set event_label = "Акимат" %}
+              {% elif event_type == "high_risk" %}
+                {% set event_label = "Риск" %}
+              {% elif event_type == "ready_for_official_site" %}
+                {% set event_label = "Готов" %}
+              {% else %}
+                {% set event_label = "Событие" %}
+              {% endif %}
+              <a class="auction-v2-watchlist-match auction-v2-notification risk-{{ item.analysis.risk_level }}" href="/cabinet/auctions-v2/{{ lot.id }}">
+                <div class="auction-v2-watchlist-title">
+                  <span class="auction-v2-new-dot">{{ event_label }}</span>
+                  <strong>{{ notification.notification.title or lot.title or "Событие по лоту" }}</strong>
+                </div>
+                <span class="auction-v2-watchlist-place">{{ item.analysis.score }}/100 · {{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</span>
+                <span>{% if notification.notification.detail %}{{ notification.notification.detail }}{% else %}Мониторинг: {{ notification.watchlist.name }}{% endif %}</span>
+                <em>{{ item.action_label }} · {{ notification.notification.created_at.strftime("%d.%m %H:%M") }}</em>
+              </a>
+            {% endfor %}
+          {% endif %}
+          {% if watchlist_matches %}
+            <div class="auction-v2-list-subhead">Подходящие лоты по сохраненным фильтрам</div>
+            {% for item in watchlist_matches %}
+              {% set lot = item.lot %}
+              <a class="auction-v2-watchlist-match risk-{{ item.analysis.risk_level }}" href="/cabinet/auctions-v2/{{ lot.id }}">
+                <div class="auction-v2-watchlist-title">
+                  <span class="auction-v2-new-dot">Лот</span>
+                  <strong>{{ lot.title }}</strong>
+                </div>
+                <span class="auction-v2-watchlist-place">{{ item.analysis.score }}/100 · {{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</span>
+                <em>{{ item.action_label }}</em>
+              </a>
+            {% endfor %}
+          {% elif not watchlist_notifications %}
+            <p class="muted-modern">Совпадения появятся после синхронизации и настройки мониторинга.</p>
+          {% endif %}
+        </div>
+        <div class="auction-v2-watchlist-side">
+          <form class="auction-v2-watchlist-form" method="post" action="/cabinet/auctions-v2/watchlists">
+            <h3>Слежение за такими лотами</h3>
+            <p class="auction-v2-mini-explain">Сохраните текущий отбор — система будет поднимать новые совпадения в эту ленту.</p>
+            <label>Название мониторинга
+              <input name="name" value="{% if filters.region %}{{ filters.region }}{% if filters.district %} · {{ filters.district }}{% endif %}{% if filters.locality %} · {{ filters.locality }}{% endif %}{% else %}Мои лоты{% endif %}">
+            </label>
+            <input type="hidden" name="lot_scope" value="{{ filters.lot_scope }}">
+            <input type="hidden" name="region" value="{{ filters.region }}">
+            <input type="hidden" name="district" value="{{ filters.district }}">
+            <input type="hidden" name="locality" value="{{ filters.locality }}">
+            <input type="hidden" name="purpose" value="{{ filters.purpose }}">
+            <input type="hidden" name="min_price_kzt" value="{{ filters.min_price_kzt }}">
+            <input type="hidden" name="max_price_kzt" value="{{ filters.max_price_kzt }}">
+            <input type="hidden" name="min_area_ha" value="{{ filters.min_area_ha }}">
+            <input type="hidden" name="max_area_ha" value="{{ filters.max_area_ha }}">
+            <input type="hidden" name="min_score" value="{{ filters.min_score or 70 }}">
+            <input type="hidden" name="eqazyna_status" value="{{ filters.eqazyna_status }}">
+            <input type="hidden" name="risk_level" value="{{ filters.risk_level }}">
+            <input type="hidden" name="confidence_level" value="{{ filters.confidence_level }}">
+            <input type="hidden" name="stage" value="{{ filters.stage }}">
+            <input type="hidden" name="deadline_status" value="{{ filters.deadline_status }}">
+            <input type="hidden" name="geo_status" value="{{ filters.geo_status }}">
+            <button class="primary-action compact" type="submit">Следить за такими лотами</button>
+          </form>
+          <div class="auction-v2-watchlists">
+            <p class="auction-v2-list-subhead">Мои сохраненные мониторинги</p>
+            {% for row in watchlists %}
+              {% set watchlist = row.watchlist %}
+              <div class="{{ '' if watchlist.active else 'is-disabled' }}">
+                <strong>{{ watchlist.name }}</strong>
+                <span>{{ row.match_count }} совпадений{% if row.web_notification_count %} · новых {{ row.web_notification_count }}{% endif %}{% if row.top_score %} · top {{ row.top_score }}{% endif %}</span>
+                {% if row.filter_description %}
+                  <small>{{ row.filter_description }}</small>
+                {% endif %}
+                <form method="post" action="/cabinet/auctions-v2/watchlists/{{ watchlist.id }}/active">
+                  <input type="hidden" name="active" value="{{ 'false' if watchlist.active else 'true' }}">
+                  <button class="secondary-action compact" type="submit">{{ "Пауза" if watchlist.active else "Включить" }}</button>
+                </form>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <details class="panel-modern auction-v2-source-overview">
+      <summary>
+        <span>
+          <strong>Откуда берутся данные</strong>
+          <em>E-Qazyna, gov.kz, ЕГКН, карты, документы и рыночные аналоги для цены.</em>
+        </span>
+        <b>Показать источники</b>
+      </summary>
+      <section class="auction-v2-source-groups" aria-label="Статус источников">
+        <div class="auction-v2-source-group">
+          <div class="auction-v2-source-group-head">
+            <strong>Госисточники и карты</strong>
+            <span>официальные лоты, документы, кадастр, ограничения и окружение</span>
+          </div>
+          <div class="auction-v2-source-strip">
+            {% for source in dashboard.source_cards %}
+              {% if source.source_type != "market" %}
+                <a class="auction-v2-source-pill source-{{ source.quality_status }}" href="{{ source.base_url }}" target="_blank" rel="noopener" title="{{ source.notes }}">
+                  <span>{{ source.name }}</span>
+                  <strong>{{ source.quality_label }}</strong>
+                </a>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+        <div class="auction-v2-source-group source-group-market">
+          <div class="auction-v2-source-group-head">
+            <strong>Рынок для оценки цены</strong>
+            <span>не источники аукционов, только ручное сравнение цены похожих участков</span>
+          </div>
+          <div class="auction-v2-source-strip">
+            {% for source in dashboard.source_cards %}
+              {% if source.source_type == "market" %}
+                <a class="auction-v2-source-pill source-{{ source.quality_status }}" href="{{ source.base_url }}" target="_blank" rel="noopener" title="{{ source.notes }}">
+                  <span>{{ source.name }}</span>
+                  <strong>{{ source.quality_label }}</strong>
+                </a>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      <a class="auction-v2-admin-link" href="/cabinet/auctions-v2/sources">Служебно: проверить работу источников</a>
+    </details>
+
+    <form id="auction-v2-filter-form" class="auction-web-form auction-v2-filter" method="get" action="/cabinet/auctions-v2" data-catalog-form="auctions">
+      <div class="auction-v2-filter-intro">
+        <strong>Отбор лотов</strong>
+        <span>Начинайте с региона/района, срока и индекса. Риск лучше не скрывать сразу: высокий риск часто означает “может быть хороший лот, но нужна ручная проверка”.</span>
+      </div>
+      <div class="auction-v2-catalog-explain">
+        <span><strong>Регионы</strong> загружаются сразу из ЕГКН и базы E-Qazyna.</span>
+        <span><strong>Районы</strong> появятся после выбора региона.</span>
+        <span><strong>Населенные пункты</strong> появятся после выбора района.</span>
+        <span><strong>Кадастр</strong> можно вводить с дефисами, двоеточиями или просто цифрами.</span>
+      </div>
+      <div class="auction-v2-catalog-flow" aria-live="polite">
+        <span class="is-loading" data-auction-catalog-step="region"><strong>1. Регион</strong><small>Загружаем список регионов</small></span>
+        <span data-auction-catalog-step="district"><strong>2. Район</strong><small>Станет доступен после региона</small></span>
+        <span data-auction-catalog-step="locality"><strong>3. Населенный пункт</strong><small>Станет доступен после района</small></span>
+      </div>
+      <label class="wide-field">Поиск по номеру лота, кадастру, названию
+        <input name="q" value="{{ filters.q }}" placeholder="Например 01005061079, 01-005-061-079 или номер лота">
+      </label>
+      <label>Список
+        <select name="lot_scope">
+          {% for value, label in lot_scope_labels.items() %}
+            <option value="{{ value }}" {% if (filters.lot_scope or "active") == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Официальный статус
+        <select name="eqazyna_status">
+          <option value="">Все статусы E-Qazyna</option>
+          {% for value, label in eqazyna_status_labels.items() %}
+            <option value="{{ value }}" {% if filters.eqazyna_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Сортировка
+        <select name="sort_by">
+          {% for value, label in sort_labels.items() %}
+            <option value="{{ value }}" {% if (filters.sort_by or "best") == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Регион
+        <select id="auction-region" name="region" data-selected="{{ filters.region }}">
+          <option value="">Загрузка регионов...</option>
+        </select>
+      </label>
+      <label>Район
+        <select id="auction-district" name="district" data-selected="{{ filters.district }}" disabled>
+          <option value="">Сначала выберите регион</option>
+        </select>
+      </label>
+      <label>Населенный пункт
+        <select id="auction-locality" name="locality" data-selected="{{ filters.locality }}" disabled>
+          <option value="">Сначала выберите район</option>
+        </select>
+      </label>
+      <label>Назначение
+        <select id="auction-purpose" name="purpose" data-selected="{{ filters.purpose }}">
+          <option value="">Все назначения</option>
+        </select>
+      </label>
+      <label>Цена от <input name="min_price_kzt" value="{{ filters.min_price_kzt }}" inputmode="decimal"></label>
+      <label>Цена до <input name="max_price_kzt" value="{{ filters.max_price_kzt }}" inputmode="decimal"></label>
+      <label>Площадь от, га <input name="min_area_ha" value="{{ filters.min_area_ha }}" inputmode="decimal"></label>
+      <label>Площадь до, га <input name="max_area_ha" value="{{ filters.max_area_ha }}" inputmode="decimal"></label>
+      <label>Индекс от <input name="min_score" value="{{ filters.min_score }}" inputmode="numeric"></label>
+      <label>Риск
+        <select name="risk_level">
+          <option value="">Любой</option>
+          {% for value, label in risk_labels.items() %}
+            {% if value != "unknown" %}
+              <option value="{{ value }}" {% if filters.risk_level == value %}selected{% endif %}>{{ label }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <label>Полнота данных
+        <select name="confidence_level">
+          <option value="">Любая</option>
+          {% for value, label in confidence_labels.items() %}
+            <option value="{{ value }}" {% if filters.confidence_level == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Рабочий статус
+        <select name="stage">
+          <option value="">Все</option>
+          {% for item in stage_options %}
+            <option value="{{ item.value }}" {% if filters.stage == item.value %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Срок
+        <select name="deadline_status">
+          <option value="">Все сроки</option>
+          {% for value, label in deadline_labels.items() %}
+            <option value="{{ value }}" {% if filters.deadline_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Координаты и окружение
+        <select name="geo_status">
+          <option value="">Все гео-статусы</option>
+          {% for value, label in geo_status_labels.items() %}
+            <option value="{{ value }}" {% if filters.geo_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="catalog-note" id="auction-catalog-status" aria-live="polite">Справочники аукционов загружаются из ЕГКН и базы E-Qazyna.</div>
+      <button class="secondary-action compact catalog-retry" type="button" data-catalog-retry="auctions" hidden>Повторить загрузку справочников</button>
+      <button class="primary-action" type="submit">Отобрать</button>
+      <a class="secondary-action compact" href="/cabinet/auctions-v2">Сбросить</a>
+    </form>
+
+    <section class="panel-modern auction-v2-list-panel">
+      <div class="panel-head">
+        <h2>Лоты: {{ total }}</h2>
+        <span>страница {{ page }} · показано {{ lots|length }} из {{ total }}</span>
+      </div>
+      <div class="auction-v2-legend">
+        <span><strong>Индекс</strong> — насколько лот интересен. Чем выше, тем раньше смотреть.</span>
+        <span><strong>Риск</strong> — сколько ручной проверки нужно до участия. Высокий риск не равен “плохой лот”.</span>
+        <span><strong>Полнота данных</strong> — насколько система уже собрала документы, кадастр, координаты и источники.</span>
+      </div>
+      <div class="auction-v2-market-note">
+        <strong>Рынок отдельно:</strong>
+        <span>Krisha и OLX не являются источниками аукционов. Их ссылки нужны только для ручного сравнения цены похожих участков.</span>
+        <a href="https://krisha.kz/prodazha/uchastkov/kazaxstan/" target="_blank" rel="noopener">Krisha: рыночные аналоги</a>
+        <a href="https://www.olx.kz/nedvizhimost/zemlya/prodazha/" target="_blank" rel="noopener">OLX: рыночные аналоги</a>
+      </div>
+      <div class="auction-v2-list">
+        {% for item in lots %}
+          {% set lot = item.lot %}
+          {% set analysis = item.analysis %}
+          {% set next_action = item.next_actions[0] if item.next_actions else none %}
+          <article class="auction-v2-card risk-{{ analysis.risk_level }}">
+            <div class="auction-v2-score">
+              <strong>{{ analysis.score }}</strong>
+              <span>/100</span>
+            </div>
+            <div class="auction-v2-card-main">
+              <div class="auction-v2-card-top">
+                <span class="auction-v2-badge risk-{{ analysis.risk_level }}" title="Сколько ручной проверки нужно до официальной заявки.">Риск: {{ item.risk_label|lower }}</span>
+                <span class="auction-v2-badge confidence-{{ analysis.confidence_level }}" title="Насколько полно собраны документы, кадастр, координаты и источники." aria-label="Уверенность: {{ item.confidence_label }}">Данные: {{ item.confidence_label|lower }} полнота</span>
+                <span class="auction-v2-badge deadline-{{ item.deadline_status }}">{{ item.deadline_label }}</span>
+                <span class="auction-v2-badge eqazyna-status" title="{{ item.eqazyna_status_note }}">E-Qazyna: {{ item.eqazyna_status_label }}</span>
+                <span class="auction-v2-badge scope-{{ item.lot_scope }}" title="В какой рабочий список v2 попадает лот.">Список: {{ item.lot_scope_label|lower }}</span>
+                {% if item.stage_label %}
+                  <span class="auction-v2-badge stage">{{ item.stage_label }}</span>
+                {% endif %}
+              </div>
+              <h3><a href="/cabinet/auctions-v2/{{ lot.id }}">{{ lot.title }}</a></h3>
+              <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
+              <div class="auction-v2-source-row">
+                {% for source in item.source_statuses[:5] %}
+                  {% if source.code not in ["krisha_land_market", "olx_land_market"] %}
+                    {% if source.url %}
+                      <a class="source-status status-{{ source.status }}" href="{{ source.url }}" target="_blank" rel="noopener" title="{{ source.detail }}">{{ source.name }} · {{ source.label }}</a>
+                    {% else %}
+                      <span class="source-status status-{{ source.status }}" title="{{ source.detail }}">{{ source.name }} · {{ source.label }}</span>
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+              </div>
+              <div class="auction-v2-process-mini">
+                <div>
+                  <span>Процесс до участия</span>
+                  <strong>{{ item.manual_process_counts.required_done }}/{{ item.manual_process_counts.required }} закрыто</strong>
+                </div>
+                <div>
+                  <span>Проверить руками</span>
+                  <strong>{{ item.manual_process_counts.required_open }}</strong>
+                </div>
+                <div>
+                  <span>Не найдено</span>
+                  <strong>{{ item.manual_process_counts.required_missing }}</strong>
+                </div>
+                <div>
+                  <span>Рынок</span>
+                  <strong>только для цены</strong>
+                </div>
+                <div>
+                  <span>Статус E-Qazyna</span>
+                  <strong>{{ item.eqazyna_status_label }}</strong>
+                </div>
+              </div>
+              <div class="auction-v2-process-mini-open">
+                {% set shown_process = namespace(value=0) %}
+                {% for row in item.manual_process %}
+                  {% if row.required and row.status != "done" and shown_process.value < 3 %}
+                    <a class="process-{{ row.status }}" href="/cabinet/auctions-v2/{{ lot.id }}{{ row.anchor or '#auction-v2-review-board' }}">
+                      <span>{{ row.status_label }}</span>
+                      <strong>{{ row.site }}</strong>
+                    </a>
+                    {% set shown_process.value = shown_process.value + 1 %}
+                  {% endif %}
+                {% endfor %}
+              </div>
+              <p class="auction-v2-summary">{{ analysis.summary }}</p>
+              {% if next_action %}
+                <div class="auction-v2-card-next next-{{ next_action.status }}">
+                  <span>{{ next_action.status_label }}</span>
+                  <strong>Сейчас: {{ next_action.title }}</strong>
+                  <p>{{ next_action.detail }}</p>
+                  <small>{{ next_action.reason }}</small>
+                  <div>
+                    {% if next_action.url %}
+                      <a href="{{ next_action.url }}" target="_blank" rel="noopener">{{ next_action.url_label }}</a>
+                    {% endif %}
+                    <a href="/cabinet/auctions-v2/{{ lot.id }}{% if next_action.anchor %}{{ next_action.anchor }}{% endif %}">Открыть в карточке</a>
+                  </div>
+                </div>
+              {% endif %}
+            </div>
+            <div class="auction-v2-card-side">
+              <span>Старт</span>
+              <strong>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong>
+              <span>Торги</span>
+              <strong>{{ item.deadline_label }}</strong>
+              <span>За сотку</span>
+              <strong>{% if analysis.price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.price_per_sotka).replace(",", " ") }} ₸{% else %}—{% endif %}</strong>
+              <span>OSM</span>
+              <strong>{{ item.osm_label }}</strong>
+              <span>Лимит</span>
+              <strong>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong>
+              <a class="primary-action compact" href="/cabinet/auctions-v2/{{ lot.id }}">Открыть проверку</a>
+            </div>
+          </article>
+        {% else %}
+          <div class="empty-state">
+            <strong>Лоты не найдены</strong>
+            {% if search_diagnostics %}
+              <div class="auction-v2-search-diagnostics reason-{{ search_diagnostics.reason }}">
+                <strong>{{ search_diagnostics.title }}</strong>
+                <span>{{ search_diagnostics.summary }}</span>
+                <div class="auction-v2-search-counts" aria-label="Совпадения по спискам">
+                  <span>Активные: <b>{{ search_diagnostics.counts.active }}</b></span>
+                  <span>Будущие: <b>{{ search_diagnostics.counts.future }}</b></span>
+                  <span>Архив: <b>{{ search_diagnostics.counts.archive }}</b></span>
+                  <span>Все: <b>{{ search_diagnostics.counts.all }}</b></span>
+                </div>
+                {% if search_diagnostics.samples %}
+                  <div class="auction-v2-search-samples">
+                    {% for sample in search_diagnostics.samples %}
+                      <a href="{{ sample.url }}">
+                        <b>{{ sample.number or sample.cadastre or "Лот" }}</b>
+                        <span>{{ sample.scope_label }} · {{ sample.region }}{% if sample.district %} · {{ sample.district }}{% endif %}</span>
+                        <em>{{ sample.title }}</em>
+                      </a>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              </div>
+            {% else %}
+              <span>
+                По текущему отбору найдено 0. В базе v2 сейчас: {{ dashboard.lots_total }} всего, {{ dashboard.active_lots }} активных.
+                {% if filters.q %}
+                  По запросу “{{ filters.q }}” лота в v2 пока нет. Если это кадастровый номер, его можно вводить с дефисами, двоеточиями или просто цифрами.
+                {% else %}
+                  Попробуйте расширить регион/район, включить архив или обновить E-Qazyna.
+                {% endif %}
+              </span>
+            {% endif %}
+            {% if dashboard.empty_diagnostics %}
+              {% set empty_diag = dashboard.empty_diagnostics %}
+              <div class="auction-v2-empty-diagnostics severity-{{ empty_diag.severity }}">
+                <strong>{{ empty_diag.reason_label }}</strong>
+                <span>{{ empty_diag.summary }}</span>
+                {% if empty_diag.last_error %}
+                  <em>{{ empty_diag.last_error }}</em>
+                {% endif %}
+                {% if empty_diag.steps %}
+                  <ul>
+                    {% for step in empty_diag.steps %}
+                      <li>{{ step }}</li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+              </div>
+            {% endif %}
+            <div class="empty-actions">
+              <a class="secondary-action compact" href="/cabinet/auctions-v2">Сбросить фильтр</a>
+              {% if filters.q and clear_search_filter_query %}
+                <a class="secondary-action compact" href="/cabinet/auctions-v2{% if clear_search_filter_query %}?{{ clear_search_filter_query }}{% endif %}">Убрать только поиск</a>
+              {% endif %}
+              {% if filters.q and active_lots_filter_query is defined %}
+                <a class="secondary-action compact" href="/cabinet/auctions-v2{% if active_lots_filter_query %}?{{ active_lots_filter_query }}{% endif %}">Искать в активных</a>
+              {% endif %}
+              <a class="secondary-action compact" href="/cabinet/auctions-v2{% if all_lots_filter_query %}?{{ all_lots_filter_query }}{% endif %}">{% if filters.q %}Искать этот номер во всех лотах{% else %}Показать все v2{% endif %}</a>
+              <a class="secondary-action compact" href="/cabinet/auctions-v2{% if archive_filter_query %}?{{ archive_filter_query }}{% endif %}">Проверить архив</a>
+              <a class="secondary-action compact" href="/cabinet/auctions-v2/sources">Проверить источники</a>
+              <button form="auction-v2-filter-form" class="primary-action compact" type="submit">Проверить снова</button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      {% if has_previous_page or has_next_page %}
+        <div class="pagination-actions">
+          {% if has_previous_page %}
+            <a class="secondary-action compact" href="/cabinet/auctions-v2?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page - 1 }}">← Предыдущие 30</a>
+          {% endif %}
+          {% if has_next_page %}
+            <a class="primary-action compact" href="/cabinet/auctions-v2?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page + 1 }}">Следующие 30</a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/site-catalogs.js?v=20260804b" defer></script>
+{% endblock %}
+

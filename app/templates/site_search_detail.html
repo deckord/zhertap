@@ -1,0 +1,187 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Анализ {{ search.id }} — Жертап{% endblock %}
+{% block content %}
+{% set current_plan_badge = search_urban_plan_badge if search_urban_plan_badge is defined else urban_plan_badge(search.urban_plan_status) %}
+<section class="cabinet-layout" data-search-detail data-search-id="{{ search.id }}">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet/search">Новый анализ</a>
+    </div>
+    <div class="cabinet-hero search-live-hero">
+      <div>
+        <span class="eyebrow">Анализ территории</span>
+        <h1>{{ search.region_label or search.region }} · {{ search.district_label or search.district }}</h1>
+        <p id="search-status-line">{{ search.status }} · прогресс {{ search.progress }}%</p>
+      </div>
+      <a class="secondary-action" href="/cabinet/search">Начать новый анализ</a>
+    </div>
+
+    <section class="panel-modern search-progress-panel" id="search-progress-panel">
+      <div class="live-status-row">
+        <div class="live-spinner" aria-hidden="true"></div>
+        <div>
+          <strong id="search-status-label">{{ "Выполняется анализ" if search.status in ["queued", "processing", "review"] else search.status }}</strong>
+          <p id="search-status-message">
+            {% if search.status in ["queued", "processing", "review"] %}
+              Система выполняет многоэтапную проверку территории. Результаты появятся здесь автоматически, страницу обновлять не нужно.
+            {% elif search.error_message %}
+              {{ search.error_message }}
+            {% elif displayed_candidates %}
+              Готово: найдено подходящих мест {{ displayed_candidates|length }}.
+            {% else %}
+              Статус анализа обновляется.
+            {% endif %}
+          </p>
+        </div>
+      </div>
+      <div class="progress-track" aria-label="Прогресс анализа">
+        <span id="search-progress-bar" style="width: {{ search.progress or 0 }}%"></span>
+      </div>
+      <div class="progress-meta">
+        <span id="search-progress-value">{{ search.progress or 0 }}%</span>
+        <span id="search-updated-at">обновляется автоматически</span>
+      </div>
+      <div class="analysis-stage-list" id="analysis-stage-list" aria-label="Этапы анализа">
+        <span data-stage-min="0">Заявка поставлена в очередь</span>
+        <span data-stage-min="15">Загружаем открытые данные</span>
+        <span data-stage-min="35">Ищем расчетные зоны</span>
+        <span data-stage-min="55">Исключаем явные пересечения</span>
+        <span data-stage-min="75">Проверяем ограничения</span>
+        <span data-stage-min="95">Формируем отчет</span>
+      </div>
+    </section>
+
+    {% if search_explanation %}
+      <section class="panel-modern search-explanation-panel" id="search-explanation-panel">
+        <div class="panel-head">
+          <h2 id="search-explanation-title">{{ search_explanation.title }}</h2>
+          <span>разбор результата</span>
+        </div>
+        <p id="search-explanation-body">{{ search_explanation.body }}</p>
+        <div class="locked-preview-note">
+          <strong id="search-explanation-next-title">{{ search_explanation.next_step_title }}:</strong>
+          <span id="search-explanation-next">{{ search_explanation.next_step }}</span>
+        </div>
+      </section>
+    {% else %}
+      <section class="panel-modern search-explanation-panel is-hidden" id="search-explanation-panel">
+        <div class="panel-head">
+          <h2 id="search-explanation-title"></h2>
+          <span>разбор результата</span>
+        </div>
+        <p id="search-explanation-body"></p>
+        <div class="locked-preview-note">
+          <strong id="search-explanation-next-title"></strong>
+          <span id="search-explanation-next"></span>
+        </div>
+      </section>
+    {% endif %}
+    <div class="cards-3 analysis-summary-cards">
+      <article><h3>Цель анализа</h3><p>{{ search.purpose }} · {{ "%.2f"|format(search.area_ha) }} га</p></article>
+      <article>
+        <h3>Градостроительная проверка</h3>
+        <div id="urban-plan-status-card" class="genplan-status-card genplan-status-{{ current_plan_badge.tone }}">
+          <span id="urban-plan-status-title">{{ current_plan_badge.title }}</span>
+          <strong id="urban-plan-status-short">{{ current_plan_badge.short }}</strong>
+          <p id="urban-plan-status">{{ current_plan_badge.detail }}{% if search.urban_plan_message %} {{ search.urban_plan_message }}{% endif %}</p>
+        </div>
+        <a id="genplan-reference-link" class="genplan-action-button" href="{{ genplan_reference.url }}" target="_blank" rel="noopener">{{ genplan_reference.action_text }}</a>
+      </article>
+      <article><h3>Доступ к отчету</h3><p id="payment-status">{{ search.payment_status }}</p></article>
+    </div>
+
+    <section class="panel-modern report-included-panel">
+      <div class="panel-head">
+        <h2>Что проверяется в полном отчете</h2>
+        <span>предварительный анализ</span>
+      </div>
+      <div class="report-points">
+        <span>Координаты и карта</span>
+        <span>Расчетная площадь</span>
+        <span>Соседний кадастровый ориентир</span>
+        <span>Расстояние до дороги</span>
+        <span>Статус генплана/ПДП</span>
+        <span>Оценка перспективности</span>
+      </div>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head search-results-head">
+        <div>
+          <h2>Результаты анализа</h2>
+          <span>Пакет {{ search.batch_number }} · показано <b id="candidate-count">{{ displayed_candidates|length }}</b></span>
+        </div>
+        <form id="next-batch-form" class="next-batch-form {% if not can_request_next_batch %}is-hidden{% endif %}" method="post" action="/cabinet/searches/{{ search.id }}/next">
+          <button class="primary-action compact" type="submit">Найти следующие 10</button>
+        </form>
+      </div>
+      {% if next_error == "no_more" %}
+        <div class="form-alert neutral">По этой территории новые варианты больше не найдены. Уже показанные координаты не повторялись.</div>
+      {% elif next_error == "access" %}
+        <div class="form-alert">Для следующих пакетов нужен активный доступ.</div>
+      {% endif %}
+      {% if not search_unlocked %}
+        <div class="locked-preview-note">
+          Показаны предварительные варианты. Координаты, карта, кадастровый ориентир и ЕГКН откроются после оплаты полного доступа.
+        </div>
+      {% endif %}
+      <div class="simple-list candidate-live-list" id="candidate-list">
+        {% for candidate in displayed_candidates %}
+          <article class="candidate-live-card">
+            <div>
+              <strong>#{{ candidate.rank }} · {{ candidate.locality or "Населенный пункт не указан" }}</strong>
+              <span>
+                Перспективность {{ "%.0f"|format(candidate.score) }}/100
+                {% if search_unlocked %}
+                  · {{ "%.6f"|format(candidate.latitude) }}, {{ "%.6f"|format(candidate.longitude) }}
+                {% else %}
+                  · координаты скрыты до оплаты
+                {% endif %}
+              </span>
+              <dl class="candidate-live-facts">
+                <div><dt>Кадастровый ориентир</dt><dd>{{ candidate.nearby_cadastre if search_unlocked and candidate.nearby_cadastre else ("скрыт до оплаты" if not search_unlocked else "нет данных") }}</dd></div>
+                <div><dt>До соседнего участка</dt><dd>{% if candidate.nearby_distance_m is not none %}{{ "%.0f"|format(candidate.nearby_distance_m) }} м{% else %}нет данных{% endif %}</dd></div>
+                <div><dt>Дорога</dt><dd>{% if candidate.road_distance_m is not none %}{{ "%.0f"|format(candidate.road_distance_m) }} м{% else %}нет данных{% endif %}</dd></div>
+                {% set candidate_plan = urban_plan_badge(candidate.urban_plan_status) %}
+                <div>
+                  <dt>Генплан/ПДП</dt>
+                  <dd><span class="genplan-mini-badge genplan-status-{{ candidate_plan.tone }}">{{ candidate_plan.short }}</span></dd>
+                </div>
+              </dl>
+              <p>Оценка показывает приоритет для ручной проверки и не является гарантией выдачи участка.</p>
+            </div>
+            <div class="candidate-live-actions">
+              {% if search_unlocked %}
+                <a href="{{ candidate.google_maps_url }}" target="_blank" rel="noopener">Открыть карту</a>
+                <a href="{{ candidate.egkn_url }}" target="_blank" rel="noopener">Проверить ЕГКН</a>
+              {% else %}
+                <button class="locked-action" type="button" disabled>Карта после оплаты</button>
+                <button class="locked-action" type="button" disabled>ЕГКН после оплаты</button>
+              {% endif %}
+            </div>
+          </article>
+        {% else %}
+          <div class="empty-live-state" id="candidate-empty">
+            {% if search.status in ["queued", "processing", "review"] %}
+              <strong>Результаты еще не появились</strong>
+              <span>Когда worker завершит проверку, найденные места появятся здесь автоматически без обновления страницы.</span>
+            {% elif search.urban_plan_status == "blocked" %}
+              <strong>Подходящих мест по генплану не осталось</strong>
+              <span>Кадастровая карта дала предварительные промежутки, но подключенный генплан/ПДП не подтвердил их для выбранной цели. Эти места не показываем как варианты для подачи.</span>
+            {% else %}
+              <strong>Подходящие места не найдены</strong>
+              <span>Попробуйте другой населенный пункт, район или цель анализа.</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/site-search-status.js?v=20260804a" defer></script>
+{% endblock %}
+

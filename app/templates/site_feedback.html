@@ -1,0 +1,61 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Обратная связь - Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet">← В кабинет</a>
+    </div>
+    <div class="section-title">
+      <span>Обратная связь</span>
+      <h1>Написать команде Жертап</h1>
+      <p>Сообщите, что не сработало, какой раздел был непонятен или какую функцию стоит добавить.</p>
+    </div>
+
+    {% if sent %}
+      <div class="form-alert neutral">Сообщение отправлено. Ответ появится в этом диалоге или придет в Telegram.</div>
+    {% endif %}
+    {% if feedback_error %}
+      <div class="form-alert">Напишите текст сообщения перед отправкой.</div>
+    {% endif %}
+
+    <section class="panel-modern feedback-compose-panel">
+      <div class="panel-head"><h2>Новое сообщение</h2><span>Обычно достаточно 2-3 предложений</span></div>
+      <form class="feedback-compose-form" method="post" action="/cabinet/feedback">
+        <label>Ваше сообщение
+          <textarea name="message" rows="5" maxlength="5000" required placeholder="Например: искал участок в Косшы, поиск завис / не понял оплату / нужен фильтр по району..."></textarea>
+        </label>
+        <div class="feedback-compose-aside">
+          <strong>Чтобы быстрее разобраться</strong>
+          <span>Укажите район, тип поиска, номер заявки или ссылку на лот, если вопрос по конкретному результату.</span>
+          <button class="primary-action compact" type="submit">Отправить</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>История</h2><span>{{ conversation.messages|length }}</span></div>
+      <div class="feedback-thread">
+        {% for item in conversation.messages[-20:] %}
+          <article class="feedback-bubble {{ item.sender_type }}">
+            <div>
+              <strong>
+                {% if item.sender_type == "client" %}Вы{% elif item.sender_type == "admin" %}Админ{% else %}Жертап{% endif %}
+              </strong>
+              <span>{{ item.created_at.strftime("%d.%m.%Y %H:%M") }}</span>
+            </div>
+            <p>{{ item.text }}</p>
+            {% if item.delivery_status == "failed" %}
+              <small>Не удалось доставить в Telegram: {{ item.error_message }}</small>
+            {% endif %}
+          </article>
+        {% else %}
+          <div class="empty-state">Сообщений пока нет.</div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+

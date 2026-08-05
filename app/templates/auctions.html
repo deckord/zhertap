@@ -1,0 +1,113 @@
+﻿{% extends "base.html" %}
+{% block title %}Аукционы · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Земельные аукционы</h1>
+    <p>Публичные лоты E-Qazyna. Ссылка на первоисточник сохраняется для каждого лота.</p>
+  </div>
+  <form action="/admin/auctions/sync" method="post">
+    <button type="submit" class="primary">Обновить E-Qazyna</button>
+  </form>
+</section>
+
+<section class="auction-metrics">
+  <div><span>Всего лотов</span><strong>{{ stats.total }}</strong></div>
+  <div><span>Активных</span><strong>{{ stats.active }}</strong></div>
+  <div><span>В избранном</span><strong>{{ stats.favorites }}</strong></div>
+  <div><span>Подписок</span><strong>{{ stats.subscriptions }}</strong></div>
+  <div><span>Оплаченных доступов</span><strong>{{ stats.paid_access }}</strong></div>
+  <div><span>Последнее обновление</span><strong>{{ stats.last_sync.strftime('%d.%m.%Y %H:%M') if stats.last_sync else 'еще не выполнялось' }}</strong></div>
+</section>
+
+<section class="analytics-grid auction-summary">
+  <div class="panel analytics-panel">
+    <h2>Области</h2>
+    <table>
+      <tbody>
+      {% for row in region_stats %}
+        <tr>
+          <td>{{ row.region }}<small>активных: {{ row.active }}</small></td>
+          <td>{{ row.total }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="2" class="empty">Статистика появится после загрузки лотов.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel analytics-panel">
+    <h2>Категории</h2>
+    <table>
+      <tbody>
+      {% for row in category_stats %}
+        <tr>
+          <td>{{ row.category }}<small>активных: {{ row.active }}</small></td>
+          <td>{{ row.total }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="2" class="empty">Категории появятся после загрузки лотов.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel form-panel">
+  <form action="/admin/auctions" method="get" class="auction-filter-form">
+    <label>Область
+      <select name="region">
+        <option value="">Все области</option>
+        {% for item in regions %}
+        <option value="{{ item }}" {% if item == selected_region %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Статус
+      <select name="status">
+        <option value="">Все статусы</option>
+        {% for item in statuses %}
+        <option value="{{ item }}" {% if item == selected_status %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Применить</button>
+    <a class="button-link" href="/admin/auctions/export.csv?region={{ selected_region }}&status={{ selected_status }}">CSV экспорт</a>
+  </form>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Лот</th>
+        <th>Регион</th>
+        <th>Площадь</th>
+        <th>Стартовая цена</th>
+        <th>Торги</th>
+        <th>Статус</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lot in lots %}
+      <tr>
+        <td>
+          <a href="/admin/auctions/{{ lot.id }}"><strong>№{{ lot.auction_number or lot.source_lot_id }}</strong></a><br>
+          <span class="muted auction-title">{{ lot.purpose or lot.title }}</span>
+        </td>
+        <td>{{ lot.region or '—' }}<br><span class="muted">{{ lot.district or '' }}</span></td>
+        <td>{{ ('%.4f'|format(lot.area_ha)).rstrip('0').rstrip('.') if lot.area_ha is not none else '—' }} га</td>
+        <td>{{ '{:,.0f}'.format(lot.start_price_kzt).replace(',', ' ') if lot.start_price_kzt is not none else '—' }} ₸</td>
+        <td>{{ lot.auction_starts_at.strftime('%d.%m.%Y %H:%M') if lot.auction_starts_at else '—' }}</td>
+        <td><span class="status {% if lot.active %}status-ready{% endif %}">{{ lot.status or 'не указан' }}</span></td>
+        <td><a class="button-link" href="{{ lot.source_url }}" target="_blank" rel="noopener">E-Qazyna ↗</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">Лоты еще не загружены. Нажмите «Обновить E-Qazyna».</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+

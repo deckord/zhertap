@@ -1,0 +1,94 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Анализ территории — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet/auctions">Анализ аукционов</a>
+      <a class="back-link" href="/cabinet/help">Как пользоваться</a>
+    </div>
+
+    <div class="cabinet-hero analysis-form-hero">
+      <div>
+        <span class="eyebrow">Анализ территории</span>
+        <h1>Запустите многоэтапную проверку района</h1>
+        <p>Система найдет расчетные зоны, проверит очевидные пересечения и подготовит список вариантов для дальнейшей проверки в официальных источниках.</p>
+      </div>
+      <div class="mini-process">
+        <span>ЕГКН</span>
+        <span>Промежутки</span>
+        <span>Фильтры</span>
+        <span>Отчет</span>
+      </div>
+    </div>
+
+    {% if not account.telegram_user_id %}
+      <div class="form-alert neutral">Привяжите Telegram, чтобы получать результат и уведомления там же. Веб-страница заявки обновляется автоматически и без Telegram.</div>
+    {% endif %}
+
+    <section class="panel-modern analysis-form-panel">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">Параметры</span>
+          <h2>Что анализировать</h2>
+        </div>
+        <span class="muted-modern">Справочники загружаются из базы</span>
+      </div>
+      <form class="modern-form" method="post" action="/cabinet/search" data-catalog-form="search">
+        <label>Цель анализа
+          <select id="search-purpose" name="purpose">
+            <option value="ЛПХ(новый поиск)">ЛПХ, новый поиск</option>
+            <option value="Садоводство">Садоводство</option>
+            <option value="ЛПХ">ЛПХ 10 соток, если включено</option>
+          </select>
+        </label>
+        <label id="search-irrigation-field">Расчетная площадь для ЛПХ
+          <select id="search-irrigation" name="irrigation_type">
+            <option value="non_irrigated">Неорошаемая земля · 25 соток</option>
+            <option value="irrigated">Орошаемая земля · 15 соток</option>
+          </select>
+        </label>
+        <label id="search-gardening-area-field" class="is-hidden">Расчетная площадь для садоводства
+          <select id="search-gardening-area" name="area_ha" disabled>
+            <option value="0.12">12 соток · максимальная норма</option>
+            <option value="0.06">6 соток · мягкий поиск</option>
+          </select>
+        </label>
+        <div id="search-fixed-area-note" class="catalog-note is-hidden" aria-live="polite"></div>
+        <label>Область
+          <select id="search-region" name="region" required>
+            <option value="">Загрузка областей...</option>
+          </select>
+        </label>
+        <label>Район
+          <select id="search-district" name="district" required disabled>
+            <option value="">Сначала выберите область</option>
+          </select>
+        </label>
+        <label>Населенный пункт
+          <select id="search-locality" name="locality" disabled>
+            <option value="">Сначала выберите район</option>
+          </select>
+        </label>
+        <div class="catalog-note" id="search-catalog-status" aria-live="polite">Справочники загружаются из ЕГКН.</div>
+        <button class="secondary-action compact catalog-retry" type="button" data-catalog-retry="search" hidden>Повторить загрузку справочников</button>
+        <button id="search-submit" class="primary-action" type="submit" disabled>Начать анализ территории</button>
+      </form>
+    </section>
+
+    <section class="analysis-checklist">
+      <article><b>01</b><span>Загрузка кадастровых контуров</span></article>
+      <article><b>02</b><span>Поиск промежутков между участками</span></article>
+      <article><b>03</b><span>Исключение дорог и явных пересечений</span></article>
+      <article><b>04</b><span>Проверка площади и пригодности</span></article>
+      <article><b>05</b><span>Формирование полного отчета</span></article>
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/site-catalogs.js?v=20260804b" defer></script>
+{% endblock %}
+

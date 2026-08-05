@@ -1,0 +1,677 @@
+﻿{% extends "base.html" %}
+{% block title %}Генпланы и ПДП · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Официальные градостроительные слои</h1>
+    <p>Загруженный GeoJSON остается черновиком до подтверждения официального источника, SHA-256 и независимого QA.</p>
+  </div>
+  <span class="status {% if strict_mode %}status-delivered{% else %}status-failed{% endif %}">{{ 'строгий режим' if strict_mode else 'проверка отключена' }}</span>
+</section>
+
+<section class="panel form-panel" id="sources">
+  <div class="section-head compact-head">
+    <div>
+      <h2>Реестр источников генпланов</h2>
+      <p>Сначала собираем официальные источники. В поиск клиента попадают только слои, которые прошли импорт, проверку территории и QA.</p>
+    </div>
+    <div class="action-row">
+      <form action="/admin/urban-plan-sources/sync-ggk" method="post">
+        <button class="primary" type="submit">Синхронизировать ГГК</button>
+      </form>
+      <form action="/admin/urban-plan-sources/sync-smart-geohub" method="post">
+        <button type="submit">Синхронизировать Smart GeoHub</button>
+      </form>
+      <form action="/admin/urban-plan-sources/probe-smart-geohub" method="post">
+        <button type="submit">Проверить геометрию GeoHub</button>
+      </form>
+    </div>
+  </div>
+  {% if source_stats %}
+  <div class="stats-grid compact-stats">
+    {% for platform, status, count in source_stats %}
+    <div class="stat-card">
+      <span>{{ platform }}</span>
+      <strong>{{ count }}</strong>
+      <small>{{ status }}</small>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('ggk_seen') %}
+  <div class="notice">
+    Каталог ГГК обновлен: найдено {{ request.query_params.get('ggk_seen') }},
+    новых {{ request.query_params.get('ggk_created') }},
+    обновлено {{ request.query_params.get('ggk_updated') }}.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('smart_seen') %}
+  <div class="notice">
+    Каталоги Smart GeoHub обновлены: найдено коллекций {{ request.query_params.get('smart_seen') }},
+    новых {{ request.query_params.get('smart_created') }},
+    обновлено {{ request.query_params.get('smart_updated') }},
+    порталов с ошибкой {{ request.query_params.get('smart_failed') }}.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('probe_checked') %}
+  <div class="notice">
+    Геометрия Smart GeoHub проверена: источников {{ request.query_params.get('probe_checked') }},
+    с геометрией {{ request.query_params.get('probe_geometry') }},
+    пустых {{ request.query_params.get('probe_empty') }},
+    ошибок {{ request.query_params.get('probe_failed') }},
+    пропущено {{ request.query_params.get('probe_skipped') }}.
+  </div>
+  {% endif %}
+  <div class="table-wrap embedded-table">
+    <table>
+      <thead>
+        <tr>
+          <th>Источник</th>
+          <th>Территория</th>
+          <th>Документ</th>
+          <th>Статус</th>
+          <th>Следующий шаг</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in sources %}
+        <tr>
+          <td>
+            <strong>{{ item.platform }}</strong><br>
+            <span class="muted">ID {{ item.external_id }} · {{ item.source_type }}</span>
+          </td>
+          <td>
+            <strong>{{ item.locality or 'территория не распознана' }}</strong><br>
+            <span class="muted">{{ item.region or 'регион уточняется' }}{% if item.district %} · {{ item.district }}{% endif %}</span>
+          </td>
+          <td>
+            {{ item.title }}<br>
+            <span class="muted">{{ item.approval_document or 'акт не указан' }}{% if item.approval_date %} · {{ item.approval_date }}{% endif %}</span>
+          </td>
+          <td>
+            <span class="status {{ 'status-delivered' if item.coverage_status == 'digital_found' else 'status-failed' }}">{{ item.coverage_status }}</span>
+            <br><span class="muted">импорт: {{ item.import_status }}{% if item.layer_count %} · объектов: {{ item.layer_count }}{% endif %}</span>
+            {% if item.last_error %}<br><span class="muted">ошибка: {{ item.last_error[:120] }}</span>{% endif %}
+          </td>
+          <td>
+            {% if item.platform == 'ggk_wfs' and item.coverage_status == 'digital_found' %}
+            <span class="muted">Собрать релиз из ГГК, проверить зоны и импортировать GeoJSON.</span>
+            {% elif item.platform == 'smart_geohub' %}
+            <span class="muted">Разобрать коллекцию, проверить покрытие территории и карту соответствия зон.</span>
+            {% else %}
+            <span class="muted">{{ item.notes or 'Требуется ручная проверка источника.' }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="empty">Реестр пуст. Нажмите синхронизацию ГГК, чтобы получить список официальных цифровых генпланов.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel form-panel" id="genplan-pipeline">
+  <div class="section-head compact-head">
+    <div>
+      <h2>PDF-конвейер генпланов</h2>
+      <p>Здесь документы из загруженного архива один раз ставятся в обработку: PDF определяется как векторный или растровый, многостраничные файлы уходят на выбор листа.</p>
+    </div>
+    <form action="/admin/genplan-pipeline/sync-manual" method="post" class="action-row">
+      <input type="hidden" name="limit" value="200">
+      <button class="primary" type="submit">Синхронизировать PDF-конвейер</button>
+    </form>
+    <form action="/admin/genplan-pipeline/extract-next-legend" method="post" class="action-row">
+      <input type="hidden" name="limit_colors" value="12">
+      <button type="submit">Разобрать следующий документ</button>
+    </form>
+  </div>
+  {% if request.query_params.get('pipeline_seen') %}
+  <div class="notice">
+    PDF-конвейер обновлен: просмотрено {{ request.query_params.get('pipeline_seen') }},
+    новых {{ request.query_params.get('pipeline_created') }},
+    обновлено {{ request.query_params.get('pipeline_updated') }},
+    PDF {{ request.query_params.get('pipeline_pdf') }},
+    растровых файлов {{ request.query_params.get('pipeline_raster') }},
+    файлов не найдено {{ request.query_params.get('pipeline_missing') }},
+    ошибок {{ request.query_params.get('pipeline_failed') }}.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('legend_doc') %}
+  <div class="notice">
+    Разбор документа: {{ request.query_params.get('legend_file') or 'документ не найден' }}.
+    Цветов создано: {{ request.query_params.get('legend_colors') }}.
+    Статус: {{ request.query_params.get('legend_status') or 'очередь пуста' }}.
+    {{ request.query_params.get('legend_message') }}
+  </div>
+  {% endif %}
+  <div class="stats-grid compact-stats">
+    <div class="stat-card">
+      <span>документов</span>
+      <strong>{{ pipeline_stats.total }}</strong>
+      <small>в конвейере</small>
+    </div>
+    <div class="stat-card">
+      <span>векторный путь</span>
+      <strong>{{ pipeline_stats.ready_vector }}</strong>
+      <small>извлечь линии/заливки</small>
+    </div>
+    <div class="stat-card">
+      <span>растровый путь</span>
+      <strong>{{ pipeline_stats.ready_raster }}</strong>
+      <small>легенда и цвета</small>
+    </div>
+    <div class="stat-card">
+      <span>выбор страницы</span>
+      <strong>{{ pipeline_stats.needs_page }}</strong>
+      <small>многостраничные PDF</small>
+    </div>
+    <div class="stat-card">
+      <span>черновая легенда</span>
+      <strong>{{ pipeline_stats.legend_draft }}</strong>
+      <small>документы ждут проверки цветов</small>
+    </div>
+    <div class="stat-card">
+      <span>цветов</span>
+      <strong>{{ legend_stats.total }}</strong>
+      <small>{{ legend_stats.needs_review }} ждут проверки</small>
+    </div>
+    <div class="stat-card">
+      <span>проблемные</span>
+      <strong>{{ pipeline_stats.needs_review + pipeline_stats.missing }}</strong>
+      <small>проверить источник</small>
+    </div>
+  </div>
+  <div class="table-wrap embedded-table">
+    <table>
+      <thead>
+        <tr>
+          <th>Документ</th>
+          <th>Территория</th>
+          <th>Тип</th>
+          <th>Статус</th>
+          <th>Следующий шаг</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in pipeline_documents %}
+        <tr>
+          <td>
+            <strong>{{ item.filename }}</strong><br>
+            <span class="muted">SHA {{ item.source_sha256[:10] if item.source_sha256 else 'нет файла' }} · {{ item.file_size_bytes }} байт</span>
+          </td>
+          <td>
+            <strong>{{ item.locality or item.district or item.region or 'территория не указана' }}</strong><br>
+            <span class="muted">{{ item.region }}{% if item.district %} · {{ item.district }}{% endif %}</span>
+          </td>
+          <td>
+            {{ item.detected_format }}{% if item.page_count %} · {{ item.page_count }} стр.{% endif %}<br>
+            <span class="muted">{{ item.pdf_route or 'источник' }}{% if item.image_count %} · картинок {{ item.image_count }}{% endif %}{% if item.vector_object_count %} · векторов {{ item.vector_object_count }}{% endif %}</span>
+          </td>
+          <td>
+            <span class="status {{ 'status-delivered' if item.pipeline_status in ['ready_for_vector_extraction', 'ready_for_legend_extraction', 'legend_draft_ready'] else 'status-failed' }}">{{ item.pipeline_status }}</span>
+            {% if item.confidence_score is not none %}<br><span class="muted">уверенность {{ "%.0f"|format(item.confidence_score * 100) }}%</span>{% endif %}
+            {% if item.error_message %}<br><span class="muted">{{ item.error_message[:100] }}</span>{% endif %}
+          </td>
+          <td>{{ item.next_action or 'ожидает обработки' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="empty">Конвейер пуст. Нажмите синхронизацию, чтобы поставить загруженные PDF и карты в обработку.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel form-panel" id="planning-completion">
+  <div class="section-head compact-head">
+    <div>
+      <h2>Очередь проверки всех городов</h2>
+      <p>Здесь видно, какие территории уже готовы, где есть точки для Google, а где точки еще надо создать.</p>
+    </div>
+    <form action="/admin/planning-candidates/queue-all" method="post" class="action-row">
+      <input type="hidden" name="limit_per_scope" value="5">
+      <input type="hidden" name="max_scopes" value="160">
+      <input type="hidden" name="grid_step_m" value="180">
+      <button class="primary" type="submit">Создать очередь по всем городам</button>
+    </form>
+    <form action="/admin/planning-candidates/queue-next-egkn" method="post" class="action-row">
+      <input type="hidden" name="limit_per_scope" value="2">
+      <input type="hidden" name="grid_step_m" value="180">
+      <button type="submit">Подготовить следующий город с ЕГКН</button>
+    </form>
+    <a class="button-link" href="/admin/planning-candidates/review-next">Проверять по одной точке</a>
+  </div>
+  {% if request.query_params.get('queue_scopes') %}
+  <div class="notice">
+    Очередь обновлена: территорий {{ request.query_params.get('queue_scopes') }},
+    с точками {{ request.query_params.get('queue_with_points') }},
+    новых точек {{ request.query_params.get('queue_created') }},
+    уже были {{ request.query_params.get('queue_existing') }},
+    ошибок {{ request.query_params.get('queue_failed') }}.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('smart_scope') %}
+  <div class="notice">
+    Умная очередь по одному городу:
+    {% if request.query_params.get('smart_scope') == '1' %}
+    {{ request.query_params.get('smart_region') }} · {{ request.query_params.get('smart_district') }}{% if request.query_params.get('smart_locality') %} · {{ request.query_params.get('smart_locality') }}{% endif %}.
+    Создано точек {{ request.query_params.get('smart_created') }},
+    ошибок {{ request.query_params.get('smart_failed') }}.
+    {% if request.query_params.get('smart_message') %}{{ request.query_params.get('smart_message') }}.{% endif %}
+    {% else %}
+    все территории уже подготовлены.
+    {% endif %}
+  </div>
+  {% endif %}
+  <div class="stats-grid compact-stats">
+    <div class="stat-card">
+      <span>территорий со слоями</span>
+      <strong>{{ planning_completion.total_scopes }}</strong>
+      <small>всего</small>
+    </div>
+    <div class="stat-card">
+      <span>нужно создать очередь</span>
+      <strong>{{ planning_completion.needs_queue_scopes }}</strong>
+      <small>следующий шаг</small>
+    </div>
+    <div class="stat-card">
+      <span>точек к проверке</span>
+      <strong>{{ planning_completion.queued_points }}</strong>
+      <small>Google</small>
+    </div>
+    <div class="stat-card">
+      <span>уже проверено</span>
+      <strong>{{ planning_completion.reviewed_points }}</strong>
+      <small>вручную</small>
+    </div>
+  </div>
+  <div class="table-wrap embedded-table">
+    <table>
+      <thead>
+        <tr>
+          <th>Территория</th>
+          <th>Что ищем</th>
+          <th>Слои</th>
+          <th>Точки</th>
+          <th>Следующий шаг</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in planning_completion.scopes %}
+        <tr>
+          <td>
+            <strong>{{ row.region }}</strong><br>
+            <span class="muted">{{ row.district }}{% if row.locality %} · {{ row.locality }}{% endif %}</span>
+          </td>
+          <td>{{ row.requested_use }}</td>
+          <td>
+            разрешение: {{ row.allowed_layers }}, ограничения: {{ row.restriction_layers }}<br>
+            <span class="muted">строгие: {{ row.search_layers }}, черновые: {{ row.shadow_layers }}</span>
+          </td>
+          <td>
+            к проверке: {{ row.queued_points }}<br>
+            <span class="muted">проверено: {{ row.reviewed_points }}, пусто: {{ row.empty_points }}</span>
+          </td>
+          <td>{{ row.next_action }}</td>
+          <td><a class="button-link" href="{{ row.candidate_url }}">Открыть</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="empty">Пока нет территорий со слоями генплана.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel form-panel" id="planning-check">
+  <div class="section-head compact-head">
+    <div>
+      <h2>Проверить точку по генплану</h2>
+      <p>Для Акколя включены черновые слои: они помогают проверить геометрию, но еще не включены в клиентский поиск.</p>
+    </div>
+  </div>
+  <form action="/admin/urban-plans#planning-check" method="get" class="urban-plan-form">
+    <input type="hidden" name="planning_probe" value="1">
+    <label>Область
+      <input name="planning_region" value="{{ planning_probe_defaults.region }}" required>
+    </label>
+    <label>Район
+      <input name="planning_district" value="{{ planning_probe_defaults.district }}" required>
+    </label>
+    <label>Населенный пункт
+      <input name="planning_locality" value="{{ planning_probe_defaults.locality }}">
+    </label>
+    <label>Что проверяем
+      <select name="planning_use">
+        <option value="LPH_HOMESTEAD" {% if planning_probe_defaults.requested_use == 'LPH_HOMESTEAD' %}selected{% endif %}>ЛПХ: приусадебный</option>
+        <option value="LPH_FIELD" {% if planning_probe_defaults.requested_use == 'LPH_FIELD' %}selected{% endif %}>ЛПХ: полевой</option>
+        <option value="GARDENING" {% if planning_probe_defaults.requested_use == 'GARDENING' %}selected{% endif %}>Садоводство</option>
+      </select>
+    </label>
+    <label>Широта
+      <input name="planning_lat" type="number" step="0.000001" value="{{ planning_probe_defaults.latitude }}" required>
+    </label>
+    <label>Долгота
+      <input name="planning_lon" type="number" step="0.000001" value="{{ planning_probe_defaults.longitude }}" required>
+    </label>
+    <label class="checkbox-row">
+      <input type="hidden" name="planning_shadow" value="0">
+      <input name="planning_shadow" type="checkbox" value="1" {% if planning_probe_defaults.include_shadow %}checked{% endif %}>
+      Показывать черновые слои
+    </label>
+    <button class="primary" type="submit">Проверить точку</button>
+  </form>
+  {% if planning_probe_error %}
+  <div class="notice status-failed">Не удалось проверить точку: {{ planning_probe_error }}</div>
+  {% endif %}
+  {% if planning_probe_result %}
+  <div class="notice">
+    <strong>
+      {% if planning_probe_result.coverage_status == 'AVAILABLE' %}
+      Есть проверенные слои
+      {% elif planning_probe_result.coverage_status == 'SHADOW_ONLY' %}
+      Есть только черновые слои
+      {% else %}
+      Данных по этой точке нет
+      {% endif %}
+    </strong>
+    <br>
+    Результат:
+    {% if planning_probe_result.result == 'POSSIBLE' %}
+    потенциально можно
+    {% elif planning_probe_result.result == 'BLOCKED_BY_RESTRICTION' %}
+    мешает ограничение или красная линия
+    {% elif planning_probe_result.result == 'NO_ALLOWED_ZONE' %}
+    разрешенная зона не найдена
+    {% else %}
+    нужна ручная проверка
+    {% endif %}
+    · уверенность {{ (planning_probe_result.confidence * 100)|round|int }}%.
+    {% if planning_probe_result.documents %}
+    <br>Документ: {{ planning_probe_result.documents[0].title }}
+    {% if planning_probe_result.documents[0].approval_document %} · {{ planning_probe_result.documents[0].approval_document }}{% endif %}
+    {% if planning_probe_result.documents[0].approval_date %} · {{ planning_probe_result.documents[0].approval_date }}{% endif %}
+    {% endif %}
+    {% if planning_probe_result.intersections %}
+    <br>Пересечения:
+    {% for item in planning_probe_result.intersections %}
+    {{ item.layer_type }}{% if item.zone_name %} — {{ item.zone_name }}{% endif %}{% if not loop.last %}; {% endif %}
+    {% endfor %}
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel form-panel" id="planning-candidates">
+  <div class="section-head compact-head">
+    <div>
+      <h2>Найти места внутри зоны</h2>
+      <p>Система предлагает точки внутри разрешенной зоны. Финально свободно или занято проверяем по снимку карты.</p>
+    </div>
+  </div>
+  <form action="/admin/urban-plans#planning-candidates" method="get" class="urban-plan-form">
+    <input type="hidden" name="candidate_find" value="1">
+    <label>Область
+      <input name="candidate_region" value="{{ candidate_defaults.region }}" required>
+    </label>
+    <label>Район
+      <input name="candidate_district" value="{{ candidate_defaults.district }}" required>
+    </label>
+    <label>Населенный пункт
+      <input name="candidate_locality" value="{{ candidate_defaults.locality }}">
+    </label>
+    <label>Что ищем
+      <select name="candidate_use">
+        <option value="LPH_HOMESTEAD" {% if candidate_defaults.requested_use == 'LPH_HOMESTEAD' %}selected{% endif %}>ЛПХ: приусадебный</option>
+        <option value="LPH_FIELD" {% if candidate_defaults.requested_use == 'LPH_FIELD' %}selected{% endif %}>ЛПХ: полевой</option>
+        <option value="GARDENING" {% if candidate_defaults.requested_use == 'GARDENING' %}selected{% endif %}>Садоводство</option>
+      </select>
+    </label>
+    <label>Сколько точек
+      <input name="candidate_limit" type="number" min="1" max="100" value="{{ candidate_defaults.limit }}" required>
+    </label>
+    <label>Шаг сетки, м
+      <input name="candidate_step" type="number" min="30" max="500" value="{{ candidate_defaults.grid_step_m }}" required>
+    </label>
+    <input name="candidate_buffer" type="hidden" value="{{ candidate_defaults.restriction_buffer_m }}">
+    <label class="checkbox-row">
+      <input type="hidden" name="candidate_shadow" value="0">
+      <input name="candidate_shadow" type="checkbox" value="1" {% if candidate_defaults.include_shadow %}checked{% endif %}>
+      Использовать черновые слои
+    </label>
+    <label class="checkbox-row">
+      <input type="hidden" name="candidate_egkn" value="0">
+      <input name="candidate_egkn" type="checkbox" value="1" {% if candidate_defaults.use_egkn_context %}checked{% endif %}>
+      Вычитать зарегистрированные участки ЕГКН и показывать ближайший ориентир
+    </label>
+    <button class="primary" type="submit">Найти места</button>
+  </form>
+  {% if candidate_error %}
+  <div class="notice status-failed">Не удалось найти места: {{ candidate_error }}</div>
+  {% endif %}
+  {% if candidate_result %}
+  <div class="notice">
+    <strong>
+      {% if candidate_result.trust_level == 'SEARCH' %}
+      Используются проверенные слои
+      {% elif candidate_result.trust_level == 'SHADOW' %}
+      Используются черновые слои
+      {% else %}
+      Подходящие слои не найдены
+      {% endif %}
+    </strong>
+    <br>
+    Разрешенная зона: {{ candidate_result.allowed_area_ha }} га.
+    Расчетно свободно после фильтров: {{ candidate_result.candidate_area_ha }} га.
+    Слоев разрешения: {{ candidate_result.allowed_layer_count }}, ограничительных слоев: {{ candidate_result.restriction_layer_count }}.
+    {% if candidate_result.egkn_enabled %}
+    <br>ЕГКН: зарегистрированных участков {{ candidate_result.egkn_parcel_count }}, ориентиров нужного назначения {{ candidate_result.egkn_anchor_count }}.
+    {% if candidate_result.egkn_message %} {{ candidate_result.egkn_message }}.{% endif %}
+    {% else %}
+    <br>ЕГКН для этого списка не включен: это только точки внутри зоны генплана.
+    {% endif %}
+    {% if candidate_result.message %}<br>{{ candidate_result.message }}{% endif %}
+  </div>
+  {% if candidate_result.points %}
+  <div class="table-wrap embedded-table">
+    <table>
+      <thead>
+        <tr>
+          <th>№</th>
+          <th>Координаты</th>
+          <th>Кадастровый ориентир</th>
+          <th>Почему выбрано</th>
+          <th>Проверка</th>
+          <th>Карта</th>
+          <th>Что делать</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for point in candidate_result.points %}
+        {% set review_key = "%.6f,%.6f"|format(point.latitude, point.longitude) %}
+        {% set saved_review = candidate_review_lookup.get(review_key) %}
+        <tr>
+          <td>{{ point.rank }}</td>
+          <td>{{ point.latitude }}, {{ point.longitude }}</td>
+          <td>
+            {% if point.nearby_cadastre %}
+            <strong>{{ point.nearby_cadastre }}</strong><br>
+            <span class="muted">
+              {% if point.nearby_distance_m is not none %}{{ "%.0f"|format(point.nearby_distance_m) }} м{% endif %}
+              {% if point.nearby_land_use %} · {{ point.nearby_land_use }}{% endif %}
+            </span>
+            {% else %}
+            <span class="muted">нет ориентира</span>
+            {% endif %}
+          </td>
+          <td>
+            {{ point.selection_reason or 'Пустое пятно внутри разрешенной зоны генплана.' }}
+            {% if point.candidate_area_ha is not none %}
+            <br><span class="muted">пятно около {{ point.candidate_area_ha }} га</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if saved_review %}
+            <strong>{{ candidate_status_labels.get(saved_review.status, saved_review.status) }}</strong>
+            {% else %}
+            по спутнику
+            {% endif %}
+          </td>
+          <td><a class="button-link" href="{{ point.google_maps_url }}" target="_blank" rel="noopener">Открыть Google</a></td>
+          <td>
+            <form action="/admin/planning-candidates/review" method="post" class="planning-review-form">
+              <input type="hidden" name="candidate_region" value="{{ candidate_defaults.region }}">
+              <input type="hidden" name="candidate_district" value="{{ candidate_defaults.district }}">
+              <input type="hidden" name="candidate_locality" value="{{ candidate_defaults.locality }}">
+              <input type="hidden" name="candidate_use" value="{{ candidate_defaults.requested_use }}">
+              <input type="hidden" name="candidate_latitude" value="{{ point.latitude }}">
+              <input type="hidden" name="candidate_longitude" value="{{ point.longitude }}">
+              <input type="hidden" name="candidate_trust_level" value="{{ candidate_result.trust_level }}">
+              <input type="hidden" name="candidate_allowed_area_ha" value="{{ candidate_result.allowed_area_ha }}">
+              <input type="hidden" name="candidate_nearby_cadastre" value="{{ point.nearby_cadastre or '' }}">
+              {% if point.nearby_distance_m is not none %}
+              <input type="hidden" name="candidate_nearby_distance_m" value="{{ point.nearby_distance_m or '' }}">
+              {% endif %}
+              <input type="hidden" name="candidate_nearby_land_use" value="{{ point.nearby_land_use or '' }}">
+              {% if point.candidate_area_ha is not none %}
+              <input type="hidden" name="candidate_candidate_area_ha" value="{{ point.candidate_area_ha or '' }}">
+              {% endif %}
+              <input type="hidden" name="candidate_selection_reason" value="{{ point.selection_reason or '' }}">
+              <input type="hidden" name="candidate_limit" value="{{ candidate_defaults.limit }}">
+              <input type="hidden" name="candidate_step" value="{{ candidate_defaults.grid_step_m }}">
+              <input type="hidden" name="candidate_buffer" value="{{ candidate_defaults.restriction_buffer_m }}">
+              <input type="hidden" name="candidate_shadow" value="{{ '1' if candidate_defaults.include_shadow else '0' }}">
+              <input type="hidden" name="candidate_egkn" value="{{ '1' if candidate_defaults.use_egkn_context else '0' }}">
+              <label>Статус
+                <select name="candidate_status">
+                  {% for status, label in candidate_status_labels.items() %}
+                  <option value="{{ status }}" {% if saved_review and saved_review.status == status %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Заметка
+                <input name="candidate_note" value="{{ saved_review.note if saved_review and saved_review.note else '' }}">
+              </label>
+              <button type="submit">Сохранить</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% endif %}
+  {% if candidate_reviews %}
+  <div class="table-wrap embedded-table">
+    <h3>Сохраненные точки по этому фильтру</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Статус</th>
+          <th>Координаты</th>
+          <th>Кадастровый ориентир</th>
+          <th>Карта</th>
+          <th>Заметка</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for review in candidate_reviews %}
+        <tr>
+          <td><strong>{{ candidate_status_labels.get(review.status, review.status) }}</strong></td>
+          <td>{{ "%.6f"|format(review.latitude) }}, {{ "%.6f"|format(review.longitude) }}</td>
+          <td>
+            {% if review.nearby_cadastre %}
+            <strong>{{ review.nearby_cadastre }}</strong><br>
+            <span class="muted">
+              {% if review.nearby_distance_m is not none %}{{ "%.0f"|format(review.nearby_distance_m) }} м{% endif %}
+              {% if review.nearby_land_use %} · {{ review.nearby_land_use }}{% endif %}
+            </span>
+            {% else %}
+            <span class="muted">нет ориентира</span>
+            {% endif %}
+          </td>
+          <td><a class="button-link" href="{{ review.google_maps_url }}" target="_blank" rel="noopener">Открыть Google</a></td>
+          <td>{{ review.note or review.selection_reason or "без заметки" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel form-panel">
+  <h2>Добавить геопривязанный слой</h2>
+  <form action="/admin/urban-plans" method="post" enctype="multipart/form-data" class="urban-plan-form">
+    <label>Область
+      <select name="region" id="plan-region-select" required disabled><option value="">Загрузка областей...</option></select>
+    </label>
+    <label>Район
+      <select name="district" id="plan-district-select" required disabled><option value="">Сначала выберите область</option></select>
+    </label>
+    <label>Населенный пункт
+      <select name="locality" id="plan-locality-select" disabled><option value="">Весь район</option></select>
+    </label>
+    <label>Применять для
+      <select name="purpose" required>
+        <option value="all">Всех назначений</option>
+        <option value="ЛПХ">Только ЛПХ</option>
+        <option value="ЛПХ:household">ЛПХ: приусадебный надел</option>
+        <option value="ЛПХ:field">ЛПХ: полевой надел</option>
+        <option value="Садоводство">Только садоводства</option>
+      </select>
+    </label>
+    <label>Тип слоя
+      <select name="layer_kind" required>
+        <option value="allowed">Разрешенная территория</option>
+        <option value="prohibited">Запретная/иная зона</option>
+        <option value="red_line">Красные линии</option>
+      </select>
+    </label>
+    <label>Название зоны<input name="zone_name" placeholder="Жилая усадебная застройка"></label>
+    <label>Название документа<input name="title" required placeholder="Генеральный план города ..."></label>
+    <label>Акт утверждения<input name="approval_document" required placeholder="Решение маслихата №... от ..."></label>
+    <label>Дата утверждения<input name="approval_date" type="date"></label>
+    <label>Орган-источник<input name="source_authority" required placeholder="Акимат / управление архитектуры"></label>
+    <label>Официальная HTTPS-ссылка<input name="source_url" type="url" required placeholder="https://www.gov.kz/..."></label>
+    <label>EPSG файла<input name="source_epsg" type="number" value="4326" min="1024" required></label>
+    <label>GeoJSON<input name="geojson_file" type="file" accept=".geojson,.json,application/geo+json,application/json" required></label>
+    <button class="primary" id="plan-submit" type="submit" disabled>Проверить и добавить</button>
+  </form>
+  <p class="catalog-status" id="plan-catalog-status" aria-live="polite"></p>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Территория</th><th>Тип</th><th>Документ</th><th>Источник</th><th>Статус</th><th></th></tr></thead>
+    <tbody>
+      {% for item in layers %}
+      <tr>
+        <td><strong>{{ item.region }} · {{ item.district }}</strong><br><span class="muted">{{ item.locality or 'весь район' }}{% if item.zone_name %} · {{ item.zone_name }}{% endif %}</span></td>
+        <td>{{ item.layer_kind }}<br><span class="muted">{{ item.purpose or 'all' }}</span></td>
+        <td>{{ item.title }}<br><span class="muted">{{ item.approval_document }}{% if item.approval_date %} · {{ item.approval_date }}{% endif %}</span></td>
+        <td><a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.source_authority }} ↗</a><br><span class="muted">EPSG:{{ item.source_epsg }} · {{ item.source_file_name or 'файл не указан' }}{% if item.source_sha256 %}<br>SHA-256: {{ item.source_sha256 }}{% endif %}</span></td>
+        <td>
+          <span class="status {{ 'status-delivered' if item.active else 'status-failed' }}">{{ 'активен' if item.active else 'черновик/отключен' }}</span>
+          <br><span class="muted">QA: {{ item.qa_status }} · источник: {{ item.provenance_status }} · территория: {{ item.identity_status }}</span>
+        </td>
+        <td>
+          {% if item.active or item.approved_for_search %}
+          <form action="/admin/urban-plans/{{ item.id }}/toggle" method="post"><button type="submit">{{ 'Отключить' if item.active else 'Включить' }}</button></form>
+          {% else %}
+          <span class="muted">Ожидает независимой приемки</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">Слои еще не загружены. Клиенты получат предупреждение и смогут отдельно запросить предварительный результат без генплана.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<script src="{{ url_for('static', path='/urban-plan-catalog.js') }}"></script>
+{% endblock %}
+

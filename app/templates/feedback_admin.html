@@ -1,0 +1,143 @@
+﻿{% extends "base.html" %}
+{% block title %}Обратная связь · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="section-head admin-hero">
+  <div>
+    <span class="eyebrow">Клиентские диалоги</span>
+    <h1>Обратная связь</h1>
+    <p>Отзывы клиентов, ответы администратора, статусы рассылок и доступ клиента в одном рабочем окне.</p>
+  </div>
+  <div class="hero-metrics">
+    <article class="metric-alert"><span>Новых</span><strong>{{ unread_count }}</strong></article>
+    <article><span>Диалогов</span><strong>{{ conversations|length }}</strong></article>
+    <article><span>Рассылок</span><strong>{{ broadcasts|length }}</strong></article>
+    <article><span>Ответили</span><strong>{{ broadcasts[0].responded_count if broadcasts else 0 }}</strong></article>
+  </div>
+</section>
+
+<section class="panel form-panel">
+  <div class="panel-title">
+    <div>
+      <h2>Новая рассылка</h2>
+      <p>Сообщение уйдет всем Telegram-пользователям, которые запускали бота. Язык берется по последнему выбору клиента.</p>
+    </div>
+  </div>
+  <form action="/admin/feedback/broadcast" method="post" class="feedback-broadcast-form">
+    <label>Название
+      <input name="title" value="Запрос впечатлений">
+    </label>
+    <label>Текст на русском
+      <textarea name="ru_text" rows="7">{{ default_ru }}</textarea>
+    </label>
+    <label>Текст на казахском
+      <textarea name="kz_text" rows="7">{{ default_kz }}</textarea>
+    </label>
+    <button type="submit" class="primary">Отправить всем пользователям Telegram</button>
+  </form>
+</section>
+
+<section class="panel feedback-stats">
+  <div class="panel-title">
+    <div>
+      <h2>Рассылки</h2>
+      <p>История отправок и ответы клиентов.</p>
+    </div>
+  </div>
+  <div class="table-wrap flat">
+    <table>
+      <thead><tr><th>Дата</th><th>Название</th><th class="numeric">Отправлено</th><th class="numeric">Ошибок</th><th class="numeric">Ответили</th><th></th></tr></thead>
+      <tbody>
+        {% for item in broadcasts %}
+          <tr>
+            <td>{{ item.created_at.strftime("%d.%m.%Y %H:%M") }}</td>
+            <td><strong>{{ item.title }}</strong><br><span class="muted">{{ item.created_by or "admin" }}</span></td>
+            <td class="numeric">{{ item.sent_count }}</td>
+            <td class="numeric">{{ item.failed_count }}</td>
+            <td class="numeric">{{ item.responded_count }}</td>
+            <td><a class="button-link" href="/admin/feedback?broadcast_id={{ item.id }}">Статусы</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Рассылок пока нет.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if selected_broadcast %}
+<section class="panel feedback-stats">
+  <div class="panel-title">
+    <div>
+      <h2>Кому отправлено: {{ selected_broadcast.title }}</h2>
+      <p>Доставка, ответы и платёжный статус каждого получателя.</p>
+    </div>
+  </div>
+  <div class="table-wrap flat">
+    <table>
+      <thead><tr><th>Telegram ID</th><th>Доступ</th><th>Язык</th><th>Статус</th><th>Отправлено</th><th>Ответил</th><th>Ошибка</th></tr></thead>
+      <tbody>
+        {% for item in recipients %}
+          {% set access = recipient_access[item.id] %}
+          <tr>
+            <td>
+              {% if item.conversation_id %}
+                <a href="/admin/feedback/{{ item.conversation_id }}">{{ item.telegram_user_id }}</a>
+              {% else %}
+                {{ item.telegram_user_id }}
+              {% endif %}
+            </td>
+            <td><span class="access-badge access-{{ access.kind }}">{{ access.label }}</span><br><span class="muted">{{ access.detail }}</span></td>
+            <td>{{ item.language }}</td>
+            <td><span class="status status-{{ item.status }}">{{ item.status }}</span></td>
+            <td>{{ item.sent_at.strftime("%d.%m.%Y %H:%M") if item.sent_at else "—" }}</td>
+            <td>{{ item.responded_at.strftime("%d.%m.%Y %H:%M") if item.responded_at else "нет" }}</td>
+            <td class="wrap-cell">{{ item.error_message or "" }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty">Получателей нет.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel feedback-stats">
+  <div class="panel-title">
+    <div>
+      <h2>Диалоги{% if unread_count %} <span class="unread-count">{{ unread_count }} новых</span>{% endif %}</h2>
+      <p>Открывайте клиента, отвечайте ему и смотрите его доступ перед решением проблемы.</p>
+    </div>
+  </div>
+  <div class="table-wrap flat">
+    <table>
+      <thead><tr><th>Клиент</th><th>Доступ</th><th>Контакт</th><th>Последнее сообщение</th><th class="numeric">Сообщений</th><th></th></tr></thead>
+      <tbody>
+        {% for item in conversations %}
+          {% set last = item.messages[-1] if item.messages else none %}
+          {% set access = conversation_access[item.id] %}
+          {% set unread = conversation_unread[item.id] %}
+          <tr class="{{ 'feedback-row-unread' if unread else '' }}">
+            <td><strong>{{ item.phone or item.telegram_user_id or item.id }}</strong>{% if unread %}<br><span class="unread-badge">Новый ответ</span>{% endif %}<br><span class="muted">язык {{ item.language }}</span></td>
+            <td><span class="access-badge access-{{ access.kind }}">{{ access.label }}</span><br><span class="muted">{{ access.detail }}</span></td>
+            <td>Telegram {{ item.telegram_user_id or "—" }}<br><span class="muted">Chat {{ item.telegram_chat_id or "—" }}</span></td>
+            <td class="wrap-cell">
+              {% if last %}
+                <span class="muted">{{ last.created_at.strftime("%d.%m.%Y %H:%M") }} · {{ last.sender_type }}</span><br>
+                {{ last.text[:180] }}{% if last.text|length > 180 %}...{% endif %}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td class="numeric">{{ item.messages|length }}</td>
+            <td><a class="button-link" href="/admin/feedback/{{ item.id }}">Открыть</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Диалогов пока нет.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+

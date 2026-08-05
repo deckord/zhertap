@@ -1,0 +1,200 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Кабинет — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="cabinet-page-head">
+      <div>
+        <h1>Обзор</h1>
+        <p>Анализируйте территории, отслеживайте аукционы и возвращайтесь к сохранённым результатам.</p>
+      </div>
+      <div class="cabinet-page-actions">
+        <a class="secondary-action" href="/cabinet/auctions">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          Найти аукцион
+        </a>
+        <a class="primary-action" href="/cabinet/search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          Новый анализ
+        </a>
+      </div>
+    </div>
+    {% if request.query_params.get("telegram_link_token") %}
+      <div class="form-alert neutral telegram-link-box">
+        <div>
+          <strong>Привязка Telegram готова</strong>
+          <span>Ссылка действует 30 минут. После перехода нажмите Start в Telegram.</span>
+          <code>/start link_{{ request.query_params.get("telegram_link_token") }}</code>
+        </div>
+        {% if telegram_bot_username %}
+          <a class="primary-action" href="https://t.me/{{ telegram_bot_username }}?start=link_{{ request.query_params.get("telegram_link_token") }}" target="_blank" rel="noopener">Открыть Telegram</a>
+        {% endif %}
+      </div>
+    {% endif %}
+    {% if trial_active %}
+      <div class="form-alert neutral">
+        Тестовый доступ активен до {{ trial_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по времени Алматы. В тестовый период открыты все функции. Оплатить месяц через Kaspi можно уже сейчас.
+      </div>
+    {% endif %}
+
+    <div class="dashboard-focus-grid">
+      <a class="territory-card" href="/cabinet/search">
+        <div class="focus-card-copy">
+          <div class="card-title-row">
+            <h2>Анализ территории</h2>
+            <span class="soft-badge">Быстро и точно</span>
+          </div>
+          <p>Найдите перспективные места между зарегистрированными участками с учётом ограничений и доступных данных.</p>
+          <div class="territory-facts">
+            <span><strong>от 5 минут</strong><small>время анализа</small></span>
+            <span><strong>до {{ searches[0].result_limit if searches else 10 }} номеров</strong><small>в результате</small></span>
+          </div>
+          <span class="primary-action compact">Запустить анализ</span>
+        </div>
+        <div class="map-preview" aria-hidden="true">
+          <span class="map-pin"></span>
+        </div>
+      </a>
+      <a class="auction-focus-card" href="/cabinet/auctions">
+        <div class="focus-card-copy">
+          <div class="card-title-row">
+            <h2>Аукционы</h2>
+            <span class="warm-badge">Новые лоты</span>
+          </div>
+          <dl class="auction-stats">
+            <div><dt>Новых за 7 дней</dt><dd>{{ lots|length }}</dd></div>
+            <div><dt>Сохранённых</dt><dd>—</dd></div>
+            <div><dt>Активных подписок</dt><dd>—</dd></div>
+          </dl>
+          <span class="secondary-action compact">Открыть каталог</span>
+        </div>
+        <div class="auction-visual" aria-hidden="true">
+          <svg viewBox="0 0 120 120">
+            <path d="M43 38 57 24l39 39-14 14Z"/>
+            <path d="M35 46 49 32l41 41-14 14Z"/>
+            <path d="M23 88h62"/>
+            <path d="M37 80h34l7 8H30Z"/>
+            <path d="M66 77 82 61"/>
+          </svg>
+        </div>
+      </a>
+    </div>
+
+    <div class="cabinet-kpi-grid">
+      <article class="kpi-card">
+        <span class="kpi-icon success"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg></span>
+        <div>
+          <span>Доступ</span>
+          <strong>{% if access_kind in ["paid", "trial"] %}Активен{% else %}Ограничен{% endif %}</strong>
+          <small>{{ access_label }}</small>
+        </div>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-icon success"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></span>
+        <div>
+          <span>Telegram</span>
+          <strong>{{ "Подключён" if account.telegram_user_id else "Не подключён" }}</strong>
+          {% if account.telegram_user_id %}
+            <small>ID: {{ account.telegram_user_id }}</small>
+          {% else %}
+            <form method="post" action="/cabinet/telegram/link"><button class="text-inline-action" type="submit">Привязать</button></form>
+          {% endif %}
+        </div>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 17 6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></span>
+        <div>
+          <span>Анализов выполнено</span>
+          <strong>{{ searches|length }}</strong>
+          <small>в кабинете</small>
+        </div>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-icon warning"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6"/><path d="m4 14 6 6"/><path d="m7 17 10-10"/><path d="m3 21 6-6"/><path d="m15 9 6-6"/></svg></span>
+        <div>
+          <span>Доступных аукционов</span>
+          <strong>{{ total_lots }}</strong>
+          <small>в каталоге</small>
+        </div>
+      </article>
+    </div>
+
+    <div class="dashboard-bottom-grid">
+      <section class="panel-modern recent-panel" id="recent-analyses">
+        <div class="panel-head"><h2>Последние анализы</h2><a href="/cabinet/search">Новый анализ</a></div>
+        {% if searches %}
+          <div class="analysis-table-wrap">
+            <table class="analysis-table">
+              <thead>
+                <tr>
+                  <th>Территория</th>
+                  <th>Тип анализа</th>
+                  <th>Дата</th>
+                  <th>Найдено</th>
+                  <th>Статус</th>
+                  <th>Действие</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in searches %}
+                  <tr>
+                    <td data-label="Территория"><strong>{{ item.region_label or item.region }} · {{ item.district_label or item.district }}</strong></td>
+                    <td data-label="Тип анализа">{{ item.purpose }} · {{ (item.area_ha * 100)|round|int }} соток</td>
+                    <td data-label="Дата">{{ item.created_at.strftime("%d.%m.%Y") }}</td>
+                    <td data-label="Найдено">{{ item.candidates|length }}</td>
+                    <td data-label="Статус"><span class="status-pill status-{{ item.status }}">{{ item.status }}</span></td>
+                    <td data-label="Действие"><a class="row-action" href="/cabinet/searches/{{ item.id }}">Открыть</a></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <a class="table-more-link" href="/cabinet/search">Показать ещё</a>
+        {% else %}
+          <div class="empty-state">
+            <strong>Пока нет запущенных анализов</strong>
+            <span>Начните с района, который вы бы обычно проверяли вручную на карте.</span>
+            <div class="empty-actions"><a class="primary-action compact" href="/cabinet/search">Начать анализ территории</a></div>
+          </div>
+        {% endif %}
+      </section>
+      <aside class="panel-modern important-panel">
+        <div class="panel-head"><h2>Что важно</h2></div>
+        <div class="important-list">
+          {% if access_kind != "paid" %}
+            <a href="/cabinet/payment">
+              <span class="kpi-icon warning"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0Z"/></svg></span>
+              <strong>Доступ в {{ access_label|lower }}</strong>
+              <small>Оплата откроет полный месяц</small>
+            </a>
+          {% endif %}
+          {% if not account.telegram_user_id %}
+            <form method="post" action="/cabinet/telegram/link">
+              <button type="submit">
+                <span class="kpi-icon success"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></span>
+                <strong>Telegram не подключён</strong>
+                <small>Получайте уведомления активнее</small>
+              </button>
+            </form>
+          {% endif %}
+          {% for item in searches[:2] %}
+            <a href="/cabinet/searches/{{ item.id }}">
+              <span class="kpi-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-3"/></svg></span>
+              <strong>Анализ от {{ item.created_at.strftime("%d.%m") }}</strong>
+              <small>{{ item.region_label or item.region }}</small>
+            </a>
+          {% endfor %}
+          <a href="/cabinet/auctions">
+            <span class="kpi-icon warning"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6"/><path d="m4 14 6 6"/><path d="m7 17 10-10"/><path d="m3 21 6-6"/><path d="m15 9 6-6"/></svg></span>
+            <strong>{{ total_lots }} лотов в каталоге</strong>
+            <small>Фильтры, избранное и сравнение</small>
+          </a>
+        </div>
+        <a class="all-notifications-link" href="/cabinet/auctions/subscriptions">Все уведомления</a>
+      </aside>
+    </div>
+  </div>
+</section>
+{% endblock %}
+

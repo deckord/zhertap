@@ -1,0 +1,128 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Лот №{{ lot.auction_number or lot.source_lot_id }} — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      {% if request.query_params.get("back") == "favorites" %}
+        <a class="back-link" href="/cabinet/auctions/favorites">← В избранное</a>
+      {% elif request.query_params.get("back") == "compare" %}
+        <a class="back-link" href="/cabinet/auctions/compare">← В сравнение</a>
+      {% else %}
+        <a class="back-link" href="/cabinet/auctions">← Ко всем аукционам</a>
+      {% endif %}
+      <a class="back-link" href="/cabinet/auctions/favorites">Избранное</a>
+    </div>
+    {% if request.query_params.get("favorite") == "added" %}
+      <div class="form-alert neutral">Лот добавлен в избранное.</div>
+    {% elif request.query_params.get("favorite") == "removed" %}
+      <div class="form-alert neutral">Лот убран из избранного.</div>
+    {% elif request.query_params.get("locked") %}
+      <div class="form-alert">Это действие доступно после оплаты полного доступа.</div>
+    {% endif %}
+    {% if not has_paid_unlock %}
+      <div class="locked-preview-note">
+        Аналитика по лоту открыта в демо-режиме. Документы, E-Qazyna и сохранение в избранное будут доступны после оплаты.
+      </div>
+    {% endif %}
+    <div class="cabinet-hero">
+      <div>
+        <span class="eyebrow">E-Qazyna</span>
+        <h1>Лот №{{ lot.auction_number or lot.source_lot_id }}</h1>
+        <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
+      </div>
+      <div class="detail-actions">
+        {% if has_paid_unlock %}
+          <form method="post" action="/cabinet/auctions/{{ lot.id }}/favorite">
+            <button class="secondary-action" type="submit">{{ "Убрать из избранного" if is_favorite else "В избранное" }}</button>
+          </form>
+          <a class="primary-action" href="{{ lot.source_url }}" target="_blank" rel="noopener">Открыть E-Qazyna</a>
+        {% else %}
+          <button class="secondary-action locked-action" type="button" disabled>Избранное после оплаты</button>
+          <button class="primary-action locked-action" type="button" disabled>Открыть E-Qazyna после оплаты</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <section class="auction-metric-grid">
+      <article><span>Рейтинг</span><strong>{{ metrics.rating }}/100</strong></article>
+      <article><span>Цена за сотку</span><strong>{{ "{:,.0f}".format(metrics.price_per_sotka).replace(",", " ") if metrics.price_per_sotka is not none else "—" }} ₸</strong></article>
+      <article><span>Средняя по району</span><strong>{{ "{:,.0f}".format(metrics.district_average_price_per_sotka).replace(",", " ") if metrics.district_average_price_per_sotka is not none else "—" }} ₸</strong></article>
+      <article><span>Разница</span><strong>{{ "%+.0f%%"|format(metrics.district_difference_percent) if metrics.district_difference_percent is not none else "—" }}</strong></article>
+      <article><span>Публикаций</span><strong>{{ metrics.publication_count }}</strong></article>
+      <article><span>Документов</span><strong>{{ metrics.document_count }}</strong></article>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Карточка</h2><span>{{ lot.status or "статус не указан" }}</span></div>
+      <div class="fact-grid">
+        <div><span>Название</span><strong>{{ lot.title }}</strong></div>
+        <div><span>Кадастровый номер</span><strong>{{ lot.cadastre_number or "—" }}</strong></div>
+        <div><span>Площадь</span><strong>{{ ("%.4f"|format(lot.area_ha)).rstrip("0").rstrip(".") if lot.area_ha is not none else "—" }} га</strong></div>
+        <div><span>Стартовая цена</span><strong>{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") if lot.start_price_kzt is not none else "—" }} ₸</strong></div>
+        <div><span>Гарантийный взнос</span><strong>{{ "{:,.0f}".format(lot.guarantee_kzt).replace(",", " ") if lot.guarantee_kzt is not none else "—" }} ₸</strong></div>
+        <div><span>Право на землю</span><strong>{{ lot.land_rights or "—" }}</strong></div>
+        <div><span>Назначение</span><strong>{{ lot.functional_purpose_level2 or lot.purpose or "—" }}</strong></div>
+        <div><span>Дата торгов</span><strong>{{ lot.auction_starts_at.strftime("%d.%m.%Y %H:%M") if lot.auction_starts_at else "—" }}</strong></div>
+        <div><span>Продавец</span><strong>{{ lot.seller_name or "—" }}</strong></div>
+        <div><span>БИН продавца</span><strong>{{ lot.seller_bin or "—" }}</strong></div>
+      </div>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Документы</h2><span>{{ lot.documents|length }}</span></div>
+      <div class="simple-list">
+        {% for document in lot.documents %}
+          {% if has_paid_unlock %}
+            <a href="{{ document.source_url }}" target="_blank" rel="noopener"><strong>{{ document.title }}</strong><span>{{ document.file_type or "файл" }}</span></a>
+          {% else %}
+            <div class="locked-document"><strong>{{ document.title }}</strong><span>{{ document.file_type or "файл" }} · открыть можно после оплаты</span></div>
+          {% endif %}
+        {% else %}
+          <p class="muted-modern">Документы пока не найдены в карточке источника.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>История</h2><span>{{ history|length }}</span></div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Дата</th><th>Статус</th><th>Стартовая цена</th><th>Цена продажи</th><th>Торги</th></tr></thead>
+          <tbody>
+          {% for item in history %}
+            <tr>
+              <td>{{ item.observed_at.strftime("%d.%m.%Y %H:%M") }}</td>
+              <td>{{ item.status or "—" }}</td>
+              <td>{{ "{:,.0f}".format(item.start_price_kzt).replace(",", " ") if item.start_price_kzt is not none else "—" }} ₸</td>
+              <td>{{ "{:,.0f}".format(item.sale_price_kzt).replace(",", " ") if item.sale_price_kzt is not none else "—" }} ₸</td>
+              <td>{{ item.auction_starts_at.strftime("%d.%m.%Y %H:%M") if item.auction_starts_at else "—" }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">История появится после следующих синхронизаций.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Изменения</h2><span>{{ changes|length }}</span></div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Дата</th><th>Поле</th><th>Было</th><th>Стало</th></tr></thead>
+          <tbody>
+          {% for item in changes %}
+            <tr><td>{{ item.changed_at.strftime("%d.%m.%Y %H:%M") }}</td><td>{{ item.field_name }}</td><td>{{ item.old_value or "—" }}</td><td>{{ item.new_value or "—" }}</td></tr>
+          {% else %}
+            <tr><td colspan="4">Изменений по отслеживаемым полям пока не было.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+

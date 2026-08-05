@@ -1,0 +1,57 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Избранное — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions">← Ко всем аукционам</a>
+      <a class="back-link" href="/cabinet/auctions/compare">Сравнить избранное</a>
+    </div>
+    <div class="section-title"><span>Аукционы</span><h1>Избранное</h1></div>
+    {% if request.query_params.get("favorite") == "removed" %}
+      <div class="form-alert neutral">Лот убран из избранного.</div>
+    {% elif request.query_params.get("favorite") == "added" %}
+      <div class="form-alert neutral">Лот добавлен в избранное.</div>
+    {% elif request.query_params.get("locked") %}
+      <div class="form-alert">Избранное доступно после оплаты полного доступа.</div>
+    {% endif %}
+    {% if not has_paid_unlock %}
+      <div class="locked-preview-note">
+        Избранное закрыто в бесплатном режиме. Вы можете смотреть каталог лотов, но сохранять и сравнивать лоты можно после оплаты.
+      </div>
+    {% endif %}
+    <section class="panel-modern">
+      <div class="auction-list">
+        {% for lot in lots %}
+          <article class="auction-card">
+            <div>
+              <strong>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}</strong>
+              <h3><a href="/cabinet/auctions/{{ lot.id }}?back=favorites">{{ lot.title }}</a></h3>
+              <p>{{ lot.functional_purpose_level2 or lot.purpose or "Назначение не указано" }}</p>
+            </div>
+            <div class="auction-card-meta">
+              <span>{{ lot.area_ha or "—" }} га</span>
+              <b>{% if lot.start_price_kzt %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}Цена не указана{% endif %}</b>
+              {% if has_paid_unlock %}
+                <form method="post" action="/cabinet/auctions/{{ lot.id }}/favorite"><button type="submit">Убрать</button></form>
+              {% else %}
+                <button class="locked-action" type="button" disabled>Доступно после оплаты</button>
+              {% endif %}
+            </div>
+          </article>
+        {% else %}
+          <div class="empty-state">
+            <strong>В избранном пока нет лотов</strong>
+            <span>Откройте каталог аукционов и сохраняйте интересные лоты, чтобы быстро вернуться к ним и сравнить.</span>
+            <div class="empty-actions">
+              <a class="primary-action compact" href="/cabinet/auctions">Перейти к аукционам</a>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+

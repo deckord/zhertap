@@ -1,0 +1,161 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Вход — Жертап{% endblock %}
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-panel">
+    <span class="eyebrow">Личный кабинет</span>
+    <div class="auth-tabs" role="tablist" aria-label="Авторизация">
+      <button class="auth-tab is-active" type="button" data-auth-tab="login">Вход</button>
+      <button class="auth-tab" type="button" data-auth-tab="register">Регистрация</button>
+    </div>
+
+    <div class="auth-mode is-active" data-auth-mode="login">
+      <h1>Вход по паролю</h1>
+      <p>После регистрации SMS больше не нужен для каждого входа. Введите телефон и пароль.</p>
+    </div>
+    <div class="auth-mode" data-auth-mode="register">
+      <h1>Регистрация</h1>
+      <p>Сначала подтвердите номер SMS-кодом, затем задайте пароль для дальнейшего входа.</p>
+    </div>
+    <div class="auth-mode" data-auth-mode="reset">
+      <h1>Восстановление пароля</h1>
+      <p>Введите номер, получите SMS-код и задайте новый пароль для входа.</p>
+    </div>
+
+    {% if error %}<div class="form-alert">{{ error }}</div>{% endif %}
+    {% if existing_account_phone %}<div class="form-alert neutral">Под этим номером уже есть аккаунт. Войдите по паролю или восстановите доступ через SMS.</div>{% endif %}
+    {% if request.query_params.get("invalid_password") %}<div class="form-alert">Неверный телефон или пароль. После 3 ошибок вход блокируется на 5 минут.</div>{% endif %}
+    {% if request.query_params.get("invalid") %}<div class="form-alert">Неверный SMS-код. После 3 ошибок вход блокируется на 5 минут.</div>{% endif %}
+    {% if request.query_params.get("reset_invalid") %}<div class="form-alert">Неверный SMS-код восстановления. После 3 ошибок вход блокируется на 5 минут.</div>{% endif %}
+    {% if request.query_params.get("reset_missing") %}<div class="form-alert">Аккаунт с таким номером не найден. Сначала пройдите регистрацию.</div>{% endif %}
+    {% if request.query_params.get("locked") %}<div class="form-alert">Аккаунт временно заблокирован. Повторите через 5 минут.</div>{% endif %}
+
+    <form class="auth-form auth-mode is-active" data-auth-mode="login" method="post" action="/login">
+      <label>Телефон
+        <input id="login_phone" name="phone" value="{{ phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
+      </label>
+      <label>Пароль
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="primary-action" type="submit">Войти</button>
+      <button class="text-action" type="button" data-auth-switch="reset">Забыли пароль?</button>
+    </form>
+
+    {% if register_error %}<div class="form-alert">{{ register_error }}</div>{% endif %}
+    <form class="auth-form auth-mode" data-auth-mode="register" method="post" action="/register/request-code">
+      <div class="step-title">1. Подтвердите телефон</div>
+      <label>Телефон
+        <input id="register_phone" name="phone" value="{{ register_phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" name="offer_accepted" value="yes" required>
+        <span>Я принимаю <a href="/offer" target="_blank" rel="noopener">оферту</a>, <a href="/terms" target="_blank" rel="noopener">условия сервиса</a> и понимаю, что Жертап дает предварительный анализ без гарантии выдачи земельного участка.</span>
+      </label>
+      <button class="primary-action" type="submit">Получить SMS-код</button>
+    </form>
+
+      <form class="auth-form verify auth-mode {% if register_code_requested %}is-ready{% else %}is-disabled{% endif %}" data-auth-mode="register" method="post" action="/register/verify">
+        <div class="step-title">2. Введите SMS-код и задайте пароль</div>
+        {% if not register_code_requested %}
+          <div class="step-hint">Сначала нажмите “Получить SMS-код”. После успешной отправки этот блок станет активным.</div>
+        {% endif %}
+        <input id="verify_phone" type="hidden" name="phone" value="{{ register_phone or '' }}">
+        <label>Код из SMS
+          <input name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" {% if not register_code_requested %}disabled{% endif %} required>
+        </label>
+        <label>Пароль для входа
+          <input name="password" type="password" minlength="8" autocomplete="new-password" {% if not register_code_requested %}disabled{% endif %} required>
+        </label>
+        <label>Повторите пароль
+          <input name="password_confirm" type="password" minlength="8" autocomplete="new-password" {% if not register_code_requested %}disabled{% endif %} required>
+        </label>
+        <button class="primary-action" type="submit" {% if not register_code_requested %}disabled{% endif %}>Создать аккаунт</button>
+      </form>
+      {% if dev_code %}
+        <div class="dev-code">Тестовый код: <strong>{{ dev_code }}</strong></div>
+      {% endif %}
+
+    {% if reset_error %}<div class="form-alert">{{ reset_error }}</div>{% endif %}
+    <form class="auth-form auth-mode" data-auth-mode="reset" method="post" action="/password/reset/request-code">
+      <div class="step-title">1. Получите SMS-код восстановления</div>
+      <label>Телефон
+        <input id="reset_phone" name="phone" value="{{ reset_phone or phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
+      </label>
+      <button class="primary-action" type="submit">Получить SMS-код</button>
+      <button class="text-action" type="button" data-auth-switch="login">Вернуться ко входу</button>
+    </form>
+
+    <form class="auth-form verify auth-mode {% if reset_code_requested %}is-ready{% else %}is-disabled{% endif %}" data-auth-mode="reset" method="post" action="/password/reset/verify">
+      <div class="step-title">2. Введите SMS-код и новый пароль</div>
+      {% if not reset_code_requested %}
+        <div class="step-hint">Сначала нажмите “Получить SMS-код”. После успешной отправки этот блок станет активным.</div>
+      {% endif %}
+      <input id="reset_verify_phone" type="hidden" name="phone" value="{{ reset_phone or phone or '' }}">
+      <label>Код из SMS
+        <input name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" {% if not reset_code_requested %}disabled{% endif %} required>
+      </label>
+      <label>Новый пароль
+        <input name="password" type="password" minlength="8" autocomplete="new-password" {% if not reset_code_requested %}disabled{% endif %} required>
+      </label>
+      <label>Повторите новый пароль
+        <input name="password_confirm" type="password" minlength="8" autocomplete="new-password" {% if not reset_code_requested %}disabled{% endif %} required>
+      </label>
+      <button class="primary-action" type="submit" {% if not reset_code_requested %}disabled{% endif %}>Сменить пароль и войти</button>
+    </form>
+  </div>
+  <aside class="auth-aside">
+    <h2>Что будет в кабинете</h2>
+    <ul>
+      <li>История поисков и статусы обработки</li>
+      <li>Аукционы с полными фильтрами</li>
+      <li>Единый доступ после оплаты Kaspi</li>
+      <li>Привязка Telegram к тому же аккаунту</li>
+    </ul>
+  </aside>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  const tabs = document.querySelectorAll("[data-auth-tab]");
+  const modes = document.querySelectorAll("[data-auth-mode]");
+  const registerPhone = document.querySelector("#register_phone");
+  const verifyPhone = document.querySelector("#verify_phone");
+  const loginPhone = document.querySelector("#login_phone");
+  const resetPhone = document.querySelector("#reset_phone");
+  const resetVerifyPhone = document.querySelector("#reset_verify_phone");
+  const setMode = (mode) => {
+    tabs.forEach((tab) => tab.classList.toggle("is-active", tab.dataset.authTab === mode));
+    modes.forEach((panel) => panel.classList.toggle("is-active", panel.dataset.authMode === mode));
+  };
+  tabs.forEach((tab) => tab.addEventListener("click", () => setMode(tab.dataset.authTab)));
+  document.querySelectorAll("[data-auth-switch]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.authSwitch === "reset" && loginPhone?.value && resetPhone) {
+        resetPhone.value = loginPhone.value;
+        resetVerifyPhone.value = loginPhone.value;
+      }
+      setMode(button.dataset.authSwitch);
+    });
+  });
+  registerPhone?.addEventListener("input", () => {
+    if (verifyPhone) verifyPhone.value = registerPhone.value;
+  });
+  resetPhone?.addEventListener("input", () => {
+    if (resetVerifyPhone) resetVerifyPhone.value = resetPhone.value;
+  });
+  if (
+    document.querySelector(".verify.is-ready") ||
+    new URLSearchParams(window.location.search).has("invalid")
+  ) {
+    setMode("register");
+  }
+  if (
+    document.querySelector("[data-auth-mode='reset'].verify.is-ready") ||
+    new URLSearchParams(window.location.search).has("reset_invalid") ||
+    new URLSearchParams(window.location.search).has("reset_missing")
+  ) {
+    setMode("reset");
+  }
+</script>
+{% endblock %}
+

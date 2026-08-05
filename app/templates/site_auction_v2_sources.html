@@ -1,0 +1,131 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Источники v2 — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions-v2">← К лотам</a>
+      <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <button class="primary-action compact" type="submit">Обновить все источники</button>
+      </form>
+    </div>
+
+    <div class="section-title auction-v2-title">
+      <span>Состояние данных</span>
+      <h1>Состояние данных аукционов v2</h1>
+      <p>Это служебный режим внутри аукционов v2. Он нужен, чтобы понимать, почему в карточке лота есть или нет данные из E-Qazyna, gov.kz, ЕГКН, карт и документов.</p>
+    </div>
+
+    <section class="auction-v2-kpis">
+      <article>
+        <span>Источники</span>
+        <strong>{{ payload.totals.sources }}</strong>
+        <small>{{ payload.totals.active_sources }} включено</small>
+      </article>
+      <article>
+        <span>Запуски</span>
+        <strong>{{ payload.totals.runs }}</strong>
+        <small>проверок источников всего</small>
+      </article>
+      <article>
+        <span>Ошибки</span>
+        <strong>{{ payload.totals.errors }}</strong>
+        <small>требуют проверки</small>
+      </article>
+      <article>
+        <span>Предупреждения</span>
+        <strong>{{ payload.totals.warnings }}</strong>
+        <small>частичные сбои</small>
+      </article>
+      <article>
+        <span>Следы проверок</span>
+        <strong>{{ payload.totals.evidence }}</strong>
+        <small>сохраненные результаты сверки</small>
+      </article>
+    </section>
+
+    <section class="panel-modern auction-v2-source-admin">
+      <div class="panel-head">
+        <h2>Все источники</h2>
+        <span>{{ payload.source_rows|length }}</span>
+      </div>
+      <p class="auction-v2-helper-text">Зеленый статус означает, что источник отработал. Желтый — данные есть частично или нужна ручная сверка. Синий — источник запланирован или готова ссылка на поиск. Красный — ошибка, из-за которой часть данных может не попасть в список.</p>
+      <div class="auction-v2-source-admin-grid">
+        {% for row in payload.source_rows %}
+          {% set source = row.source %}
+          {% set run = row.latest_run %}
+          <article class="source-admin-card status-{{ row.status }}">
+            <div class="source-admin-head">
+              <span>{{ row.status_label }}</span>
+              <strong>{{ source.name }}</strong>
+            </div>
+            <dl>
+              <div><dt>Качество</dt><dd>{{ row.quality_label }}</dd></div>
+              <div><dt>Интервал</dt><dd>{{ source.crawl_interval_minutes }} мин.</dd></div>
+              <div><dt>Запуски</dt><dd>{{ row.run_count }}</dd></div>
+              <div><dt>Сверки</dt><dd>{{ row.evidence_count }}</dd></div>
+            </dl>
+            <p>{{ source.notes or "Описание источника не заполнено." }}</p>
+            <div class="source-admin-run">
+              <span>Последний запуск</span>
+              <strong>{{ row.latest_run_status_label }}</strong>
+              <em>{% if run and run.finished_at %}{{ run.finished_at.strftime("%d.%m.%Y %H:%M") }}{% elif run %}идет сейчас{% else %}еще не запускался{% endif %}</em>
+              {% if run %}
+                <small>увидел {{ run.items_seen }} · новых {{ run.items_created }} · обновил {{ run.items_updated }}</small>
+              {% endif %}
+            </div>
+            {% if source.last_error or (run and run.error_message) %}
+              <div class="source-admin-error">{{ run.error_message if run and run.error_message else source.last_error }}</div>
+            {% endif %}
+            <div class="source-admin-actions">
+              <a href="{{ source.base_url }}" target="_blank" rel="noopener">Открыть источник</a>
+              <details>
+                <summary>Данные для диагностики</summary>
+                <dl>
+                  <div><dt>Код источника</dt><dd>{{ source.code }}</dd></div>
+                  <div><dt>Тип подключения</dt><dd>{{ source.parser_kind }}</dd></div>
+                </dl>
+                {% if row.raw_payload_preview %}
+                  <pre>{{ row.raw_payload_preview }}</pre>
+                {% endif %}
+              </details>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="panel-modern auction-v2-source-runs">
+      <div class="panel-head">
+        <h2>Последние запуски</h2>
+        <span>{{ payload.recent_runs|length }}</span>
+      </div>
+      <div class="auction-v2-source-table">
+        {% for row in payload.recent_runs %}
+          {% set run = row.run %}
+          {% set source = row.source %}
+          <div class="source-status-row status-{{ run.status }}">
+            <span>{{ row.status_label }}</span>
+            <strong>{{ source.name }}</strong>
+            <em>{% if run.finished_at %}{{ run.finished_at.strftime("%d.%m %H:%M") }}{% else %}идет сейчас{% endif %}</em>
+            <small>увидел {{ run.items_seen }} · новых {{ run.items_created }} · обновил {{ run.items_updated }}{% if run.error_message %} · {{ run.error_message }}{% endif %}</small>
+            {% if row.raw_payload_preview %}
+              <details>
+                <summary>Данные для диагностики</summary>
+                <pre>{{ row.raw_payload_preview }}</pre>
+              </details>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="empty-state compact">
+            <strong>Запусков пока нет</strong>
+            <span>Нажмите “Запустить полную синхронизацию”, чтобы увидеть состояние каждого источника.</span>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+

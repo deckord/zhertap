@@ -1,0 +1,281 @@
+﻿{% extends "site_base.html" %}
+{% block title %}Районы и аналитика v2 — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/auctions-v2">← К лотам</a>
+      <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <button class="primary-action compact" type="submit">Обновить данные</button>
+      </form>
+    </div>
+
+    <div class="section-title auction-v2-title">
+      <span>Рабочий режим</span>
+      <h1>Аналитика внутри аукционов v2</h1>
+      <p>Это не отдельный модуль. Это режим анализа для поиска лотов: районы, населенные пункты, история публикаций, медианная цена за сотку и слабые места по данным.</p>
+    </div>
+
+    {% include "partials/auction_v2_tabs.html" %}
+
+    <section class="auction-v2-kpis">
+      <article>
+        <span>Лоты в выборке</span>
+        <strong>{{ analytics.totals.total }}</strong>
+        <small>{{ analytics.totals.active }} активных · {{ analytics.totals.future }} будущих</small>
+      </article>
+      <article>
+        <span>Медиана за сотку</span>
+        <strong>{{ analytics.totals.median_price_per_sotka_text }}</strong>
+        <small>{{ analytics.totals.price_count }} лотов с ценой</small>
+      </article>
+      <article>
+        <span>Средний индекс</span>
+        <strong>{{ analytics.totals.average_score_text }}</strong>
+        <small>{{ analytics.totals.analysed }} уже разобраны системой</small>
+      </article>
+      <article>
+        <span>Высокий риск</span>
+        <strong>{{ analytics.totals.high_risk }}</strong>
+        <small>{{ analytics.totals.risk_note }}</small>
+      </article>
+      <article>
+        <span>Документы</span>
+        <strong>{{ analytics.totals.documents_percent_text }}</strong>
+        <small>у лотов есть файлы</small>
+      </article>
+      <article>
+        <span>Координаты</span>
+        <strong>{{ analytics.totals.coordinates_percent_text }}</strong>
+        <small>можно смотреть на карте</small>
+      </article>
+      <article>
+        <span>Границы ЕГКН</span>
+        <strong>{{ analytics.totals.boundaries_percent_text }}</strong>
+        <small>контур найден</small>
+      </article>
+      <article>
+        <span>Обновлено</span>
+        <strong>{{ refresh_stats.checked }}</strong>
+        <small>лотов при открытии</small>
+      </article>
+    </section>
+
+    <form id="auction-v2-filter-form" class="auction-web-form auction-v2-filter auction-v2-analytics-filter" method="get" action="/cabinet/auctions-v2/analytics" data-catalog-form="auctions">
+      <div class="auction-v2-filter-intro">
+        <strong>Выбор территории</strong>
+        <span>Сначала смотрите область, затем район и населенный пункт. После выбора можно открыть список лотов уже с нужным фильтром.</span>
+      </div>
+      <label>Регион
+        <select id="auction-region" name="region" data-selected="{{ filters.region }}">
+          <option value="">Загрузка регионов...</option>
+        </select>
+      </label>
+      <label>Район
+        <select id="auction-district" name="district" data-selected="{{ filters.district }}" disabled>
+          <option value="">Сначала выберите регион</option>
+        </select>
+      </label>
+      <label>Населенный пункт
+        <select id="auction-locality" name="locality" data-selected="{{ filters.locality }}" disabled>
+          <option value="">Сначала выберите район</option>
+        </select>
+      </label>
+      <div class="catalog-note" id="auction-catalog-status" aria-live="polite">Справочники районов и населенных пунктов загружаются из ЕГКН и базы E-Qazyna.</div>
+      <button class="secondary-action compact catalog-retry" type="button" data-catalog-retry="auctions" hidden>Повторить загрузку справочников</button>
+      <button class="primary-action" type="submit">Показать аналитику</button>
+      <a class="secondary-action compact" href="/cabinet/auctions-v2/analytics">Сбросить</a>
+    </form>
+
+    <section class="panel-modern auction-v2-analytics-focus">
+      <div class="panel-head">
+        <h2>Куда смотреть первым</h2>
+        <span>{{ analytics.district_rows|length }} районов</span>
+      </div>
+      <p class="auction-v2-helper-text">Верхние районы - там больше текущих и будущих лотов, выше средний индекс или есть заметная активность. Высокий риск здесь означает “проверить внимательнее”, а не автоматический отказ.</p>
+      {% if analytics.district_rows %}
+        <div class="auction-v2-analytics-cards">
+          {% for row in analytics.district_rows[:6] %}
+            <article class="auction-v2-district-card">
+              <div>
+                <span>{{ row.region }}</span>
+                <strong>{{ row.label }}</strong>
+                <small>{{ row.active }} активных · {{ row.future }} будущих · {{ row.archive }} в истории</small>
+              </div>
+              <dl>
+                <div><dt>Цена за сотку</dt><dd>{{ row.median_price_per_sotka_text }}</dd></div>
+                <div><dt>Индекс</dt><dd>{{ row.average_score_text }}</dd></div>
+                <div><dt>Риски</dt><dd>{{ row.risk_note }}</dd></div>
+                <div><dt>Данные</dt><dd>{{ row.data_note }}</dd></div>
+              </dl>
+              <div class="auction-v2-analytics-actions">
+                <a class="primary-action compact" href="{{ row.href }}">Открыть лоты</a>
+                <a class="secondary-action compact" href="{{ row.history_href }}">Вся история</a>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="auction-v2-empty-state">
+          <strong>Районы пока не найдены</strong>
+          <span>Обновите данные или снимите часть фильтров по территории.</span>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="panel-modern auction-v2-analytics-section">
+      <div class="panel-head">
+        <h2>Районы и населенные пункты</h2>
+        <span>до {{ analytics.district_rows|length + analytics.locality_rows|length }} строк</span>
+      </div>
+      <div class="auction-v2-analytics-grid">
+        <div class="auction-v2-table-wrap">
+          <h3>Районы</h3>
+          <table class="auction-v2-analytics-table">
+            <thead>
+              <tr>
+                <th>Район</th>
+                <th>Лоты</th>
+                <th>Цена</th>
+                <th>Индекс</th>
+                <th>Проверка</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in analytics.district_rows %}
+                <tr>
+                  <td><strong>{{ row.label }}</strong><span>{{ row.region }}</span></td>
+                  <td>{{ row.total }}<span>{{ row.active }} акт. · {{ row.future }} буд.</span></td>
+                  <td>{{ row.median_price_per_sotka_text }}<span>{{ row.price_count }} с ценой</span></td>
+                  <td>{{ row.average_score_text }}</td>
+                  <td>{{ row.risk_note }}<span>{{ row.data_note }}</span></td>
+                  <td><a class="secondary-action compact" href="{{ row.href }}">Лоты</a></td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6">Нет данных по районам.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="auction-v2-table-wrap">
+          <h3>Населенные пункты</h3>
+          <table class="auction-v2-analytics-table">
+            <thead>
+              <tr>
+                <th>Населенный пункт</th>
+                <th>Лоты</th>
+                <th>Цена</th>
+                <th>Проверка</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in analytics.locality_rows %}
+                <tr>
+                  <td><strong>{{ row.label }}</strong><span>{{ row.district }}</span></td>
+                  <td>{{ row.total }}<span>{{ row.active }} акт. · {{ row.future }} буд.</span></td>
+                  <td>{{ row.median_price_per_sotka_text }}</td>
+                  <td>{{ row.risk_note }}<span>{{ row.data_note }}</span></td>
+                  <td><a class="secondary-action compact" href="{{ row.href }}">Лоты</a></td>
+                </tr>
+              {% else %}
+                <tr><td colspan="5">Нет данных по населенным пунктам.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel-modern auction-v2-analytics-section">
+      <div class="panel-head">
+        <h2>Области и назначения</h2>
+        <span>рынок по типам земли</span>
+      </div>
+      <div class="auction-v2-analytics-grid">
+        <div class="auction-v2-table-wrap">
+          <h3>Области</h3>
+          <table class="auction-v2-analytics-table">
+            <thead>
+              <tr>
+                <th>Регион</th>
+                <th>Лоты</th>
+                <th>Цена за сотку</th>
+                <th>Риск</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in analytics.region_rows %}
+                <tr>
+                  <td><strong>{{ row.label }}</strong></td>
+                  <td>{{ row.total }}<span>{{ row.active }} акт. · {{ row.archive }} ист.</span></td>
+                  <td>{{ row.median_price_per_sotka_text }}</td>
+                  <td>{{ row.risk_note }}</td>
+                  <td><a class="secondary-action compact" href="{{ row.href }}">Лоты</a></td>
+                </tr>
+              {% else %}
+                <tr><td colspan="5">Нет данных по областям.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="auction-v2-table-wrap">
+          <h3>Назначения</h3>
+          <table class="auction-v2-analytics-table">
+            <thead>
+              <tr>
+                <th>Назначение</th>
+                <th>Лоты</th>
+                <th>Цена</th>
+                <th>Индекс</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in analytics.purpose_rows %}
+                <tr>
+                  <td><strong>{{ row.label }}</strong></td>
+                  <td>{{ row.total }}<span>{{ row.active }} акт. · {{ row.future }} буд.</span></td>
+                  <td>{{ row.median_price_per_sotka_text }}</td>
+                  <td>{{ row.average_score_text }}</td>
+                  <td><a class="secondary-action compact" href="{{ row.href }}">Лоты</a></td>
+                </tr>
+              {% else %}
+                <tr><td colspan="5">Нет данных по назначениям.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel-modern auction-v2-analytics-section">
+      <div class="panel-head">
+        <h2>История публикаций</h2>
+        <span>{{ analytics.month_rows|length }} месяцев</span>
+      </div>
+      <div class="auction-v2-bar-list">
+        {% for row in analytics.month_rows %}
+          <a class="auction-v2-bar-row" href="{{ row.history_href }}">
+            <span>{{ row.label }}</span>
+            <strong style="--bar-width: {{ row.total if row.total < 100 else 100 }}%"></strong>
+            <em>{{ row.total }} лотов · медиана {{ row.median_price_per_sotka_text }}</em>
+          </a>
+        {% else %}
+          <div class="auction-v2-empty-state">
+            <strong>История пока пустая</strong>
+            <span>После загрузки лотов здесь появится динамика публикаций.</span>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+  <script src="/static/site-catalogs.js?v=20260804b" defer></script>
+{% endblock %}
+

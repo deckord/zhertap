@@ -1,0 +1,93 @@
+﻿{% extends "base.html" %}
+{% block title %}Проверка точки · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Проверка одной точки</h1>
+    <p>Открываем точку на спутнике, ставим понятный статус, потом система сразу показывает следующую.</p>
+  </div>
+  <a class="button-link" href="/admin/urban-plans#planning-completion">Назад к очереди</a>
+</section>
+
+<section class="panel form-panel">
+  <div class="stats-grid compact-stats">
+    <div class="stat-card">
+      <span>осталось проверить</span>
+      <strong>{{ queued_count }}</strong>
+      <small>точек</small>
+    </div>
+    <div class="stat-card">
+      <span>уже размечено</span>
+      <strong>{{ reviewed_count }}</strong>
+      <small>точек</small>
+    </div>
+  </div>
+
+  {% if candidate %}
+  <div class="notice">
+    <strong>{{ candidate.region }}</strong><br>
+    {{ candidate.district }}{% if candidate.locality %} · {{ candidate.locality }}{% endif %}<br>
+    Что ищем: пустое место для {{ candidate.requested_use }} · координаты {{ "%.6f"|format(candidate.latitude) }}, {{ "%.6f"|format(candidate.longitude) }}<br>
+    {% if candidate.nearby_cadastre %}
+    Ориентир рядом: {{ candidate.nearby_cadastre }}
+    {% if candidate.nearby_distance_m is not none %} · примерно {{ "%.0f"|format(candidate.nearby_distance_m) }} м{% endif %}
+    {% if candidate.nearby_land_use %} · {{ candidate.nearby_land_use }}{% endif %}<br>
+    {% endif %}
+    {{ candidate.selection_reason or 'Это расчетная точка внутри зоны генплана, ее нужно проверить по спутнику.' }}
+  </div>
+
+  <div class="action-row">
+    <a class="button-link" href="{{ candidate.google_maps_url }}" target="_blank" rel="noopener">Открыть Google спутник</a>
+    <a class="button-link" href="/admin/planning-candidates/review-next">Пропустить пока</a>
+  </div>
+
+  <form action="/admin/planning-candidates/review" method="post" class="urban-plan-form">
+    <input type="hidden" name="review_return" value="next">
+    <input type="hidden" name="candidate_region" value="{{ candidate.region }}">
+    <input type="hidden" name="candidate_district" value="{{ candidate.district }}">
+    <input type="hidden" name="candidate_locality" value="{{ candidate.locality }}">
+    <input type="hidden" name="candidate_use" value="{{ candidate.requested_use }}">
+    <input type="hidden" name="candidate_latitude" value="{{ candidate.latitude }}">
+    <input type="hidden" name="candidate_longitude" value="{{ candidate.longitude }}">
+    <input type="hidden" name="candidate_trust_level" value="{{ candidate.trust_level or '' }}">
+    {% if candidate.allowed_area_ha is not none %}
+    <input type="hidden" name="candidate_allowed_area_ha" value="{{ candidate.allowed_area_ha or '' }}">
+    {% endif %}
+    <input type="hidden" name="candidate_nearby_cadastre" value="{{ candidate.nearby_cadastre or '' }}">
+    {% if candidate.nearby_distance_m is not none %}
+    <input type="hidden" name="candidate_nearby_distance_m" value="{{ candidate.nearby_distance_m or '' }}">
+    {% endif %}
+    <input type="hidden" name="candidate_nearby_land_use" value="{{ candidate.nearby_land_use or '' }}">
+    {% if candidate.candidate_area_ha is not none %}
+    <input type="hidden" name="candidate_candidate_area_ha" value="{{ candidate.candidate_area_ha or '' }}">
+    {% endif %}
+    <input type="hidden" name="candidate_selection_reason" value="{{ candidate.selection_reason or '' }}">
+    <input type="hidden" name="candidate_limit" value="25">
+    <input type="hidden" name="candidate_step" value="90">
+    <input type="hidden" name="candidate_buffer" value="20">
+    <input type="hidden" name="candidate_shadow" value="1">
+    <input type="hidden" name="candidate_egkn" value="1">
+
+    <label>Статус по спутнику
+      <select name="candidate_status">
+        {% for status, label in candidate_status_labels.items() %}
+        {% if status != 'queued' %}
+        <option value="{{ status }}">{{ label }}</option>
+        {% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <label>Заметка
+      <input name="candidate_note" value="">
+    </label>
+    <button class="primary" type="submit">Сохранить и открыть следующую</button>
+  </form>
+  {% else %}
+  <div class="notice">
+    <strong>Очередь пустая.</strong><br>
+    Все подготовленные точки уже получили статус. Если нужны новые точки, вернитесь к очереди и создайте ее заново.
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+

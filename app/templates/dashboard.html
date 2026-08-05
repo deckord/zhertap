@@ -1,0 +1,81 @@
+﻿{% extends "base.html" %}
+{% block title %}Очередь · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Очередь заявок</h1>
+    <p>Строгий поиск по ЕГКН, OSM и загруженным официальным слоям генплана/ПДП.</p>
+  </div>
+</section>
+
+<section class="panel form-panel">
+  <h2>Новая заявка</h2>
+  <form action="/admin/searches" method="post" class="request-form" id="search-form">
+    <label>Область
+      <select name="region" id="region-select" required>
+        <option value="Акмолинская область">Акмолинская область (01)</option>
+      </select>
+    </label>
+    <label>Район
+      <select name="district" id="district-select" required disabled>
+        <option value="">Загрузка районов...</option>
+      </select>
+    </label>
+    <label>Населенный пункт
+      <select name="locality" id="locality-select" required disabled>
+        <option value="">Сначала выберите район</option>
+      </select>
+    </label>
+    <label>Назначение
+      <select name="purpose" id="purpose-select">
+        <option value="ЛПХ">ЛПХ</option>
+        <option value="ЛПХ(новый поиск)">ЛПХ(новый поиск)</option>
+        <option value="Садоводство">Садоводство</option>
+      </select>
+    </label>
+    <label id="allotment-field" hidden>Вид надела
+      <select name="allotment_type" id="allotment-select">
+        <option value="household">Приусадебный</option>
+        <option value="field">Полевой</option>
+      </select>
+    </label>
+    <label id="irrigation-field" hidden>Расчетный профиль
+      <select name="irrigation_type" id="irrigation-select">
+        <option value="irrigated">Орошаемая земля</option>
+        <option value="non_irrigated">Неорошаемая земля</option>
+      </select>
+    </label>
+    <label>Площадь<input id="area-display" type="text" value="10 соток (0.10 га)" readonly></label>
+    <label>Результатов<input name="result_limit" type="number" value="10" min="1" max="15"></label>
+    <button type="submit" class="primary" id="search-submit" disabled>Создать заявку</button>
+  </form>
+  <p class="catalog-status" id="catalog-status" aria-live="polite"></p>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Создана</th><th>Район</th><th>Площадь</th><th>Статус</th><th>Оплата</th><th>Прогресс</th><th></th></tr></thead>
+    <tbody>
+      {% for item in searches %}
+      {% set status_badge = admin_search_status(item) %}
+      <tr>
+        <td>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+        <td><strong>{{ item.district }}</strong><br><span class="muted">{{ item.locality or 'весь район' }} · {{ item.purpose }}{% if item.allotment_type %} · {{ 'полевой' if item.allotment_type == 'field' else 'приусадебный' }}{% endif %}</span></td>
+        <td>{{ '%.2f'|format(item.area_ha) }} га</td>
+        <td>
+          <span class="status status-{{ status_badge.tone }}" title="{{ status_badge.detail }}">{{ status_badge.label }}</span>
+          <br><span class="muted status-detail">{{ status_badge.detail }}</span>
+        </td>
+        <td><span class="status payment-{{ item.payment_status }}">{{ payment_labels.get(item.payment_status, item.payment_status) }}</span></td>
+        <td>{{ item.progress }}%</td>
+        <td><a class="button-link" href="/admin/searches/{{ item.id }}">Открыть</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">Заявок пока нет.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<script src="{{ url_for('static', path='/catalog.js') }}"></script>
+{% endblock %}
+

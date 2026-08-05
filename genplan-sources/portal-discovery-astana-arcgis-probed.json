@@ -1,0 +1,180 @@
+﻿{
+  "platform": "arcgis",
+  "url": "https://gis.esaulet.kz/server/rest/services/",
+  "service_count": 200,
+  "candidate_service_count": 2,
+  "candidates": [
+    {
+      "name": "dop_sloi_geoportal_otkr",
+      "type": "MapServer",
+      "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer",
+      "layers": [
+        {
+          "id": 20,
+          "name": "Водоохранные зоны/полосы",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/20",
+          "search_text": "водоохранные зоны/полосы ",
+          "sample": {
+            "ok": true,
+            "geometry_type": "esriGeometryPolygon",
+            "capabilities": "Map,Query,Data",
+            "field_names": [
+              "OBJECTID",
+              "SHAPE",
+              "NAME",
+              "OBLAST",
+              "REGION",
+              "KATO",
+              "NOTE",
+              "SHAPE_Length",
+              "SHAPE_Area"
+            ],
+            "query_ok": true,
+            "sample_attribute_keys": [
+              "KATO",
+              "NAME",
+              "NOTE",
+              "OBJECTID",
+              "OBLAST",
+              "REGION",
+              "SHAPE_Area",
+              "SHAPE_Length"
+            ],
+            "sample_geometry_keys": [
+              "rings"
+            ]
+          }
+        },
+        {
+          "id": 36,
+          "name": "Зоны с особыми условиями",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/36",
+          "search_text": "зоны с особыми условиями ",
+          "sample": {
+            "ok": true,
+            "geometry_type": null,
+            "capabilities": "Map,Query",
+            "field_names": [],
+            "query_ok": true,
+            "sample_attribute_keys": [],
+            "sample_geometry_keys": []
+          }
+        },
+        {
+          "id": 41,
+          "name": "Охранные зоны",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/41",
+          "search_text": "охранные зоны ",
+          "sample": {
+            "ok": true,
+            "geometry_type": "esriGeometryPolygon",
+            "capabilities": "Map,Query,Data",
+            "field_names": [
+              "OBJECTID_1",
+              "Shape",
+              "NAME",
+              "CONTRIBUTI",
+              "Shape_Length",
+              "Shape_Area"
+            ],
+            "query_ok": true,
+            "sample_attribute_keys": [
+              "CONTRIBUTI",
+              "NAME",
+              "OBJECTID_1",
+              "Shape_Area",
+              "Shape_Length"
+            ],
+            "sample_geometry_keys": [
+              "rings"
+            ]
+          }
+        },
+        {
+          "id": 37,
+          "name": "Санитарная зона ТБО",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/37",
+          "search_text": "санитарная зона тбо ",
+          "sample": {
+            "ok": true,
+            "geometry_type": "esriGeometryPolygon",
+            "capabilities": "Map,Query,Data",
+            "field_names": [
+              "ID_GEOM",
+              "NAME",
+              "RADIUS",
+              "BASE",
+              "DATE_INTRO",
+              "SHAPE"
+            ],
+            "query_ok": true,
+            "sample_attribute_keys": [
+              "BASE",
+              "DATE_INTRO",
+              "ID_GEOM",
+              "NAME",
+              "RADIUS"
+            ],
+            "sample_geometry_keys": [
+              "rings"
+            ]
+          }
+        },
+        {
+          "id": 38,
+          "name": "Санитарная зона кладбищ",
+          "url": "https://gis.esaulet.kz/server/rest/services/dop_sloi_geoportal_otkr/MapServer/38",
+          "search_text": "санитарная зона кладбищ ",
+          "sample": {
+            "ok": true,
+            "geometry_type": "esriGeometryPolygon",
+            "capabilities": "Map,Query,Data",
+            "field_names": [
+              "ID_GEOM",
+              "NAME",
+              "RADIUS",
+              "BASE",
+              "SHAPE",
+              "SHAPE_Length",
+              "SHAPE_Area"
+            ],
+            "query_ok": true,
+            "sample_attribute_keys": [
+              "BASE",
+              "ID_GEOM",
+              "NAME",
+              "RADIUS",
+              "SHAPE_Area",
+              "SHAPE_Length"
+            ],
+            "sample_geometry_keys": [
+              "rings"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "GenPlan_NurSultan_2030",
+      "type": "MapServer",
+      "url": "https://gis.esaulet.kz/server/rest/services/GenPlan_NurSultan_2030/MapServer",
+      "layers": [
+        {
+          "id": 0,
+          "name": "GenPlan_NurSultan_2030",
+          "url": "https://gis.esaulet.kz/server/rest/services/GenPlan_NurSultan_2030/MapServer/0",
+          "search_text": "genplan_nursultan_2030 ",
+          "sample": {
+            "ok": true,
+            "geometry_type": null,
+            "capabilities": "Map",
+            "field_names": [],
+            "query_ok": true,
+            "sample_attribute_keys": [],
+            "sample_geometry_keys": []
+          }
+        }
+      ]
+    }
+  ]
+}

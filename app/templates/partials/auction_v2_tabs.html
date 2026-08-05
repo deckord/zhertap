@@ -1,0 +1,17 @@
+﻿{% set path = request.url.path %}
+{% set is_lot_area = path == '/cabinet/auctions-v2' or (path.startswith('/cabinet/auctions-v2/') and path not in ['/cabinet/auctions-v2/map', '/cabinet/auctions-v2/analytics', '/cabinet/auctions-v2/sources']) %}
+<nav class="auction-v2-module-tabs" aria-label="Разделы аукционов v2">
+  <a class="{{ 'is-active' if is_lot_area else '' }}" href="/cabinet/auctions-v2{% if filter_query is defined and filter_query %}?{{ filter_query }}{% endif %}">
+    <span>Лоты</span>
+    <small>поиск и карточки</small>
+  </a>
+  <a class="{{ 'is-active' if path == '/cabinet/auctions-v2/map' else '' }}" href="/cabinet/auctions-v2/map{% if filter_query is defined and filter_query %}?{{ filter_query }}{% endif %}">
+    <span>Карта</span>
+    <small>границы и окружение</small>
+  </a>
+  <a class="{{ 'is-active' if path == '/cabinet/auctions-v2/analytics' else '' }}" href="/cabinet/auctions-v2/analytics{% if filter_query is defined and filter_query %}?{{ filter_query }}{% endif %}">
+    <span>Аналитика</span>
+    <small>районы и история</small>
+  </a>
+</nav>
+

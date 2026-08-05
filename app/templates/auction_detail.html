@@ -1,0 +1,126 @@
+﻿{% extends "base.html" %}
+{% block title %}Лот №{{ lot.auction_number or lot.source_lot_id }} · {{ app_name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="/admin/auctions">← Аукционы</a></p>
+
+<section class="section-head">
+  <div>
+    <h1>Лот №{{ lot.auction_number or lot.source_lot_id }}</h1>
+    <p>{{ lot.region or 'Регион не указан' }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
+  </div>
+  <a class="button-link" href="{{ lot.source_url }}" target="_blank" rel="noopener">Открыть E-Qazyna ↗</a>
+</section>
+
+<section class="auction-metrics">
+  <div><span>Рейтинг</span><strong>{{ metrics.rating }}/100</strong></div>
+  <div><span>Цена за сотку</span><strong>{{ '{:,.0f}'.format(metrics.price_per_sotka).replace(',', ' ') if metrics.price_per_sotka is not none else '—' }} ₸</strong></div>
+  <div><span>Средняя по району</span><strong>{{ '{:,.0f}'.format(metrics.district_average_price_per_sotka).replace(',', ' ') if metrics.district_average_price_per_sotka is not none else '—' }} ₸</strong></div>
+  <div><span>Разница</span><strong>{{ ('%+.0f%%'|format(metrics.district_difference_percent)) if metrics.district_difference_percent is not none else '—' }}</strong></div>
+  <div><span>Публикаций участка</span><strong>{{ metrics.publication_count }}</strong></div>
+  <div><span>Документов</span><strong>{{ metrics.document_count }}</strong></div>
+</section>
+
+<section class="candidate-list">
+  <article class="candidate">
+    <header>
+      <div>
+        <span class="rank">Карточка</span>
+        <h2>{{ lot.purpose or lot.title }}</h2>
+        <p>{{ lot.location_text or 'Местоположение не указано' }}</p>
+      </div>
+      <span class="status {% if lot.active %}status-ready{% endif %}">{{ lot.status or 'не указан' }}</span>
+    </header>
+    <div class="facts">
+      <div><span>Кадастровый номер</span><strong>{{ lot.cadastre_number or '—' }}</strong></div>
+      <div><span>Площадь</span><strong>{{ ('%.4f'|format(lot.area_ha)).rstrip('0').rstrip('.') if lot.area_ha is not none else '—' }} га</strong></div>
+      <div><span>Стартовая цена</span><strong>{{ '{:,.0f}'.format(lot.start_price_kzt).replace(',', ' ') if lot.start_price_kzt is not none else '—' }} ₸</strong></div>
+      <div><span>Цена за м2</span><strong>{{ '{:,.0f}'.format(metrics.price_per_square_meter).replace(',', ' ') if metrics.price_per_square_meter is not none else '—' }} ₸</strong></div>
+      <div><span>Гарантийный взнос</span><strong>{{ '{:,.0f}'.format(lot.guarantee_kzt).replace(',', ' ') if lot.guarantee_kzt is not none else '—' }} ₸</strong></div>
+      <div><span>Цена продажи</span><strong>{{ '{:,.0f}'.format(lot.sale_price_kzt).replace(',', ' ') if lot.sale_price_kzt is not none else '—' }} ₸</strong></div>
+      <div><span>Право на землю</span><strong>{{ lot.land_rights or '—' }}</strong></div>
+      <div><span>Категория</span><strong>{{ lot.functional_purpose_level2 or '—' }}</strong></div>
+      <div><span>Торги</span><strong>{{ lot.auction_starts_at.strftime('%d.%m.%Y %H:%M') if lot.auction_starts_at else '—' }}</strong></div>
+      <div><span>Продавец</span><strong>{{ lot.seller_name or '—' }}</strong></div>
+      <div><span>БИН продавца</span><strong>{{ lot.seller_bin or '—' }}</strong></div>
+      <div><span>Первое обнаружение</span><strong>{{ lot.first_seen_at.strftime('%d.%m.%Y %H:%M') if lot.first_seen_at else '—' }}</strong></div>
+    </div>
+  </article>
+
+  <article class="candidate">
+    <h2>Документы</h2>
+    <table>
+      <tbody>
+      {% for document in lot.documents %}
+        <tr>
+          <td>{{ document.title }}</td>
+          <td>{{ document.file_type or 'файл' }}</td>
+          <td><a href="{{ document.source_url }}" target="_blank" rel="noopener">Открыть ↗</a></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="3" class="empty">Документы пока не найдены в карточке источника.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </article>
+
+  <article class="candidate">
+    <h2>История публикаций</h2>
+    <table>
+      <thead><tr><th>Дата фиксации</th><th>Статус</th><th>Стартовая цена</th><th>Цена продажи</th><th>Дата торгов</th></tr></thead>
+      <tbody>
+      {% for item in history %}
+        <tr>
+          <td>{{ item.observed_at.strftime('%d.%m.%Y %H:%M') }}</td>
+          <td>{{ item.status or '—' }}</td>
+          <td>{{ '{:,.0f}'.format(item.start_price_kzt).replace(',', ' ') if item.start_price_kzt is not none else '—' }} ₸</td>
+          <td>{{ '{:,.0f}'.format(item.sale_price_kzt).replace(',', ' ') if item.sale_price_kzt is not none else '—' }} ₸</td>
+          <td>{{ item.auction_starts_at.strftime('%d.%m.%Y %H:%M') if item.auction_starts_at else '—' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="empty">История начнет накапливаться после синхронизаций.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </article>
+
+  <article class="candidate">
+    <h2>Журнал изменений</h2>
+    <table>
+      <thead><tr><th>Дата</th><th>Поле</th><th>Было</th><th>Стало</th></tr></thead>
+      <tbody>
+      {% for item in changes %}
+        <tr>
+          <td>{{ item.changed_at.strftime('%d.%m.%Y %H:%M') }}</td>
+          <td>{{ item.field_name }}</td>
+          <td>{{ item.old_value or '—' }}</td>
+          <td>{{ item.new_value or '—' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="empty">Изменений по отслеживаемым полям пока не было.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </article>
+
+  <article class="candidate">
+    <h2>Районы области</h2>
+    <table>
+      <thead><tr><th>Район</th><th>Всего</th><th>Активных</th><th>Средняя цена</th><th>Средняя площадь</th></tr></thead>
+      <tbody>
+      {% for item in district_stats %}
+        <tr>
+          <td>{{ item.district }}</td>
+          <td>{{ item.total }}</td>
+          <td>{{ item.active }}</td>
+          <td>{{ '{:,.0f}'.format(item.avg_price).replace(',', ' ') if item.avg_price is not none else '—' }} ₸</td>
+          <td>{{ ('%.2f'|format(item.avg_area)).rstrip('0').rstrip('.') if item.avg_area is not none else '—' }} га</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="empty">Статистика района появится после накопления лотов.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </article>
+</section>
+{% endblock %}
+
