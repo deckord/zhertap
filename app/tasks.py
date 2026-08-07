@@ -38,6 +38,55 @@ from app.services import (
 )
 
 logger = get_task_logger(__name__)
+DEADLOCK_SQLSTATE = "40P01"
+
+
+def _extract_db_error_code(exc: BaseException) -> str | None:
+    visited: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        code = getattr(current, "pgcode", None)
+        if code is None and hasattr(current, "orig"):
+            code = getattr(current.orig, "pgcode", None)
+        if isinstance(code, str):
+            return code
+
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if cause is not None:
+            current = cause
+            continue
+        current = context
+    return None
+
+
+def _is_deadlock_error(exc: BaseException) -> bool:
+    return (
+        _extract_db_error_code(exc) == DEADLOCK_SQLSTATE
+        or "deadlock detected" in str(exc).lower()
+    )
+
+
+def _raise_deadlock_retry(exc: BaseException, self: object, delay_seconds: int) -> None:
+    if not _is_deadlock_error(exc):
+        return
+    if not hasattr(self, "request") or not hasattr(self, "max_retries"):
+        return
+    retries = getattr(self.request, "retries", 0)
+    max_retries = getattr(self, "max_retries", 0)
+    if retries >= max_retries:
+        return
+    countdown = delay_seconds * (retries + 1)
+    task_name = getattr(self, "name", "land_scout.sync_task")
+    logger.warning(
+        "Task %s hit deadlock, retrying in %ss (attempt %s/%s)",
+        task_name,
+        countdown,
+        retries + 1,
+        max_retries,
+    )
+    raise self.retry(exc=exc, countdown=countdown) from exc  # type: ignore[attr-defined]
 
 beat_schedule = {
     "recover-stale-searches": {
@@ -446,6 +495,7 @@ def sync_current_auctions_task(self) -> dict[str, int]:
             **v2_result.as_dict(),
         }
     except Exception as exc:
+        _raise_deadlock_retry(exc, self, 60)
         logger.warning("E-Qazyna auction sync failed: %s", exc)
         raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1)) from exc
 
@@ -486,6 +536,7 @@ def sync_auction_v2_full_cycle_task(self) -> dict[str, int]:
             session.commit()
         return result.as_dict()
     except Exception as exc:
+        _raise_deadlock_retry(exc, self, 60)
         logger.warning("Auction v2 full-cycle sync failed: %s", exc)
         raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1)) from exc
 
@@ -529,6 +580,7 @@ def sync_auction_v2_eqazyna_history_backfill_task(self) -> dict[str, int]:
             "pages_scanned": result.pages_scanned,
         }
     except Exception as exc:
+        _raise_deadlock_retry(exc, self, 120)
         logger.warning("Auction v2 E-Qazyna history backfill failed: %s", exc)
         raise self.retry(exc=exc, countdown=120 * (self.request.retries + 1)) from exc
 
@@ -564,5 +616,6 @@ def sync_auction_v2_sources_task(self) -> dict[str, int]:
             session.commit()
         return result.as_dict()
     except Exception as exc:
+        _raise_deadlock_retry(exc, self, 60)
         logger.warning("Auction v2 source sync failed: %s", exc)
         raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1)) from exc
