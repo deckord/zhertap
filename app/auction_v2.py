@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from html import escape
 from pathlib import Path
 from statistics import median
@@ -25,6 +25,7 @@ from app.auction_documents import (
 from app.auction_service import (
     AuctionFilters,
     AuctionLotMetrics,
+    AuctionSyncResult,
     auction_lot_geo_metrics,
     auction_lot_metrics,
     sync_current_auctions,
@@ -319,6 +320,19 @@ DEFAULT_AUCTION_SOURCES: tuple[dict[str, object], ...] = (
         "quality_status": "live",
         "legal_status": "official_public",
         "notes": "Основной официальный источник карточек лотов, сроков, документов и статусов торгов.",
+    },
+    {
+        "code": "eqazyna_history_backfill",
+        "source_type": "official_auction_archive",
+        "name": "E-Qazyna: архив торгов",
+        "base_url": "https://sauda.e-qazyna.kz/ru/list?objectType=Land",
+        "region": "all",
+        "parser_kind": "eqazyna_history_backfill",
+        "priority": 98,
+        "crawl_interval_minutes": 1440,
+        "quality_status": "partial_live",
+        "legal_status": "official_public",
+        "notes": "Загружает старые опубликованные лоты и результаты торгов E-Qazyna из открытого списка. Это нужно для истории участка, повторных размещений и сравнения цен; заявки не подаются.",
     },
     {
         "code": "gov_kz_akimat_announcements",
@@ -630,6 +644,35 @@ def seed_auction_v2_sources(session: Session) -> list[AuctionSource]:
             setattr(source, key, value)
     session.flush()
     return sorted(existing.values(), key=lambda item: (-item.priority, item.name))
+
+
+def configured_eqazyna_history_statuses() -> list[str]:
+    values = [
+        item.strip()
+        for item in settings.eqazyna_history_sync_statuses.split(",")
+        if item.strip()
+    ]
+    return values or ["SuccessProtocolSigned", "FailureProtocolSigned"]
+
+
+def eqazyna_history_publish_date_windows(*, today: date | None = None) -> list[tuple[str, str]]:
+    end_date = today or datetime.now(UTC).date()
+    start_date = date(settings.eqazyna_history_sync_start_year, 1, 1)
+    if start_date > end_date:
+        start_date = end_date
+    window_days = max(1, settings.eqazyna_history_sync_window_days)
+    windows: list[tuple[str, str]] = []
+    cursor = start_date
+    while cursor <= end_date:
+        window_end = min(cursor + timedelta(days=window_days - 1), end_date)
+        windows.append(
+            (
+                cursor.strftime("%d.%m.%Y"),
+                window_end.strftime("%d.%m.%Y"),
+            )
+        )
+        cursor = window_end + timedelta(days=1)
+    return windows
 
 
 def _json_payload(value: str | None) -> dict[str, object]:
@@ -1796,6 +1839,159 @@ def sync_auction_v2_gov_kz_announcements(
             matches += 1
     session.flush()
     return len(announcements), matches, crawl_errors
+
+
+def sync_auction_v2_eqazyna_history_backfill(
+    session: Session,
+    *,
+    max_pages: int | None = None,
+    max_lots: int | None = None,
+    statuses: list[str] | None = None,
+    publish_date_windows: list[tuple[str, str]] | None = None,
+) -> AuctionSyncResult:
+    page_limit = max_pages or settings.eqazyna_history_sync_max_pages
+    lot_limit = max_lots or settings.eqazyna_history_sync_max_lots
+    history_statuses = statuses or configured_eqazyna_history_statuses()
+    date_windows = publish_date_windows or eqazyna_history_publish_date_windows()
+    sources_by_code = {source.code: source for source in seed_auction_v2_sources(session)}
+    source = sources_by_code.get("eqazyna_history_backfill")
+    source_id = source.id if source is not None else None
+    run_id: int | None = None
+    started_at = datetime.now(UTC)
+    if source is not None and source.active:
+        run = AuctionCrawlRun(
+            source_id=source.id,
+            status="running",
+            started_at=started_at,
+            raw_payload_json=json.dumps(
+                {
+                    "mode": "auction_v2_eqazyna_history_backfill",
+                    "max_pages": page_limit,
+                    "max_lots": lot_limit,
+                    "statuses": history_statuses,
+                    "publish_date_windows_count": len(date_windows),
+                    "publish_date_window_first": date_windows[0] if date_windows else None,
+                    "publish_date_window_last": date_windows[-1] if date_windows else None,
+                    "deactivate_missing": False,
+                    "send_notifications": False,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.add(run)
+        source.last_checked_at = started_at
+        session.commit()
+        run_id = run.id
+
+    try:
+        result = AuctionSyncResult(
+            fetched=0,
+            created=0,
+            updated=0,
+            notifications_sent=0,
+            errors=0,
+            crawl_complete=True,
+            status_counts={status: 0 for status in history_statuses},
+        )
+        for publish_date_window in date_windows:
+            window_result = sync_current_auctions(
+                session,
+                max_pages=page_limit,
+                max_lots=lot_limit,
+                statuses=history_statuses,
+                publish_date_windows=[publish_date_window],
+                deactivate_missing=False,
+                send_notifications=False,
+            )
+            result.fetched += window_result.fetched
+            result.created += window_result.created
+            result.updated += window_result.updated
+            result.notifications_sent += window_result.notifications_sent
+            result.errors += window_result.errors
+            result.detail_errors += window_result.detail_errors
+            result.deactivated += window_result.deactivated
+            result.url_count += window_result.url_count
+            result.pages_scanned += window_result.pages_scanned
+            result.crawl_complete = result.crawl_complete and window_result.crawl_complete
+            status_counts = result.status_counts or {}
+            for status, count in (window_result.status_counts or {}).items():
+                status_counts[status] = status_counts.get(status, 0) + count
+            result.status_counts = status_counts
+    except Exception as exc:
+        session.rollback()
+        if run_id is not None:
+            finished_at = datetime.now(UTC)
+            run = session.get(AuctionCrawlRun, run_id)
+            source = session.get(AuctionSource, source_id) if source_id is not None else None
+            if run is not None:
+                run.status = "error"
+                run.finished_at = finished_at
+                run.error_message = str(exc)[:2000]
+            if source is not None:
+                source.last_checked_at = finished_at
+                source.last_error = str(exc)[:2000]
+            session.commit()
+        raise
+
+    if run_id is not None:
+        finished_at = datetime.now(UTC)
+        run = session.get(AuctionCrawlRun, run_id)
+        source = session.get(AuctionSource, source_id) if source_id is not None else None
+        status = (
+            "warning"
+            if result.errors
+            else "missing"
+            if result.url_count == 0 and result.fetched == 0
+            else "success"
+        )
+        if run is not None:
+            run.status = status
+            run.items_seen = result.url_count or result.fetched
+            run.items_created = result.created
+            run.items_updated = result.updated
+            run.finished_at = finished_at
+            run.error_message = (
+                f"Ошибки деталей: {result.detail_errors}"
+                if result.detail_errors
+                else None
+            )
+            run.raw_payload_json = json.dumps(
+                {
+                    "mode": "auction_v2_eqazyna_history_backfill",
+                    "max_pages": page_limit,
+                    "max_lots": lot_limit,
+                    "statuses": history_statuses,
+                    "publish_date_windows_count": len(date_windows),
+                    "publish_date_window_first": date_windows[0] if date_windows else None,
+                    "publish_date_window_last": date_windows[-1] if date_windows else None,
+                    "fetched": result.fetched,
+                    "url_count": result.url_count,
+                    "pages_scanned": result.pages_scanned,
+                    "crawl_complete": result.crawl_complete,
+                    "detail_errors": result.detail_errors,
+                    "errors": result.errors,
+                    "deactivated": result.deactivated,
+                    "status_counts": result.status_counts or {},
+                },
+                ensure_ascii=False,
+            )
+        if source is not None:
+            source.last_checked_at = finished_at
+            source.last_error = (
+                f"Ошибки деталей: {result.detail_errors}"
+                if result.detail_errors
+                else None
+            )
+            if status in {"success", "missing"}:
+                source.last_success_at = finished_at
+        session.commit()
+    prepare_auction_v2_worklist(
+        session,
+        limit=settings.auction_v2_refresh_limit,
+        send_notifications=False,
+    )
+    session.commit()
+    return result
 
 
 def sync_auction_v2_full_cycle(

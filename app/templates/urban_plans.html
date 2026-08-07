@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Генпланы и ПДП · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="section-head">
@@ -17,12 +17,15 @@
     </div>
     <div class="action-row">
       <form action="/admin/urban-plan-sources/sync-ggk" method="post">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="primary" type="submit">Синхронизировать ГГК</button>
       </form>
       <form action="/admin/urban-plan-sources/sync-smart-geohub" method="post">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button type="submit">Синхронизировать Smart GeoHub</button>
       </form>
       <form action="/admin/urban-plan-sources/probe-smart-geohub" method="post">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button type="submit">Проверить геометрию GeoHub</button>
       </form>
     </div>
@@ -118,10 +121,12 @@
       <p>Здесь документы из загруженного архива один раз ставятся в обработку: PDF определяется как векторный или растровый, многостраничные файлы уходят на выбор листа.</p>
     </div>
     <form action="/admin/genplan-pipeline/sync-manual" method="post" class="action-row">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <input type="hidden" name="limit" value="200">
       <button class="primary" type="submit">Синхронизировать PDF-конвейер</button>
     </form>
     <form action="/admin/genplan-pipeline/extract-next-legend" method="post" class="action-row">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <input type="hidden" name="limit_colors" value="12">
       <button type="submit">Разобрать следующий документ</button>
     </form>
@@ -191,6 +196,7 @@
           <th>Тип</th>
           <th>Статус</th>
           <th>Следующий шаг</th>
+          <th>Легенда</th>
         </tr>
       </thead>
       <tbody>
@@ -214,13 +220,25 @@
             {% if item.error_message %}<br><span class="muted">{{ item.error_message[:100] }}</span>{% endif %}
           </td>
           <td>{{ item.next_action or 'ожидает обработки' }}</td>
+          <td>
+            {% if item.pipeline_status in ['legend_draft_ready', 'needs_review'] %}
+            <a class="button-link" href="/admin/genplan-pipeline/documents/{{ item.id }}/legend">Цвета</a>
+            <a class="button-link" href="/admin/genplan-pipeline/documents/{{ item.id }}/legend-export">legend.json</a>
+            {% else %}
+            <span class="muted">нет цветов</span>
+            {% endif %}
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="5" class="empty">Конвейер пуст. Нажмите синхронизацию, чтобы поставить загруженные PDF и карты в обработку.</td></tr>
+        <tr><td colspan="6" class="empty">Конвейер пуст. Нажмите синхронизацию, чтобы поставить загруженные PDF и карты в обработку.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  <p class="muted">
+    Кнопка «Цвета» открывает список найденных цветов документа, где можно
+    отметить, что каждый цвет значит, и утвердить его для векторизации.
+  </p>
 </section>
 
 <section class="panel form-panel" id="planning-completion">
@@ -230,12 +248,14 @@
       <p>Здесь видно, какие территории уже готовы, где есть точки для Google, а где точки еще надо создать.</p>
     </div>
     <form action="/admin/planning-candidates/queue-all" method="post" class="action-row">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <input type="hidden" name="limit_per_scope" value="5">
       <input type="hidden" name="max_scopes" value="160">
       <input type="hidden" name="grid_step_m" value="180">
       <button class="primary" type="submit">Создать очередь по всем городам</button>
     </form>
     <form action="/admin/planning-candidates/queue-next-egkn" method="post" class="action-row">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <input type="hidden" name="limit_per_scope" value="2">
       <input type="hidden" name="grid_step_m" value="180">
       <button type="submit">Подготовить следующий город с ЕГКН</button>
@@ -522,6 +542,7 @@
           <td><a class="button-link" href="{{ point.google_maps_url }}" target="_blank" rel="noopener">Открыть Google</a></td>
           <td>
             <form action="/admin/planning-candidates/review" method="post" class="planning-review-form">
+              <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               <input type="hidden" name="candidate_region" value="{{ candidate_defaults.region }}">
               <input type="hidden" name="candidate_district" value="{{ candidate_defaults.district }}">
               <input type="hidden" name="candidate_locality" value="{{ candidate_defaults.locality }}">
@@ -606,6 +627,7 @@
 <section class="panel form-panel">
   <h2>Добавить геопривязанный слой</h2>
   <form action="/admin/urban-plans" method="post" enctype="multipart/form-data" class="urban-plan-form">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <label>Область
       <select name="region" id="plan-region-select" required disabled><option value="">Загрузка областей...</option></select>
     </label>
@@ -653,7 +675,7 @@
         <td><strong>{{ item.region }} · {{ item.district }}</strong><br><span class="muted">{{ item.locality or 'весь район' }}{% if item.zone_name %} · {{ item.zone_name }}{% endif %}</span></td>
         <td>{{ item.layer_kind }}<br><span class="muted">{{ item.purpose or 'all' }}</span></td>
         <td>{{ item.title }}<br><span class="muted">{{ item.approval_document }}{% if item.approval_date %} · {{ item.approval_date }}{% endif %}</span></td>
-        <td><a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.source_authority }} ↗</a><br><span class="muted">EPSG:{{ item.source_epsg }} · {{ item.source_file_name or 'файл не указан' }}{% if item.source_sha256 %}<br>SHA-256: {{ item.source_sha256 }}{% endif %}</span></td>
+        <td><a href="{{ item.source_url }}" target="_blank" rel="noopener">{{ item.source_authority }} ?</a><br><span class="muted">EPSG:{{ item.source_epsg }} · {{ item.source_file_name or 'файл не указан' }}{% if item.source_sha256 %}<br>SHA-256: {{ item.source_sha256 }}{% endif %}</span></td>
         <td>
           <span class="status {{ 'status-delivered' if item.active else 'status-failed' }}">{{ 'активен' if item.active else 'черновик/отключен' }}</span>
           <br><span class="muted">QA: {{ item.qa_status }} · источник: {{ item.provenance_status }} · территория: {{ item.identity_status }}</span>
@@ -661,6 +683,7 @@
         <td>
           {% if item.active or item.approved_for_search %}
           <form action="/admin/urban-plans/{{ item.id }}/toggle" method="post"><button type="submit">{{ 'Отключить' if item.active else 'Включить' }}</button></form>
+            <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           {% else %}
           <span class="muted">Ожидает независимой приемки</span>
           {% endif %}

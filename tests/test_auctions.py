@@ -258,6 +258,52 @@ def test_provider_crawls_multiple_statuses_and_marks_source_status() -> None:
     }
 
 
+def test_provider_crawls_publish_date_windows_for_archive() -> None:
+    list_requests: list[tuple[str | None, str | None, str | None, str | None, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ru/list":
+            status = request.url.params.get("searchStatus")
+            published_from = request.url.params.get("publishDateFromInclusive")
+            published_to = request.url.params.get("publishDateToInclusive")
+            more_filters = request.url.params.get("moreFilters")
+            page = request.url.params.get("p")
+            list_requests.append((status, published_from, published_to, more_filters, page))
+            if page == "1" and published_from == "01.01.2020":
+                return httpx.Response(200, text='<a href="/ru/list/202000">РђСЂС…РёРІ 2020</a>')
+            if page == "1" and published_from == "01.01.2021":
+                return httpx.Response(200, text='<a href="/ru/list/202100">РђСЂС…РёРІ 2021</a>')
+            return httpx.Response(200, text="<html><body>РќРµС‚ Р»РѕС‚РѕРІ</body></html>")
+        if request.url.path in {"/ru/list/202000", "/ru/list/202100"}:
+            return httpx.Response(200, text=DETAIL_HTML)
+        return httpx.Response(404)
+
+    provider = EqazynaProvider(
+        base_url="https://sauda.e-qazyna.kz",
+        transport=httpx.MockTransport(handler),
+    )
+    result = provider.current_lots_with_report(
+        statuses=["SuccessProtocolSigned"],
+        publish_date_windows=[
+            ("01.01.2020", "31.12.2020"),
+            ("01.01.2021", "31.12.2021"),
+        ],
+        max_pages=2,
+        max_lots=10,
+    )
+
+    assert [lot.source_lot_id for lot in result.lots] == ["202000", "202100"]
+    assert result.status_counts == {"SuccessProtocolSigned": 2}
+    assert result.pages_scanned == 4
+    assert result.complete is True
+    assert list_requests == [
+        ("SuccessProtocolSigned", "01.01.2020", "31.12.2020", "on", "1"),
+        ("SuccessProtocolSigned", "01.01.2020", "31.12.2020", "on", "2"),
+        ("SuccessProtocolSigned", "01.01.2021", "31.12.2021", "on", "1"),
+        ("SuccessProtocolSigned", "01.01.2021", "31.12.2021", "on", "2"),
+    ]
+
+
 def test_provider_applies_max_lots_across_all_statuses() -> None:
     detail_requests: list[str] = []
 
@@ -315,8 +361,10 @@ def test_provider_applies_max_lots_across_all_statuses() -> None:
 class StubAuctionProvider:
     def __init__(self, result: AuctionCrawlResult) -> None:
         self.result = result
+        self.calls: list[dict[str, object]] = []
 
-    def current_lots_with_report(self, **_: object) -> AuctionCrawlResult:
+    def current_lots_with_report(self, **kwargs: object) -> AuctionCrawlResult:
+        self.calls.append(kwargs)
         return self.result
 
 
@@ -816,6 +864,56 @@ def test_full_sync_deactivates_lots_missing_from_successful_crawl(
     assert result.crawl_complete is True
     assert current.active is True
     assert stale.active is False
+
+
+def test_history_backfill_keeps_missing_lots_active_and_passes_statuses(
+    session: Session,
+) -> None:
+    current, _, _ = upsert_auction_lot(session, lot_data(source_lot_id="current"))
+    stale, _, _ = upsert_auction_lot(
+        session,
+        lot_data(
+            source_lot_id="stale",
+            source_url="https://sauda.e-qazyna.kz/ru/list/stale",
+            auction_number="500099",
+        ),
+    )
+    session.commit()
+    provider = StubAuctionProvider(
+        AuctionCrawlResult(
+            lots=[lot_data(source_lot_id="current", auction_number="408332")],
+            source_lot_ids={"current"},
+            url_count=1,
+            pages_scanned=2,
+            complete=True,
+            status_counts={"SuccessProtocolSigned": 1},
+        )
+    )
+
+    result = sync_current_auctions(
+        session,
+        provider=provider,
+        max_pages=50,
+        max_lots=500,
+        statuses=["SuccessProtocolSigned"],
+        deactivate_missing=False,
+        send_notifications=False,
+    )
+
+    session.refresh(current)
+    session.refresh(stale)
+    assert result.deactivated == 0
+    assert result.crawl_complete is True
+    assert current.active is True
+    assert stale.active is True
+    assert provider.calls == [
+        {
+            "max_pages": 50,
+            "max_lots": 500,
+            "statuses": ["SuccessProtocolSigned"],
+            "publish_date_windows": None,
+        }
+    ]
 
 
 def test_incomplete_sync_keeps_missing_lots_active(session: Session) -> None:

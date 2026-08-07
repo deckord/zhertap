@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Анализ аукционов — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet">< В кабинет</a>
       <a class="back-link" href="/cabinet/search">Анализ территории</a>
     </div>
     <div class="section-title">
@@ -71,6 +71,7 @@
     </form>
     {% if has_paid_unlock %}
       <form class="subscribe-current-form" method="post" action="/cabinet/auctions/subscriptions">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <input type="hidden" name="region" value="{{ filters.region }}">
         <input type="hidden" name="district" value="{{ filters.district }}">
         <input type="hidden" name="locality" value="{{ filters.locality }}">
@@ -98,10 +99,11 @@
             </div>
             <div class="auction-card-meta">
               <span>{{ lot.area_ha or "—" }} га</span>
-              <b>{% if lot.start_price_kzt %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}Цена не указана{% endif %}</b>
+              <b>{% if lot.start_price_kzt %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ?{% else %}Цена не указана{% endif %}</b>
               <a href="/cabinet/auctions/{{ lot.id }}">Открыть аналитику</a>
               {% if has_paid_unlock %}
                 <form method="post" action="/cabinet/auctions/{{ lot.id }}/favorite">
+                  <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
                   <button type="submit">{{ "Убрать" if lot.id in favorite_ids else "В избранное" }}</button>
                 </form>
               {% else %}
@@ -123,7 +125,7 @@
       {% if has_previous_page or has_next_page %}
         <div class="pagination-actions">
           {% if has_previous_page %}
-            <a class="secondary-action compact" href="/cabinet/auctions?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page - 1 }}">← Предыдущие 40</a>
+            <a class="secondary-action compact" href="/cabinet/auctions?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page - 1 }}">< Предыдущие 40</a>
           {% endif %}
           {% if has_next_page %}
             <a class="primary-action compact" href="/cabinet/auctions?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page + 1 }}">Показать следующие 40</a>

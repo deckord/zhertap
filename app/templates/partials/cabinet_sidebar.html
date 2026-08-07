@@ -1,4 +1,4 @@
-﻿<aside class="cabinet-side">
+<aside class="cabinet-side">
   <a class="side-logo" href="/cabinet" aria-label="Жертап">
     <span class="brand-mark">Ж</span>
     <strong>Жертап</strong>
@@ -65,6 +65,7 @@
   </nav>
 
   <form class="side-logout" method="post" action="/logout">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <button type="submit">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17 15 12l-5-5"/><path d="M15 12H3"/><path d="M14 4h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/></svg>
       Выйти

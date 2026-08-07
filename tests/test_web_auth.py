@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
@@ -43,6 +45,9 @@ def client_for(session: Session) -> Iterator[TestClient]:
     app.dependency_overrides[get_db] = override_db
     try:
         with TestClient(app) as client:
+            client.headers.update(
+                {"x-csrf-token": web.csrf_token_value("", "testclient")}
+            )
             yield client
     finally:
         app.dependency_overrides.clear()
@@ -59,6 +64,106 @@ def authorize_client(client: TestClient, session: Session, account: Account) -> 
     )
     session.commit()
     client.cookies.set("zhertap_session", token)
+    client.headers.update(
+        {"x-csrf-token": web.csrf_token_value(token, "testclient")}
+    )
+
+
+def test_web_hash_uses_session_secret(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "session_secret", "session-secret-1")
+    monkeypatch.setattr(settings, "admin_password", "admin-password")
+    monkeypatch.setattr(settings, "internal_api_key", "internal-secret")
+
+    expected = hmac.new(
+        b"session-secret-1",
+        b"raw-value",
+        hashlib.sha256,
+    ).hexdigest()
+    assert web._hash("raw-value") == expected
+
+
+def test_verify_password_returns_false_for_invalid_hash_format() -> None:
+    assert web._verify_password("password", "nonsense") is False
+    assert web._verify_password("password", "pbkdf2_sha256$notint$AA==$BBB") is False
+    assert (
+        web._verify_password("password", "pbkdf2_sha256$210000$@@@!$") is False
+    )
+
+
+def test_register_verification_accepts_legacy_sms_code_hash(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "session_secret", "new-session-secret")
+    monkeypatch.setattr(settings, "internal_api_key", "legacy-internal-secret")
+    monkeypatch.setattr(settings, "admin_password", "legacy-admin-password")
+    code = "123456"
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            password_hash=None,
+            phone_verified_at=None,
+        )
+        session.add(account)
+        session.flush()
+        session.add(
+            WebLoginCode(
+                phone="+77026669475",
+                code_hash=web._legacy_hash(code),
+                purpose="register",
+                expires_at=web._now() + timedelta(minutes=10),
+            )
+        )
+        session.commit()
+
+        with client_for(session) as client:
+            response = client.post(
+                "/register/verify",
+                data={
+                    "phone": "7026669475",
+                    "code": code,
+                    "password": "password-1",
+                    "password_confirm": "password-1",
+                },
+                follow_redirects=False,
+            )
+
+        updated_code = session.scalar(
+            select(WebLoginCode).where(WebLoginCode.phone == "+77026669475")
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/cabinet"
+        assert updated_code is not None
+        assert updated_code.code_hash == web._hash(code)
+        assert updated_code.consumed_at is not None
+
+
+def test_legacy_web_session_hash_is_accepted_after_session_secret_change(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "session_secret", "active-session-secret")
+    monkeypatch.setattr(settings, "internal_api_key", "legacy-session-secret")
+    monkeypatch.setattr(settings, "admin_password", "legacy-admin-password")
+    token = "legacy-session-token"
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            phone_verified_at=web._now(),
+            password_hash=web._hash_password("password-1"),
+        )
+        session.add(account)
+        session.commit()
+        web_session = WebSession(
+            account_id=account.id,
+            token_hash=web._legacy_hash(token),
+            expires_at=web._now() + timedelta(days=1),
+        )
+        session.add(web_session)
+        session.commit()
+
+        with client_for(session) as client:
+            client.cookies.set(web.SESSION_COOKIE, token)
+            response = client.get("/cabinet")
+
+        refreshed = session.get(WebSession, web_session.id)
+        assert refreshed is not None
+        assert response.status_code == 200
+        assert refreshed.token_hash == web._hash(token)
 
 
 def test_existing_registered_phone_cannot_request_registration_sms(monkeypatch) -> None:
@@ -83,10 +188,66 @@ def test_existing_registered_phone_cannot_request_registration_sms(monkeypatch) 
                 },
             )
 
-        assert response.status_code == 409
-        assert "уже есть аккаунт" in response.text
+        assert response.status_code == 200
+        assert "Не удалось отправить SMS-код" in response.text
+        assert "уже есть аккаунт" not in response.text.lower()
         assert sent == []
         assert session.scalar(select(WebLoginCode.id)) is None
+
+
+def test_unknown_phone_cannot_reset_password_revealing_registration() -> None:
+    with build_session() as session:
+        with client_for(session) as client:
+            response = client.post(
+                "/password/reset/request-code",
+                data={"phone": "7026669475"},
+            )
+
+        assert response.status_code == 200
+        assert "не найден" not in response.text.lower()
+        assert "Если этот номер зарегистрирован" in response.text
+
+
+def test_existing_phone_fails_registration_verification_without_reveal(monkeypatch) -> None:
+    monkeypatch.setattr(web, "send_login_code", lambda phone, code: None)
+    with build_session() as session:
+        session.add(
+            Account(
+                phone="+77026669475",
+                phone_verified_at=web._now(),
+                password_hash=web._hash_password("old-password"),
+            )
+        )
+        session.commit()
+
+        with client_for(session) as client:
+            response = client.post(
+                "/register/verify",
+                data={
+                    "phone": "7026669475",
+                    "code": "000000",
+                    "password": "password-1",
+                    "password_confirm": "password-1",
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/login?invalid=1"
+
+
+def test_login_unknown_phone_does_not_reveal_account_state() -> None:
+    with build_session() as session:
+        with client_for(session) as client:
+            response = client.post(
+                "/login",
+                data={"phone": "7026669475", "password": "wrong"},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 400
+        assert "не найден" not in response.text.lower()
+        assert "Неверные учетные данные" in response.text
 
 
 def test_successful_web_registration_notifies_admin(monkeypatch) -> None:

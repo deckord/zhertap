@@ -43,6 +43,7 @@ uvicorn*.err.log
 tmp/
 tmp_*/
 .codex-remote-attachments/
+backups/
 var/
 
 # Archives and deployment bundles

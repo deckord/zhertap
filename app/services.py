@@ -2250,7 +2250,40 @@ class ApiPayWebhookResult:
     notify_auction_payment_retry: bool = False
     activate_account_access: bool = False
     notify_account_payment_retry: bool = False
+    payment_received: bool = False
     ignored: bool = False
+
+
+def notify_admin_payment_received(
+    *,
+    external_order_id: str,
+    invoice_id: str,
+    amount_kzt: object,
+    telegram_user_id: str | None = None,
+) -> None:
+    """Notify the configured admin chat once a payment becomes paid."""
+    if not settings.telegram_admin_chat_id:
+        logger.warning("Payment received but TELEGRAM_ADMIN_CHAT_ID is not configured")
+        return
+    text = (
+        "✅ <b>Получена оплата</b>\n\n"
+        f"Сумма: <b>{amount_kzt} ₸</b>\n"
+        f"Заказ: <code>{escape(external_order_id)}</code>\n"
+        f"Счёт ApiPay: <code>{escape(invoice_id)}</code>"
+    )
+    if telegram_user_id:
+        text += f"\nTelegram ID клиента: <code>{escape(telegram_user_id)}</code>"
+    try:
+        telegram_request(
+            "sendMessage",
+            {
+                "chat_id": settings.telegram_admin_chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+            },
+        )
+    except Exception:
+        logger.exception("Could not notify admin about payment %s", invoice_id)
 
 
 def _apipay_invoice_idempotency_key(request: SearchRequest) -> str:
@@ -2306,12 +2339,24 @@ def apply_apipay_webhook(
                 status=provider_status,
                 ignored=True,
             )
+        if account_result.activated:
+            from app.models import Account, AccountPayment
+
+            payment = session.get(AccountPayment, account_result.payment_id)
+            account = session.get(Account, payment.account_id) if payment else None
+            notify_admin_payment_received(
+                external_order_id=request_id,
+                invoice_id=invoice_id,
+                amount_kzt=invoice.get("amount") or "не указана",
+                telegram_user_id=account.telegram_user_id if account else None,
+            )
         return ApiPayWebhookResult(
             event=event,
             account_payment_id=account_result.payment_id,
             status=account_result.status,
             activate_account_access=account_result.activated,
             notify_account_payment_retry=account_result.notify_retry,
+            payment_received=account_result.activated,
         )
 
     if request_id.startswith(AUCTION_ORDER_PREFIX):
@@ -2335,12 +2380,19 @@ def apply_apipay_webhook(
             access = session.get(AuctionAccess, auction_result.access_id)
             if access is not None:
                 deliver_pending_platform_reports(session, access.telegram_user_id)
+                notify_admin_payment_received(
+                    external_order_id=request_id,
+                    invoice_id=invoice_id,
+                    amount_kzt=invoice.get("amount") or "не указана",
+                    telegram_user_id=access.telegram_user_id,
+                )
         return ApiPayWebhookResult(
             event=event,
             auction_access_id=auction_result.access_id,
             status=auction_result.status,
             activate_auction_access=auction_result.activated,
             notify_auction_payment_retry=auction_result.notify_retry,
+            payment_received=auction_result.activated,
         )
 
     request = get_request_with_candidates(session, request_id)
@@ -2388,6 +2440,7 @@ def apply_apipay_webhook(
     request.payment_provider_updated_at = datetime.now(UTC)
 
     deliver_report = False
+    payment_received = False
     if provider_status == "paid":
         try:
             paid_amount = Decimal(str(invoice.get("amount")))
@@ -2402,7 +2455,8 @@ def apply_apipay_webhook(
             )
         if not approved_candidates(request):
             raise ValueError("У оплаченной заявки нет проверенных кандидатов")
-        if request.payment_status != PaymentStatus.paid.value:
+        payment_received = request.payment_status != PaymentStatus.paid.value
+        if payment_received:
             request.payment_status = PaymentStatus.paid.value
             request.payment_confirmed_at = datetime.now(UTC)
             request.payment_confirmed_by = f"apipay:{invoice_id}"
@@ -2418,12 +2472,20 @@ def apply_apipay_webhook(
             request.payment_status = PaymentStatus.rejected.value
 
     session.commit()
+    if payment_received:
+        notify_admin_payment_received(
+            external_order_id=request.id,
+            invoice_id=invoice_id,
+            amount_kzt=request.payment_amount_kzt or settings.platform_access_price_kzt,
+            telegram_user_id=request.telegram_user_id,
+        )
     return ApiPayWebhookResult(
         event=event,
         request_id=request.id,
         status=provider_status,
         deliver_report=deliver_report,
         notify_payment_retry=notify_payment_retry,
+        payment_received=payment_received,
     )
 
 
@@ -3205,6 +3267,12 @@ def confirm_payment(
         now=request.payment_confirmed_at,
     )
     session.commit()
+    notify_admin_payment_received(
+        external_order_id=request.id,
+        invoice_id=confirmed_by,
+        amount_kzt=request.payment_amount_kzt or settings.platform_access_price_kzt,
+        telegram_user_id=request.telegram_user_id,
+    )
     message = deliver_request(session, request_id)
     session.refresh(request)
     return request, message

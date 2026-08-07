@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Избранное — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet/auctions">← Ко всем аукционам</a>
+      <a class="back-link" href="/cabinet/auctions">< Ко всем аукционам</a>
       <a class="back-link" href="/cabinet/auctions/compare">Сравнить избранное</a>
     </div>
     <div class="section-title"><span>Аукционы</span><h1>Избранное</h1></div>
@@ -32,9 +32,10 @@
             </div>
             <div class="auction-card-meta">
               <span>{{ lot.area_ha or "—" }} га</span>
-              <b>{% if lot.start_price_kzt %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}Цена не указана{% endif %}</b>
+              <b>{% if lot.start_price_kzt %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ?{% else %}Цена не указана{% endif %}</b>
               {% if has_paid_unlock %}
                 <form method="post" action="/cabinet/auctions/{{ lot.id }}/favorite"><button type="submit">Убрать</button></form>
+                  <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               {% else %}
                 <button class="locked-action" type="button" disabled>Доступно после оплаты</button>
               {% endif %}

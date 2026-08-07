@@ -1,8 +1,10 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+WEAK_SECRETS = {"", "change-me-now", "admin", "password", "secret"}
 
 
 class Settings(BaseSettings):
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
     admin_password: str = "change-me-now"
     admin_web_phones: str = "+77026669475"
     internal_api_key: str = ""
+    session_secret: str = ""
 
     auctions_enabled: bool = True
     auction_access_price_kzt: int = Field(default=1990, ge=0, le=10_000_000)
@@ -80,11 +83,13 @@ class Settings(BaseSettings):
     eqazyna_sync_max_pages: int = Field(default=10, ge=1, le=100)
     eqazyna_sync_max_lots: int = Field(default=100, ge=1, le=1000)
     eqazyna_history_sync_statuses: str = (
-        "ApplicationsAccept,Pending,Running,SuccessProtocolSigned,"
-        "FailureProtocolSigned,NullifyResultProtocolSigned,CancelBeforeStart"
+        "SuccessProtocolSigned,FailureProtocolSigned,"
+        "NullifyResultProtocolSigned,CancelBeforeStart"
     )
     eqazyna_history_sync_max_pages: int = Field(default=100, ge=1, le=1000)
     eqazyna_history_sync_max_lots: int = Field(default=1000, ge=1, le=20000)
+    eqazyna_history_sync_start_year: int = Field(default=2020, ge=2000, le=2100)
+    eqazyna_history_sync_window_days: int = Field(default=366, ge=1, le=3660)
     eqazyna_timeout_seconds: int = Field(default=30, ge=5, le=120)
     eqazyna_verify_tls: bool = True
     auction_v2_full_cycle_interval_minutes: int = Field(default=15, ge=5, le=1440)
@@ -151,6 +156,27 @@ class Settings(BaseSettings):
     live_search_time_budget_seconds: int = Field(default=180, ge=60, le=540)
     live_max_features: int = Field(default=20000, ge=1000, le=100000)
     demo_data_enabled: bool = True
+
+    @model_validator(mode="after")
+    def _validate_production_secrets(self) -> "Settings":
+        if self.app_env.lower() not in {"production", "prod"}:
+            return self
+        problems: list[str] = []
+        if self.admin_password.strip().lower() in WEAK_SECRETS or len(self.admin_password) < 16:
+            problems.append("ADMIN_PASSWORD")
+        if not self.internal_api_key.strip():
+            problems.append("INTERNAL_API_KEY")
+        if self.apipay_enabled and not self.apipay_webhook_secret.strip():
+            problems.append("APIPAY_WEBHOOK_SECRET")
+        if not self.session_secret.strip():
+            problems.append("SESSION_SECRET")
+        if not self.app_base_url.strip().startswith("https://"):
+            problems.append("APP_BASE_URL")
+        if self.database_url.strip().lower().startswith("sqlite"):
+            problems.append("DATABASE_URL")
+        if problems:
+            raise RuntimeError("Insecure production config: " + ", ".join(problems))
+        return self
 
 
 @lru_cache

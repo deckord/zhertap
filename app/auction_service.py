@@ -1200,6 +1200,7 @@ def sync_current_auctions(
     max_pages: int | None = None,
     max_lots: int | None = None,
     statuses: list[str] | None = None,
+    publish_date_windows: list[tuple[str, str]] | None = None,
     deactivate_missing: bool = True,
     send_notifications: bool = True,
 ) -> AuctionSyncResult:
@@ -1208,6 +1209,7 @@ def sync_current_auctions(
         max_pages=max_pages,
         max_lots=max_lots,
         statuses=statuses,
+        publish_date_windows=publish_date_windows,
     )
     data_items = crawl.lots
     created = 0

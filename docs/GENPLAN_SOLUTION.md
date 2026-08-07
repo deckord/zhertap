@@ -7,6 +7,67 @@ Planning Data Service is now tracked in `docs/PLANNING_DATA_SERVICE.md`. That
 document is the roadmap for moving PDF/WFS/CAD-derived planning data into a
 PostGIS-backed API, starting with the Akkol pilot.
 
+Update 2026-08-06: full session summary, see `docs/GENPLAN_STATUS_2026_08_04.md`
+("Update 2026-08-06" section) for the detailed log. Short version:
+
+- `tools.genplan_vectorize` was rebuilt around the real `GenplanLegendEntry`
+  schema (see Tier 2 below) and deployed to production
+  (`app/genplan_pipeline.py`, `app/main.py`, templates, `tools/genplan_vectorize`).
+  `tools.genplan_workbench` was **not** deployed - it is a local-only operator
+  tool, never imported by `app/*`, and stays off the public server by design.
+- The admin panel can now assign `target_category`/`layer_kind`/`review_status`
+  per legend color and export an approved `legend.json`
+  (`/admin/genplan-pipeline/documents/<id>/legend` and `.../legend-export`).
+- `tools.genplan_workbench` gained two new map overlays fed by the real
+  `app.providers.egkn.EgknProvider`: the official settlement boundary polygon
+  and all registered parcels, toggleable from the Leaflet layer control. This
+  is the recommended way to place GCPs now - eyeballing OSM/Esri alone is not
+  reliable enough for this project's accuracy bar.
+- A real end-to-end georeferencing attempt was made for `с. Кабанбай Батыр`
+  (Целиноградский р-н, Акмолинская область, asset
+  `3c39106777710a147ec783cbde2e70b0ad01b308f1a6f898364d95bb9a1af562`). It did
+  **not** produce a usable `gcps.json` - see "Lessons from the Kabanbay Batyr
+  attempt" below before trying to shortcut georeferencing again.
+
+### Lessons from the Kabanbay Batyr attempt (2026-08-06)
+
+Do not repeat these mistakes on the next document:
+
+1. **A visually convincing shape match is not a valid georeference.** Overlaying
+   the EGKN settlement boundary (fetched via `EgknProvider`) on the drawn
+   boundary, after independently normalizing both shapes, looked like an
+   excellent match - but fitting a transform from only 2-4 points sampled off
+   that match produced physically impossible rotations (100-155 degrees) that
+   changed depending on which points were picked. A shape match is good
+   evidence you have the right document/boundary; it is not a substitute for
+   a real point-by-point GCP fit with 8+ distributed points, exactly as
+   `ACCEPTANCE_CHECKLIST.md` (in the local genplan work library) already
+   requires.
+2. **The printed coordinate grid ticks on this sheet are not trustworthy.**
+   The sheet has labeled grid crosses (e.g. `4274000` / `5625200`) that look
+   like real projected coordinates, but the datum/zone could not be confirmed,
+   and using the tick spacing as a meters-per-pixel scale produced a
+   badly wrong result (predicted geometry over 30% larger than the sheet).
+   Do not assume these are real geodetic coordinates without confirming the
+   projection from the source document's title block or metadata.
+3. **The compass rose on the sheet is a wind-rose diagram, not proof of
+   orientation.** It happened to be axis-aligned (N up) on this sheet, but
+   treat that as one data point, not a substitute for real GCP residuals.
+4. **This exact document already failed two rounds of independent review**
+   before today (`C:\Users\medadmin\Documents\Codex\genplan\work\batch-001`,
+   reviewers `A2-1`/`A2-2`, decision `RETURN_TO_A1` both times) - both times
+   because automatic conflation could not place GCPs, not because the
+   document is unusable. The A2-1 review already lists 12 candidate landmarks
+   with real OSM coordinates for Kabanbay Batyr
+   (`work/batch-001/A2-1/review-3c39106...af562.json`); reuse that list
+   instead of re-deriving landmarks from scratch.
+5. **The right tool for the next attempt is `tools.genplan_workbench` with the
+   new EGKN overlay**, not ad hoc Python scripts computing transforms by hand -
+   the workbench's `math.py` already implements a proper least-squares
+   affine/projective fit over all entered points, with live residuals; a
+   hand-rolled 2-4 point solve is exactly what produced the bad rotations
+   above.
+
 ## Goal
 
 Land Scout must not stop at "there is no genplan layer". The product needs a
@@ -490,25 +551,51 @@ already has most of the safe pipeline:
   --output C:\genplan\published\asset-123\sheet.tif
 ```
 
-Missing MVP module:
-
-- `tools.genplan_vectorize`
-
-It must convert a reviewed georeferenced raster into three GeoJSON layers:
+Implemented on 2026-08-05: `tools.genplan_vectorize` converts a reviewed
+georeferenced raster (the `sheet.tif`/COG from step 5 above) into three
+candidate GeoJSON layers, driven by an operator-approved `legend.json` whose
+per-color rows mirror `app.models.GenplanLegendEntry`
+(`color_hex`/`red`/`green`/`blue`/`target_category`/`layer_kind`/`review_status`):
 
 - `allowed.geojson`
 - `prohibited.geojson`
 - `red_line.geojson`
+- `manifest.json` - always `workflow_status=proposed`, with a `chain_sha256`
+  over the source raster, the legend, and all three layers.
 
-The MVP should be operator-assisted:
+```powershell
+.\.venv\Scripts\python.exe -m tools.genplan_vectorize `
+  --source C:\genplan\published\asset-123\sheet.tif `
+  --legend C:\genplan\reviews\asset-123-legend.json `
+  --provenance C:\genplan\published\asset-123\provenance.json `
+  --output-dir C:\genplan\vectorize\asset-123-v1
+```
+
+See `tools/genplan_vectorize/README.md` for the full `legend.json` schema.
+This module never approves anything itself:
 
 1. Operator opens a georeferenced raster.
 2. Operator samples legend colors for allowed/prohibited/red-line classes.
-3. The tool segments by color with tolerance.
-4. The tool polygonizes/line-traces the result.
-5. Operator edits/simplifies in QGIS or the workbench.
-6. Independent reviewer approves or rejects.
-7. Only `STRICT` releases are imported for search.
+   `app.genplan_pipeline.extract_next_document_legend_draft` already drafts
+   dominant colors as `GenplanLegendEntry` rows (`review_status=needs_review`).
+3. Operator opens `/admin/urban-plans#genplan-pipeline`, clicks "Цвета" on a
+   document, and on `/admin/genplan-pipeline/documents/<document_id>/legend`
+   assigns `target_category`/`layer_kind` and sets `review_status=approved`
+   per color (implemented 2026-08-06).
+4. `GET /admin/genplan-pipeline/documents/<document_id>/legend-export`
+   downloads the approved rows as a `tools.genplan_vectorize`-compatible
+   `legend.json` (implemented 2026-08-06, via
+   `app.genplan_pipeline.build_document_legend_export`).
+5. The tool segments by color with per-entry tolerance and polygonizes the
+   result - always as `workflow_status=proposed`.
+6. Operator edits/simplifies in QGIS or the workbench.
+7. Independent reviewer approves or rejects.
+8. Only `STRICT`/`VERIFIED_STRICT` (or an explicitly allowed `WARNING`
+   shadow) releases are imported for search through `tools.genplan_import`.
+
+Remaining work is not the module itself but running real PDF/JPG documents
+through the full chain (workbench GCPs -> export -> vectorize -> independent
+review -> import). That is tracked as step 6 in Execution Order below.
 
 ## Tier 3: Manual Reference Only
 
@@ -612,8 +699,14 @@ genplan verification.
    - digital found but review needed
    - PDF/JPG only
    - no source
-5. Implement `tools.genplan_vectorize` MVP for reviewed raster plans.
-6. Process high-demand PDF/JPG cities through workbench -> vectorize -> review -> import.
+5. Done on 2026-08-05: `tools.genplan_vectorize` MVP for reviewed raster
+   plans (see Tier 2 above).
+6. Next: process high-demand PDF/JPG cities through
+   workbench -> export -> vectorize -> independent review -> import. This
+   needs an operator to place/QA GCPs and sample+approve legend colors per
+   document; it cannot be done unattended because independent review
+   requires a reviewer role distinct from the operator role (see
+   `docs/GENPLAN_STATUS_2026_08_04.md`).
 
 ## Priority Cities
 

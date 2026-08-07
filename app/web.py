@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 
 import base64
+import binascii
 import hashlib
 import hmac
 import logging
@@ -75,6 +76,7 @@ from app.auction_v2 import (
     refresh_auction_v2_snapshot,
     seed_auction_v2_sources,
     set_auction_v2_watchlist_active,
+    sync_auction_v2_eqazyna_history_backfill,
     sync_auction_v2_full_cycle,
     update_auction_v2_pipeline,
 )
@@ -102,6 +104,7 @@ from app.models import (
 )
 from app.providers.egkn import EgknProvider, EgknProviderError, normalize_name
 from app.purposes import LPH_NEW
+from app.rate_limit import consume_rate_limit
 from app.schemas import SearchCreate
 from app.search_explanations import explain_search_result
 from app.services import (
@@ -152,6 +155,23 @@ MAX_FAILED_ATTEMPTS = 3
 OFFER_VERSION = "2026-07-28-v1"
 PASSWORD_MIN_LENGTH = 8
 
+LOGIN_RATE_LIMIT_IP_PER_MINUTE = 15
+LOGIN_RATE_LIMIT_IP_WINDOW_SECONDS = 60
+LOGIN_RATE_LIMIT_PHONE_PER_HOUR = 8
+LOGIN_RATE_LIMIT_PHONE_WINDOW_SECONDS = 3600
+
+SMS_REQUEST_RATE_LIMIT_PER_PHONE_PER_HOUR = 3
+SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR = 10
+SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS = 3600
+
+CABINET_SEARCH_RATE_LIMIT_PER_ACCOUNT_PER_MINUTE = 30
+CABINET_SEARCH_RATE_LIMIT_PER_IP_PER_MINUTE = 120
+CABINET_SEARCH_RATE_LIMIT_WINDOW_SECONDS = 60
+
+CABINET_SEARCH_STATUS_RATE_LIMIT_PER_ACCOUNT_PER_MINUTE = 120
+CABINET_SEARCH_STATUS_RATE_LIMIT_PER_IP_PER_MINUTE = 240
+CABINET_SEARCH_STATUS_WINDOW_SECONDS = 60
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -195,13 +215,52 @@ def _notify_admin_web_registration(account: Account, request: Request) -> None:
                 "text": text,
             },
         )
-    except Exception:
+    except (RuntimeError, ValueError):
         logger.exception("Could not notify admin about web registration %s", account.id)
 
 
 def _hash(value: str) -> str:
-    key = settings.internal_api_key or settings.admin_password or "local-dev-secret"
-    return hashlib.sha256(f"{key}:{value}".encode()).hexdigest()
+    return hmac.new(settings.session_secret.encode(), value.encode(), hashlib.sha256).hexdigest()
+
+
+def csrf_token_value(session_token: str, client_ip: str) -> str:
+    return hmac.new(
+        settings.session_secret.encode(),
+        f"{client_ip}:{session_token}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def csrf_token(request: Request) -> str:
+    return csrf_token_value(request.cookies.get(SESSION_COOKIE, ""), _client_ip(request))
+
+
+templates.env.globals["csrf_token"] = csrf_token
+
+
+def _legacy_hash(value: str) -> str:
+    legacy_key = settings.internal_api_key or settings.admin_password or "local-dev-secret"
+    return hashlib.sha256(f"{legacy_key}:{value}".encode()).hexdigest()
+
+
+def _hash_match(stored: str, value: str) -> bool:
+    new_hash = _hash(value)
+    if hmac.compare_digest(stored, new_hash):
+        return True
+    legacy_hash = _legacy_hash(value)
+    return hmac.compare_digest(stored, legacy_hash) and not hmac.compare_digest(legacy_hash, new_hash)
+
+
+def _migrate_hash(record: WebLoginCode | TelegramLinkToken | WebSession, field: str, value: str) -> bool:
+    current = getattr(record, field)
+    new_hash = _hash(value)
+    if hmac.compare_digest(current, new_hash):
+        return False
+    legacy_hash = _legacy_hash(value)
+    if hmac.compare_digest(current, legacy_hash):
+        setattr(record, field, new_hash)
+        return True
+    return False
 
 
 def _redirect_with_query(url: str, **params: str) -> RedirectResponse:
@@ -231,7 +290,7 @@ def _verify_password(password: str, stored_hash: str | None) -> bool:
         expected = base64.b64decode(digest_b64)
         actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, int(iterations))
         return hmac.compare_digest(actual, expected)
-    except Exception:
+    except (TypeError, ValueError, binascii.Error):
         return False
 
 
@@ -250,13 +309,26 @@ def consume_telegram_link_token(
     telegram_user_id: str,
     telegram_chat_id: str,
 ) -> Account | None:
+    token_hash = _hash(raw_token)
+    legacy_token_hash = _legacy_hash(raw_token)
     link_token = session.scalar(
         select(TelegramLinkToken).where(
-            TelegramLinkToken.token_hash == _hash(raw_token),
+            TelegramLinkToken.token_hash == token_hash,
             TelegramLinkToken.consumed_at.is_(None),
             TelegramLinkToken.expires_at > _now(),
         )
     )
+    if link_token is None and not hmac.compare_digest(token_hash, legacy_token_hash):
+        link_token = session.scalar(
+            select(TelegramLinkToken).where(
+                TelegramLinkToken.token_hash == legacy_token_hash,
+                TelegramLinkToken.consumed_at.is_(None),
+                TelegramLinkToken.expires_at > _now(),
+            )
+        )
+        if link_token:
+            _migrate_hash(link_token, "token_hash", raw_token)
+            session.commit()
     if link_token is None:
         return None
     account = session.get(Account, link_token.account_id)
@@ -270,6 +342,30 @@ def consume_telegram_link_token(
     account_has_permanent_access(session, account)
     session.commit()
     return account
+
+
+def _get_session_by_token(session: Session, token: str) -> WebSession | None:
+    token_hash = _hash(token)
+    legacy_token_hash = _legacy_hash(token)
+    web_session = session.scalar(
+        select(WebSession).where(
+            WebSession.token_hash == token_hash,
+            WebSession.revoked_at.is_(None),
+            WebSession.expires_at > _now(),
+        )
+    )
+    if web_session is None and not hmac.compare_digest(token_hash, legacy_token_hash):
+        web_session = session.scalar(
+            select(WebSession).where(
+                WebSession.token_hash == legacy_token_hash,
+                WebSession.revoked_at.is_(None),
+                WebSession.expires_at > _now(),
+            )
+        )
+        if web_session:
+            if _migrate_hash(web_session, "token_hash", token):
+                session.commit()
+    return web_session
 
 
 def normalize_phone(phone: str) -> str:
@@ -427,13 +523,7 @@ def _get_session_account(request: Request, session: Session) -> Account | None:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return None
-    web_session = session.scalar(
-        select(WebSession).where(
-            WebSession.token_hash == _hash(token),
-            WebSession.revoked_at.is_(None),
-            WebSession.expires_at > _now(),
-        )
-    )
+    web_session = _get_session_by_token(session, token)
     if web_session is None:
         return None
     account = session.get(Account, web_session.account_id)
@@ -1273,6 +1363,39 @@ def password_login(
             context=_login_context(request, error=str(exc), phone=phone),
             status_code=400,
         )
+    ip = _client_ip(request)
+    login_ip_state = consume_rate_limit(
+        f"web:login:ip:{ip}",
+        limit=LOGIN_RATE_LIMIT_IP_PER_MINUTE,
+        window_seconds=LOGIN_RATE_LIMIT_IP_WINDOW_SECONDS,
+    )
+    if not login_ip_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                error="Слишком много попыток входа с данного IP. Попробуйте позже.",
+                login_phone=normalized,
+            ),
+            status_code=429,
+        )
+    login_phone_state = consume_rate_limit(
+        f"web:login:phone:{normalized}",
+        limit=LOGIN_RATE_LIMIT_PHONE_PER_HOUR,
+        window_seconds=LOGIN_RATE_LIMIT_PHONE_WINDOW_SECONDS,
+    )
+    if not login_phone_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                error="Слишком много попыток входа для этого номера. Попробуйте позже.",
+                login_phone=normalized,
+            ),
+            status_code=429,
+        )
     account = session.scalar(select(Account).where(Account.phone == normalized))
     if account is None or not account.password_hash:
         return templates.TemplateResponse(
@@ -1280,7 +1403,7 @@ def password_login(
             name="site_login.html",
             context=_login_context(
                 request,
-                error="Аккаунт не найден. Сначала пройдите регистрацию по SMS.",
+                error="Неверные учетные данные. Проверьте телефон и пароль.",
                 phone=normalized,
             ),
             status_code=400,
@@ -1316,6 +1439,39 @@ def request_registration_code(
             context=_login_context(request, register_error=str(exc), register_phone=phone),
             status_code=400,
         )
+    ip = _client_ip(request)
+    sms_ip_state = consume_rate_limit(
+        f"web:register:ip:{ip}",
+        limit=SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR,
+        window_seconds=SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not sms_ip_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                error="Слишком много неуспешных запросов с вашего IP. Попробуйте позже.",
+                register_phone=normalized,
+            ),
+            status_code=429,
+        )
+    sms_phone_state = consume_rate_limit(
+        f"web:register:phone:{normalized}",
+        limit=SMS_REQUEST_RATE_LIMIT_PER_PHONE_PER_HOUR,
+        window_seconds=SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not sms_phone_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                error="Слишком много SMS-кодов на этот номер. Попробуйте позже.",
+                register_phone=normalized,
+            ),
+            status_code=429,
+        )
     if offer_accepted != "yes":
         return templates.TemplateResponse(
             request=request,
@@ -1345,15 +1501,10 @@ def request_registration_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                register_error=(
-                    "Под этим номером уже есть аккаунт. Войдите по паролю или "
-                    "нажмите «Забыли пароль?» для восстановления доступа."
-                ),
+                error="Не удалось отправить SMS-код. Проверьте номер и повторите позже.",
                 register_phone=normalized,
-                phone=normalized,
-                existing_account_phone=normalized,
             ),
-            status_code=409,
+            status_code=200,
         )
     if account is None:
         account = Account(phone=normalized)
@@ -1423,28 +1574,17 @@ def verify_registration_code(
             status_code=400,
         )
     if account and (account.password_hash or account.phone_verified_at):
-        return templates.TemplateResponse(
-            request=request,
-            name="site_login.html",
-            context=_login_context(
-                request,
-                register_error=(
-                    "Под этим номером уже есть аккаунт. Используйте вход по паролю "
-                    "или восстановление доступа."
-                ),
-                register_phone=normalized,
-                phone=normalized,
-                existing_account_phone=normalized,
-            ),
-            status_code=409,
-        )
+        return RedirectResponse("/login?invalid=1", status_code=303)
     login_code = _latest_login_code(session, phone=normalized, purpose="register")
-    if login_code is None or login_code.code_hash != _hash(code.strip()):
+    normalized_code = code.strip()
+    if login_code is None or not _hash_match(login_code.code_hash, normalized_code):
         if account is None:
             account = Account(phone=normalized)
             session.add(account)
         _register_failed_code_attempt(session, account=account, login_code=login_code)
         return RedirectResponse("/login?invalid=1", status_code=303)
+    if _migrate_hash(login_code, "code_hash", normalized_code):
+        session.flush()
     if account is None:
         account = Account(phone=normalized)
         session.add(account)
@@ -1495,6 +1635,39 @@ def request_password_reset_code(
             context=_login_context(request, reset_error=str(exc), reset_phone=phone),
             status_code=400,
         )
+    ip = _client_ip(request)
+    sms_ip_state = consume_rate_limit(
+        f"web:password_reset:ip:{ip}",
+        limit=SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR,
+        window_seconds=SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not sms_ip_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error="Слишком много неуспешных запросов с вашего IP. Попробуйте позже.",
+                reset_phone=normalized,
+            ),
+            status_code=429,
+        )
+    sms_phone_state = consume_rate_limit(
+        f"web:password_reset:phone:{normalized}",
+        limit=SMS_REQUEST_RATE_LIMIT_PER_PHONE_PER_HOUR,
+        window_seconds=SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not sms_phone_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error="Слишком много SMS-кодов для этого номера. Попробуйте позже.",
+                reset_phone=normalized,
+            ),
+            status_code=429,
+        )
     account = session.scalar(select(Account).where(Account.phone == normalized))
     if account is None or not account.password_hash:
         return templates.TemplateResponse(
@@ -1502,10 +1675,10 @@ def request_password_reset_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                reset_error="Аккаунт с таким номером не найден. Сначала пройдите регистрацию.",
+                reset_error="Если этот номер зарегистрирован, проверьте его и повторите запрос.",
                 reset_phone=normalized,
             ),
-            status_code=404,
+            status_code=200,
         )
     if account.locked_until and account.locked_until > _now():
         return templates.TemplateResponse(
@@ -1563,7 +1736,7 @@ def verify_password_reset_code(
         return RedirectResponse("/login", status_code=303)
     account = session.scalar(select(Account).where(Account.phone == normalized))
     if account is None or not account.password_hash:
-        return RedirectResponse("/login?reset_missing=1", status_code=303)
+        return RedirectResponse("/login?reset_invalid=1", status_code=303)
     if account.locked_until and account.locked_until > _now():
         return RedirectResponse("/login?locked=1", status_code=303)
     password_error = _password_error(password, password_confirm)
@@ -1580,9 +1753,12 @@ def verify_password_reset_code(
             status_code=400,
         )
     login_code = _latest_login_code(session, phone=normalized, purpose="password_reset")
-    if login_code is None or login_code.code_hash != _hash(code.strip()):
+    normalized_code = code.strip()
+    if login_code is None or not _hash_match(login_code.code_hash, normalized_code):
         _register_failed_code_attempt(session, account=account, login_code=login_code)
         return RedirectResponse("/login?reset_invalid=1", status_code=303)
+    if _migrate_hash(login_code, "code_hash", normalized_code):
+        session.flush()
     account.password_hash = _hash_password(password)
     account.password_set_at = _now()
     account.phone_verified_at = account.phone_verified_at or _now()
@@ -1598,9 +1774,7 @@ def verify_password_reset_code(
 def logout(request: Request, session: Session = Depends(get_db)):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        web_session = session.scalar(
-            select(WebSession).where(WebSession.token_hash == _hash(token))
-        )
+        web_session = _get_session_by_token(session, token)
         if web_session:
             web_session.revoked_at = _now()
             session.commit()
@@ -1910,6 +2084,7 @@ def search_page(
 
 @router.post("/cabinet/search")
 def submit_search(
+    request: Request,
     region: str = Form(...),
     district: str = Form(...),
     locality: str = Form(""),
@@ -1919,6 +2094,21 @@ def submit_search(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
+    ip = _client_ip(request)
+    search_account_state = consume_rate_limit(
+        f"web:cabinet:search:account:{account.id}",
+        limit=CABINET_SEARCH_RATE_LIMIT_PER_ACCOUNT_PER_MINUTE,
+        window_seconds=CABINET_SEARCH_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not search_account_state.allowed:
+        raise HTTPException(status_code=429, detail="Too many search requests for this account.")
+    search_ip_state = consume_rate_limit(
+        f"web:cabinet:search:ip:{ip}",
+        limit=CABINET_SEARCH_RATE_LIMIT_PER_IP_PER_MINUTE,
+        window_seconds=CABINET_SEARCH_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not search_ip_state.allowed:
+        raise HTTPException(status_code=429, detail="Too many search requests from this IP.")
     payload = SearchCreate(
         language="ru",
         region=region,
@@ -2016,9 +2206,25 @@ def search_next_batch(
 @router.get("/cabinet/searches/{search_id}/status")
 def search_status(
     search_id: str,
+    request: Request,
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
+    ip = _client_ip(request)
+    status_account_state = consume_rate_limit(
+        f"web:cabinet:search_status:account:{account.id}",
+        limit=CABINET_SEARCH_STATUS_RATE_LIMIT_PER_ACCOUNT_PER_MINUTE,
+        window_seconds=CABINET_SEARCH_STATUS_WINDOW_SECONDS,
+    )
+    if not status_account_state.allowed:
+        raise HTTPException(status_code=429, detail="Too many status requests for this account.")
+    status_ip_state = consume_rate_limit(
+        f"web:cabinet:search_status:ip:{ip}",
+        limit=CABINET_SEARCH_STATUS_RATE_LIMIT_PER_IP_PER_MINUTE,
+        window_seconds=CABINET_SEARCH_STATUS_WINDOW_SECONDS,
+    )
+    if not status_ip_state.allowed:
+        raise HTTPException(status_code=429, detail="Too many status requests from this IP.")
     search = get_request_with_candidates(session, search_id)
     if search is None:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
@@ -2904,6 +3110,30 @@ def web_auctions_v2_sync(
 
     sync_auction_v2_full_cycle_task.delay()
     return _redirect_with_query("/cabinet/auctions-v2", sync="queued")
+
+
+@router.post("/cabinet/auctions-v2/history-backfill")
+def web_auctions_v2_history_backfill(
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_web_admin_account(account)
+    if settings.run_tasks_inline:
+        result = sync_auction_v2_eqazyna_history_backfill(session)
+        session.commit()
+        return _redirect_with_query(
+            "/cabinet/auctions-v2/sources",
+            backfill="done",
+            lots_fetched=str(result.fetched),
+            lots_created=str(result.created),
+            lots_updated=str(result.updated),
+            url_count=str(result.url_count),
+            pages_scanned=str(result.pages_scanned),
+        )
+    from app.tasks import sync_auction_v2_eqazyna_history_backfill_task
+
+    sync_auction_v2_eqazyna_history_backfill_task.delay()
+    return _redirect_with_query("/cabinet/auctions-v2/sources", backfill="queued")
 
 
 @router.post("/cabinet/auctions-v2/notifications/seen")

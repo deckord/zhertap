@@ -10,6 +10,8 @@ import httpx
 
 from app.config import settings
 
+AuctionPublishDateWindow = tuple[str, str]
+
 
 class EqazynaError(RuntimeError):
     pass
@@ -395,6 +397,7 @@ class EqazynaProvider:
         *,
         max_pages: int | None = None,
         statuses: list[str] | None = None,
+        publish_date_windows: list[AuctionPublishDateWindow] | None = None,
     ) -> AuctionUrlCrawlResult:
         page_limit = max_pages or settings.eqazyna_sync_max_pages
         collected: list[str] = []
@@ -404,17 +407,32 @@ class EqazynaProvider:
         status_counts: dict[str, int] = {}
         url_statuses: dict[str, str] = {}
         search_statuses = statuses or configured_search_statuses()
+        date_windows: list[AuctionPublishDateWindow | None] = publish_date_windows or [None]
+        search_queries = [
+            (search_status, publish_date_window)
+            for search_status in search_statuses
+            for publish_date_window in date_windows
+        ]
         with self._client() as client:
-            for search_status in search_statuses:
-                status_count = 0
+            for search_status, publish_date_window in search_queries:
+                status_count = status_counts.get(search_status, 0)
                 status_complete = False
                 for page in range(1, page_limit + 1):
                     pages_scanned += 1
                     params = [
                         ("objectType", "Land"),
                         ("searchStatus", search_status),
-                        ("p", str(page)),
                     ]
+                    if publish_date_window is not None:
+                        from_inclusive, to_inclusive = publish_date_window
+                        params.extend(
+                            [
+                                ("moreFilters", "on"),
+                                ("publishDateFromInclusive", from_inclusive),
+                                ("publishDateToInclusive", to_inclusive),
+                            ]
+                        )
+                    params.append(("p", str(page)))
                     try:
                         response = client.get(f"{self.base_url}/ru/list", params=params)
                         response.raise_for_status()
@@ -447,8 +465,13 @@ class EqazynaProvider:
         *,
         max_pages: int | None = None,
         statuses: list[str] | None = None,
+        publish_date_windows: list[AuctionPublishDateWindow] | None = None,
     ) -> list[str]:
-        return self.current_lot_url_crawl(max_pages=max_pages, statuses=statuses).urls
+        return self.current_lot_url_crawl(
+            max_pages=max_pages,
+            statuses=statuses,
+            publish_date_windows=publish_date_windows,
+        ).urls
 
     def lot_detail(self, source_url: str) -> AuctionLotData:
         with self._client() as client:
@@ -465,11 +488,13 @@ class EqazynaProvider:
         max_pages: int | None = None,
         max_lots: int | None = None,
         statuses: list[str] | None = None,
+        publish_date_windows: list[AuctionPublishDateWindow] | None = None,
     ) -> list[AuctionLotData]:
         return self.current_lots_with_report(
             max_pages=max_pages,
             max_lots=max_lots,
             statuses=statuses,
+            publish_date_windows=publish_date_windows,
         ).lots
 
     def current_lots_with_report(
@@ -478,9 +503,14 @@ class EqazynaProvider:
         max_pages: int | None = None,
         max_lots: int | None = None,
         statuses: list[str] | None = None,
+        publish_date_windows: list[AuctionPublishDateWindow] | None = None,
     ) -> AuctionCrawlResult:
         limit = max_lots or settings.eqazyna_sync_max_lots
-        url_crawl = self.current_lot_url_crawl(max_pages=max_pages, statuses=statuses)
+        url_crawl = self.current_lot_url_crawl(
+            max_pages=max_pages,
+            statuses=statuses,
+            publish_date_windows=publish_date_windows,
+        )
         urls = url_crawl.urls
         search_statuses = statuses or configured_search_statuses()
         urls_by_status: dict[str, list[str]] = {status: [] for status in search_statuses}

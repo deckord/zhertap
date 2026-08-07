@@ -1,4 +1,5 @@
 import csv
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -19,12 +20,14 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
+from starlette.middleware.base import BaseHTTPMiddleware
 
+import app.web as web
 from app.analytics import excluded_analytics_user_ids
 from app.apipay import verify_webhook_signature
 from app.auction_documents import unique_auction_documents
@@ -59,10 +62,13 @@ from app.feedback import (
     send_feedback_broadcast,
 )
 from app.genplan_pipeline import (
+    build_document_legend_export,
     extract_next_document_legend_draft,
     legend_entry_stats,
+    list_document_legend_entries,
     list_pipeline_documents,
     pipeline_document_stats,
+    set_legend_entry_classification,
     sync_manual_genplans_into_pipeline,
 )
 from app.genplan_references import genplan_reference_payload
@@ -117,6 +123,7 @@ from app.purposes import (
     normalize_purpose,
     purpose_area_ha,
 )
+from app.rate_limit import consume_rate_limit
 from app.schemas import ReviewUpdate, SearchCreate, SearchCreated
 from app.security import require_admin, require_api_key
 from app.services import (
@@ -140,9 +147,75 @@ from app.services import (
     update_candidate_review,
 )
 from app.urban_plan_labels import urban_plan_badge_payload
-from app.web import router as web_router
 
 logger = logging.getLogger(__name__)
+
+API_RATE_LIMIT_PER_MINUTE = 120
+API_RATE_LIMIT_WINDOW_SECONDS = 60
+CSP_POLICY = (
+    "default-src 'self'; "
+    "img-src 'self' data: https://*.tile.openstreetmap.org; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "geolocation=(self), camera=(), microphone=()",
+        )
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            CSP_POLICY,
+        )
+        response.headers.setdefault("X-XSS-Protection", "0")
+        return response
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    _EXEMPT_PATH_PREFIXES = ("/api/", "/webhooks/apipay", "/static/")
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            path = request.url.path
+            if not any(path.startswith(prefix) for prefix in self._EXEMPT_PATH_PREFIXES):
+                content_type = (request.headers.get("content-type") or "").lower()
+                if content_type.startswith(
+                    "application/x-www-form-urlencoded"
+                ) or content_type.startswith(
+                    "multipart/form-data",
+                ):
+                    token_form_value = request.headers.get("x-csrf-token")
+                    if token_form_value is None:
+                        form = await request.form()
+                        token_form_value = form.get("csrf_token")
+
+                    expected_token = web.csrf_token(request)
+                    if isinstance(token_form_value, str):
+                        provided = token_form_value
+                    elif token_form_value is None:
+                        provided = ""
+                    else:
+                        provided = str(token_form_value)
+                    if not hmac.compare_digest(provided, expected_token):
+                        return JSONResponse(
+                            status_code=403,
+                            content={"detail": "CSRF token is invalid"},
+                        )
+
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -152,9 +225,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
-app.include_router(web_router)
+templates.env.globals["csrf_token"] = web.csrf_token
+app.include_router(web.router)
 catalog_provider = EgknProvider()
 payment_labels = {
     "not_requested": "не запрошена",
@@ -169,6 +245,32 @@ review_status_labels = {
     ReviewStatus.approved_with_note.value: "подходит с замечанием",
     ReviewStatus.rejected.value: "не подходит",
 }
+
+
+def _request_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()[:64]
+    return request.client.host[:64] if request.client else ""
+
+
+@app.middleware("http")
+async def enforce_api_rate_limit(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api"):
+        state = consume_rate_limit(
+            f"api:ip:{_request_client_ip(request)}",
+            limit=API_RATE_LIMIT_PER_MINUTE,
+            window_seconds=API_RATE_LIMIT_WINDOW_SECONDS,
+        )
+        if not state.allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded. Please retry later."},
+                headers={"Retry-After": str(state.retry_after_seconds)},
+            )
+
+    return await call_next(request)
 
 
 @app.get("/manual-genplans/{asset_id}/{filename:path}")
@@ -1664,6 +1766,85 @@ def extract_next_genplan_legend(
     return RedirectResponse(
         f"/admin/urban-plans?{params}#genplan-pipeline",
         status_code=303,
+    )
+
+
+@app.get("/admin/genplan-pipeline/documents/{document_id}/legend", response_class=HTMLResponse)
+def genplan_document_legend_view(
+    request: Request,
+    document_id: int,
+    session: Session = Depends(get_db),
+    _: str = Depends(require_admin),
+):
+    document = session.get(GenplanSourceDocument, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    entries = list_document_legend_entries(session, document_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="genplan_legend.html",
+        context={
+            "app_name": settings.app_name,
+            "document": document,
+            "entries": entries,
+        },
+    )
+
+
+@app.post("/admin/genplan-pipeline/legend/{entry_id}/classify")
+def classify_genplan_legend_entry(
+    entry_id: int,
+    target_category: str = Form(...),
+    layer_kind: str = Form(...),
+    review_status: str = Form(...),
+    notes: str = Form(""),
+    document_id: int | None = Form(None),
+    session: Session = Depends(get_db),
+    _: str = Depends(require_admin),
+):
+    try:
+        entry = set_legend_entry_classification(
+            session,
+            entry_id,
+            target_category=target_category,
+            layer_kind=layer_kind,
+            review_status=review_status,
+            notes=notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if document_id is not None:
+        return RedirectResponse(
+            f"/admin/genplan-pipeline/documents/{document_id}/legend",
+            status_code=303,
+        )
+    params = urlencode({"legend_classified": entry.id, "legend_status": entry.review_status})
+    return RedirectResponse(
+        f"/admin/urban-plans?{params}#genplan-pipeline",
+        status_code=303,
+    )
+
+
+@app.get("/admin/genplan-pipeline/documents/{document_id}/legend-export")
+def export_genplan_document_legend(
+    document_id: int,
+    session: Session = Depends(get_db),
+    admin_user: str = Depends(require_admin),
+):
+    try:
+        payload = build_document_legend_export(
+            session,
+            document_id,
+            reviewer_id=admin_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{payload["record_id"]}-legend.json"'
+        },
     )
 
 

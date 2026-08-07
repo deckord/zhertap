@@ -38,7 +38,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes: *manual-genplan-volume
     depends_on:
       db:

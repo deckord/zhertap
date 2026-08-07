@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Аукционы · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="section-head">
@@ -7,6 +7,7 @@
     <p>Публичные лоты E-Qazyna. Ссылка на первоисточник сохраняется для каждого лота.</p>
   </div>
   <form action="/admin/auctions/sync" method="post">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <button type="submit" class="primary">Обновить E-Qazyna</button>
   </form>
 </section>
@@ -98,10 +99,10 @@
         </td>
         <td>{{ lot.region or '—' }}<br><span class="muted">{{ lot.district or '' }}</span></td>
         <td>{{ ('%.4f'|format(lot.area_ha)).rstrip('0').rstrip('.') if lot.area_ha is not none else '—' }} га</td>
-        <td>{{ '{:,.0f}'.format(lot.start_price_kzt).replace(',', ' ') if lot.start_price_kzt is not none else '—' }} ₸</td>
+        <td>{{ '{:,.0f}'.format(lot.start_price_kzt).replace(',', ' ') if lot.start_price_kzt is not none else '—' }} ?</td>
         <td>{{ lot.auction_starts_at.strftime('%d.%m.%Y %H:%M') if lot.auction_starts_at else '—' }}</td>
         <td><span class="status {% if lot.active %}status-ready{% endif %}">{{ lot.status or 'не указан' }}</span></td>
-        <td><a class="button-link" href="{{ lot.source_url }}" target="_blank" rel="noopener">E-Qazyna ↗</a></td>
+        <td><a class="button-link" href="{{ lot.source_url }}" target="_blank" rel="noopener">E-Qazyna ?</a></td>
       </tr>
       {% else %}
       <tr><td colspan="7" class="empty">Лоты еще не загружены. Нажмите «Обновить E-Qazyna».</td></tr>

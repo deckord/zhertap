@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Оплата доступа — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="section-kicker">
-      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet">< В кабинет</a>
       <a class="back-link" href="/cabinet/settings">Настройки</a>
     </div>
 
@@ -22,6 +22,7 @@
           <a class="primary-action" href="{{ payment_url }}" target="_blank" rel="noopener">Открыть Kaspi</a>
         {% else %}
           <form method="post" action="/cabinet/payment/start">
+            <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
             <button class="primary-action" type="submit">Получить QR Kaspi</button>
           </form>
         {% endif %}
@@ -41,7 +42,7 @@
     <section class="payment-web-grid" data-payment-panel data-current-payment-id="{{ payment_id or '' }}" data-current-payment-url="{{ payment_url or '' }}">
       <article class="payment-qr-card">
         {% if access_kind == "paid" %}
-          <div class="payment-success-mark">✓</div>
+          <div class="payment-success-mark">?</div>
           <h2>Доступ активирован</h2>
           <p>Полный доступ уже включен{% if access_expires_at_local %} до {{ access_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по времени Алматы{% endif %}. Можно возвращаться к отчетам и аукционам.</p>
           <a class="primary-action compact" href="/cabinet/search">Анализ территории</a>
@@ -55,21 +56,23 @@
               <span>QR недоступен</span>
             {% endif %}
           </div>
-          <h2>{{ payment_amount }} ₸ / месяц</h2>
+          <h2>{{ payment_amount }} ? / месяц</h2>
           <p>Сканируйте официальный QR в Kaspi. Если вы уже на телефоне или QR не открылся, нажмите кнопку ниже.</p>
           <div class="payment-action-row">
             <a class="primary-action compact" href="{{ payment_url }}" target="_blank" rel="noopener">Открыть Kaspi</a>
             <form method="post" action="/cabinet/payment/refresh">
+              <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               <button class="secondary-action compact" type="submit">Обновить QR</button>
             </form>
             <span class="payment-auto-status">Статус обновляется автоматически</span>
           </div>
         {% else %}
           <div class="qr-placeholder">QR</div>
-          <h2>{{ price_kzt }} ₸ / месяц</h2>
+          <h2>{{ price_kzt }} ? / месяц</h2>
           <p>Нажмите кнопку, чтобы создать безопасный счет ApiPay/Kaspi для вашего аккаунта.</p>
           {% if apipay_enabled %}
             <form method="post" action="/cabinet/payment/start">
+              <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               <button class="primary-action compact" type="submit">Получить QR Kaspi</button>
             </form>
           {% else %}
@@ -93,7 +96,7 @@
         {% if payment %}
           <dl class="payment-meta">
             <div><dt>Статус счета</dt><dd data-provider-status>{{ payment.payment_provider_status or payment.payment_status }}</dd></div>
-            <div><dt>Сумма</dt><dd>{{ payment_amount }} ₸</dd></div>
+            <div><dt>Сумма</dt><dd>{{ payment_amount }} ?</dd></div>
             <div><dt>Создан</dt><dd>{{ payment.created_at.strftime("%d.%m.%Y %H:%M") }}</dd></div>
           </dl>
         {% endif %}

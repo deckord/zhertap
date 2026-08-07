@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.pool import StaticPool
 
+from app.config import Settings
 from app.db import _engine_kwargs, init_db, validate_database_url
 
 
@@ -23,6 +24,33 @@ def test_postgres_engine_uses_pool_settings() -> None:
     assert kwargs["pool_timeout"] >= 1
     assert kwargs["pool_recycle"] >= 60
     assert "connect_args" not in kwargs
+
+
+def test_production_settings_require_hardening() -> None:
+    with pytest.raises(RuntimeError, match="Insecure production config"):
+        Settings(
+            app_env="production",
+            app_base_url="http://localhost:8000",
+            admin_password="admin",
+            internal_api_key="",
+            session_secret="",
+            apipay_enabled=False,
+            database_url="sqlite:///./land_scout.db",
+        )
+
+
+def test_production_settings_allow_strong_values() -> None:
+    settings = Settings(
+        app_env="production",
+        app_base_url="https://example.com",
+        admin_password="very-strong-admin-password",
+        internal_api_key="internal-api-key-secret",
+        session_secret="0123456789abcdef" * 4,
+        apipay_enabled=True,
+        apipay_webhook_secret="apipay-secret",
+        database_url="postgresql+psycopg://user:pass@localhost:5432/land_scout",
+    )
+    assert settings.app_env == "production"
 
 
 def test_init_db_adds_concurrency_indexes() -> None:

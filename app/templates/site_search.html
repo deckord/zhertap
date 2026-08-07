@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Анализ территории — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet">< В кабинет</a>
       <a class="back-link" href="/cabinet/auctions">Анализ аукционов</a>
       <a class="back-link" href="/cabinet/help">Как пользоваться</a>
     </div>
@@ -37,6 +37,7 @@
         <span class="muted-modern">Справочники загружаются из базы</span>
       </div>
       <form class="modern-form" method="post" action="/cabinet/search" data-catalog-form="search">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <label>Цель анализа
           <select id="search-purpose" name="purpose">
             <option value="ЛПХ(новый поиск)">ЛПХ, новый поиск</option>

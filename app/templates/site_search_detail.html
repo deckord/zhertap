@@ -1,4 +1,4 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Анализ {{ search.id }} — Жертап{% endblock %}
 {% block content %}
 {% set current_plan_badge = search_urban_plan_badge if search_urban_plan_badge is defined else urban_plan_badge(search.urban_plan_status) %}
@@ -6,7 +6,7 @@
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet">< В кабинет</a>
       <a class="back-link" href="/cabinet/search">Новый анализ</a>
     </div>
     <div class="cabinet-hero search-live-hero">
@@ -114,6 +114,7 @@
           <span>Пакет {{ search.batch_number }} · показано <b id="candidate-count">{{ displayed_candidates|length }}</b></span>
         </div>
         <form id="next-batch-form" class="next-batch-form {% if not can_request_next_batch %}is-hidden{% endif %}" method="post" action="/cabinet/searches/{{ search.id }}/next">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button class="primary-action compact" type="submit">Найти следующие 10</button>
         </form>
       </div>

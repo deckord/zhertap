@@ -516,6 +516,112 @@ def test_api_serves_contact_sheet_when_manifest_has_one(tmp_path: Path) -> None:
     assert response.headers["content-type"] == "image/png"
 
 
+def test_api_egkn_boundary_and_parcels_return_geojson(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from shapely.geometry import Polygon
+
+    import app.providers.egkn as egkn_module
+
+    district_info = egkn_module.DistrictInfo(
+        id=10,
+        region_name="Акмолинская область",
+        code="01-011",
+        name="Целиноградский",
+        display_name="р-н. Целиноградский (01-011)",
+        srs=4326,
+        ate_code="150807",
+        kato="116600000",
+    )
+    boundary_geom = Polygon([(71.30, 50.80), (71.40, 50.80), (71.40, 50.90), (71.30, 50.90)])
+    settlement_info = egkn_module.SettlementInfo(
+        gid="295",
+        name="Кабанбай батыр",
+        kato="116665100",
+        district_id=10,
+        geometry=boundary_geom,
+    )
+    parcel_geom = Polygon([(71.31, 50.81), (71.311, 50.81), (71.311, 50.811), (71.31, 50.811)])
+
+    class FakeProvider:
+        def find_district(self, region: str, district: str) -> egkn_module.DistrictInfo:
+            assert region == "Акмолинская область"
+            assert district == "Целиноградский район"
+            return district_info
+
+        def find_settlement(self, district_id: int, locality: str) -> egkn_module.SettlementInfo:
+            assert district_id == 10
+            assert locality == "кабанбай батыра"
+            return settlement_info
+
+        def parcels(
+            self,
+            district: egkn_module.DistrictInfo,
+            settlement: egkn_module.SettlementInfo,
+        ) -> list[egkn_module.ParcelRecord]:
+            return [
+                egkn_module.ParcelRecord(
+                    geometry=parcel_geom,
+                    cadastre="01-011-123-456",
+                    address="test address",
+                    land_use="ЛПХ",
+                    area_m2=1000.0,
+                )
+            ]
+
+    monkeypatch.setattr(egkn_module, "EgknProvider", FakeProvider)
+
+    source = tmp_path / "scan.png"
+    source.write_bytes(b"image")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "asset_id": "asset-1",
+                        "original_filename": source.name,
+                        "extracted_path": str(source),
+                        "detected_format": "png",
+                        "normalized_region": "Акмолинская область",
+                        "normalized_district": "Целиноградский район",
+                        "normalized_locality": "кабанбай батыра",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(data_root=tmp_path, manifest_path=manifest))
+
+    boundary_response = client.get("/api/records/asset-1/egkn/boundary")
+    parcels_response = client.get("/api/records/asset-1/egkn/parcels")
+
+    assert boundary_response.status_code == 200
+    boundary_payload = boundary_response.json()
+    assert boundary_payload["type"] == "Feature"
+    assert boundary_payload["properties"]["kato"] == "116665100"
+    assert boundary_payload["geometry"]["type"] == "Polygon"
+
+    assert parcels_response.status_code == 200
+    parcels_payload = parcels_response.json()
+    assert parcels_payload["type"] == "FeatureCollection"
+    assert len(parcels_payload["features"]) == 1
+    assert parcels_payload["features"][0]["properties"]["cadastre"] == "01-011-123-456"
+
+
+def test_api_egkn_boundary_fails_cleanly_without_district(tmp_path: Path) -> None:
+    source = tmp_path / "scan.png"
+    source.write_bytes(b"image")
+    manifest = _write_manifest(tmp_path, source)
+    client = TestClient(create_app(data_root=tmp_path, manifest_path=manifest))
+
+    response = client.get("/api/records/asset-1/egkn/boundary")
+
+    assert response.status_code == 400
+
+
 def test_api_resolves_bbox_for_manifest_location(tmp_path: Path) -> None:
     class Resolver:
         def resolve(

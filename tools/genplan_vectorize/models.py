@@ -1,88 +1,111 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-LAYER_KINDS = {"allowed", "prohibited", "red_line"}
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+LAYER_KINDS = ("allowed", "prohibited", "red_line")
+LEGEND_LAYER_KINDS = (*LAYER_KINDS, "unknown", "ignore")
+REVIEW_STATUSES = ("needs_review", "approved", "rejected")
 
 
 class VectorizeConfigError(ValueError):
-    pass
+    """Raised when legend.json fails validation for vectorization."""
 
 
-@dataclass(frozen=True, slots=True)
-class ColorRule:
-    layer_kind: str
-    zone_name: str
-    colors: tuple[tuple[int, int, int], ...]
-    tolerance: int = 10
-    sieve_pixels: int = 32
+class LegendEntry(BaseModel):
+    """One reviewed legend color, matching `app.models.GenplanLegendEntry`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    color_hex: str = Field(pattern=r"^#[0-9a-fA-F]{6}$")
+    red: int = Field(ge=0, le=255)
+    green: int = Field(ge=0, le=255)
+    blue: int = Field(ge=0, le=255)
+    source: str = Field(default="dominant_color", min_length=1, max_length=48)
+    label_ru: str = Field(default="", max_length=240)
+    label_kz: str = Field(default="", max_length=240)
+    target_category: str = Field(default="unknown", min_length=1, max_length=32)
+    layer_kind: str = Field(default="unknown", pattern=r"^(" + "|".join(LEGEND_LAYER_KINDS) + ")$")
+    confidence_score: float = Field(default=0.25, ge=0, le=1)
+    review_status: str = Field(
+        default="needs_review", pattern=r"^(" + "|".join(REVIEW_STATUSES) + ")$"
+    )
+    pixel_count: int | None = Field(default=None, ge=0)
+    notes: str = Field(default="", max_length=1_000)
+    tolerance: int = Field(default=10, ge=0, le=255)
+
+    @field_validator("color_hex")
+    @classmethod
+    def _normalize_color_hex(cls, value: str) -> str:
+        return value.lower()
+
+    @model_validator(mode="after")
+    def _check_color_matches_rgb(self) -> LegendEntry:
+        expected = f"#{self.red:02x}{self.green:02x}{self.blue:02x}"
+        if self.color_hex != expected:
+            raise ValueError(
+                f"color_hex {self.color_hex!r} does not match red/green/blue "
+                f"({self.red}, {self.green}, {self.blue}); expected {expected!r}"
+            )
+        return self
+
+    @property
+    def is_approved(self) -> bool:
+        return self.review_status == "approved"
+
+    @property
+    def is_usable(self) -> bool:
+        return self.is_approved and self.layer_kind in LAYER_KINDS
 
 
-@dataclass(frozen=True, slots=True)
-class VectorizeConfig:
-    schema_version: str
-    release_id: str
-    source_title: str
-    rules: tuple[ColorRule, ...]
+class LegendDocument(BaseModel):
+    """An operator-approved legend, ready to drive color segmentation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "genplan-legend/v1"
+    record_id: str = Field(min_length=1, max_length=200)
+    source_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    source_title: str = Field(default="", max_length=320)
+    reviewer_id: str = Field(min_length=1, max_length=200)
+    reviewed_at_utc: datetime
+    min_area_px: int = Field(default=16, ge=0)
+    entries: list[LegendEntry] = Field(min_length=1, max_length=200)
+
+    @field_validator("source_sha256")
+    @classmethod
+    def _normalize_source_sha256(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("entries")
+    @classmethod
+    def _unique_colors(cls, value: list[LegendEntry]) -> list[LegendEntry]:
+        seen: set[str] = set()
+        for entry in value:
+            if entry.color_hex in seen:
+                raise ValueError(f"duplicate color_hex {entry.color_hex!r} in legend entries")
+            seen.add(entry.color_hex)
+        return value
+
+    def usable_entries_by_layer_kind(self) -> dict[str, list[LegendEntry]]:
+        grouped: dict[str, list[LegendEntry]] = {kind: [] for kind in LAYER_KINDS}
+        for entry in self.entries:
+            if entry.is_usable:
+                grouped[entry.layer_kind].append(entry)
+        return grouped
 
 
-def parse_hex_color(value: str) -> tuple[int, int, int]:
-    raw = value.strip()
-    if raw.startswith("#"):
-        raw = raw[1:]
-    if len(raw) != 6:
-        raise VectorizeConfigError(f"Invalid color {value!r}; expected #RRGGBB")
-    try:
-        return tuple(int(raw[index : index + 2], 16) for index in (0, 2, 4))  # type: ignore[return-value]
-    except ValueError as exc:
-        raise VectorizeConfigError(f"Invalid color {value!r}; expected #RRGGBB") from exc
-
-
-def load_config(path: Path) -> VectorizeConfig:
-    import json
-
+def load_legend_document(path: Path) -> LegendDocument:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise VectorizeConfigError(f"Could not read vectorize config: {exc}") from exc
+        raise VectorizeConfigError(f"Could not read legend.json: {exc}") from exc
     if not isinstance(payload, dict):
-        raise VectorizeConfigError("Vectorize config root must be an object")
-    layers = payload.get("layers")
-    if not isinstance(layers, list) or not layers:
-        raise VectorizeConfigError("Vectorize config must contain a non-empty layers array")
-    rules = tuple(_parse_rule(item) for item in layers)
-    return VectorizeConfig(
-        schema_version=str(payload.get("schema_version") or "genplan-vectorize/v1"),
-        release_id=str(payload.get("release_id") or path.stem),
-        source_title=str(payload.get("source_title") or ""),
-        rules=rules,
-    )
-
-
-def _parse_rule(item: Any) -> ColorRule:
-    if not isinstance(item, dict):
-        raise VectorizeConfigError("Each layer rule must be an object")
-    layer_kind = str(item.get("layer_kind") or "").strip()
-    if layer_kind not in LAYER_KINDS:
-        raise VectorizeConfigError(
-            f"Invalid layer_kind {layer_kind!r}; expected one of {sorted(LAYER_KINDS)}"
-        )
-    raw_colors = item.get("colors")
-    if not isinstance(raw_colors, list) or not raw_colors:
-        raise VectorizeConfigError(f"{layer_kind} rule must contain colors")
-    tolerance = int(item.get("tolerance", 10))
-    if tolerance < 0 or tolerance > 255:
-        raise VectorizeConfigError("tolerance must be between 0 and 255")
-    sieve_pixels = int(item.get("sieve_pixels", 32))
-    if sieve_pixels < 0:
-        raise VectorizeConfigError("sieve_pixels must be zero or positive")
-    return ColorRule(
-        layer_kind=layer_kind,
-        zone_name=str(item.get("zone_name") or layer_kind),
-        colors=tuple(parse_hex_color(str(color)) for color in raw_colors),
-        tolerance=tolerance,
-        sieve_pixels=sieve_pixels,
-    )
-
+        raise VectorizeConfigError("legend.json root must be an object")
+    try:
+        return LegendDocument.model_validate(payload)
+    except ValidationError as exc:
+        raise VectorizeConfigError(f"legend.json failed validation: {exc}") from exc

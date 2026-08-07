@@ -1,16 +1,17 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Карта аукционов v2 — Жертап{% endblock %}
 {% block head_extra %}
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/leaflet.css?v=20260807a">
 {% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell auction-v2-map-page">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet/auctions-v2{% if filter_query %}?{{ filter_query }}{% endif %}">← К списку</a>
+      <a class="back-link" href="/cabinet/auctions-v2{% if filter_query %}?{{ filter_query }}{% endif %}">< К списку</a>
       <a class="back-link" href="/cabinet">В кабинет</a>
       <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="primary-action compact" type="submit">Обновить данные</button>
       </form>
     </div>
@@ -182,7 +183,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="/static/site-catalogs.js?v=20260804b" defer></script>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+<script src="/static/leaflet.js?v=20260807a" defer></script>
 <script src="/static/auction-v2-map.js?v=20260803d" defer></script>
 {% endblock %}
 

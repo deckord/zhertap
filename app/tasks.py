@@ -11,6 +11,7 @@ from app.apipay import ApiPayError, get_invoice
 from app.auction_service import sync_current_auctions
 from app.auction_v2 import (
     prepare_auction_v2_worklist,
+    sync_auction_v2_eqazyna_history_backfill,
     sync_auction_v2_full_cycle,
     sync_auction_v2_sources,
 )
@@ -72,6 +73,7 @@ celery_app.conf.update(
         "land_scout.reconcile_auction_apipay_invoice": {"queue": "critical"},
         "land_scout.reconcile_account_apipay_invoice": {"queue": "critical"},
         "land_scout.sync_auctions": {"queue": "auctions"},
+        "land_scout.sync_auction_v2_eqazyna_history_backfill": {"queue": "auctions"},
         "land_scout.sync_auction_v2_full_cycle": {"queue": "auctions"},
         "land_scout.sync_auction_v2_sources": {"queue": "auctions"},
     },
@@ -486,6 +488,49 @@ def sync_auction_v2_full_cycle_task(self) -> dict[str, int]:
     except Exception as exc:
         logger.warning("Auction v2 full-cycle sync failed: %s", exc)
         raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1)) from exc
+
+
+@celery_app.task(
+    bind=True,
+    name="land_scout.sync_auction_v2_eqazyna_history_backfill",
+    max_retries=2,
+    soft_time_limit=3600,
+    time_limit=3900,
+)
+def sync_auction_v2_eqazyna_history_backfill_task(self) -> dict[str, int]:
+    init_db()
+    if not settings.auctions_enabled:
+        return {
+            "fetched": 0,
+            "created": 0,
+            "updated": 0,
+            "notifications_sent": 0,
+            "errors": 0,
+            "detail_errors": 0,
+            "deactivated": 0,
+            "crawl_complete": 0,
+            "url_count": 0,
+            "pages_scanned": 0,
+        }
+    try:
+        with SessionLocal() as session:
+            result = sync_auction_v2_eqazyna_history_backfill(session)
+            session.commit()
+        return {
+            "fetched": result.fetched,
+            "created": result.created,
+            "updated": result.updated,
+            "notifications_sent": result.notifications_sent,
+            "errors": result.errors,
+            "detail_errors": result.detail_errors,
+            "deactivated": result.deactivated,
+            "crawl_complete": int(result.crawl_complete),
+            "url_count": result.url_count,
+            "pages_scanned": result.pages_scanned,
+        }
+    except Exception as exc:
+        logger.warning("Auction v2 E-Qazyna history backfill failed: %s", exc)
+        raise self.retry(exc=exc, countdown=120 * (self.request.retries + 1)) from exc
 
 
 @celery_app.task(

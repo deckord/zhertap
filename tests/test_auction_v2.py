@@ -1,7 +1,7 @@
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -27,6 +27,7 @@ from app.auction_v2 import (
     create_auction_v2_market_comparable,
     create_auction_v2_watchlist,
     dispatch_auction_v2_watchlist_notifications,
+    eqazyna_history_publish_date_windows,
     get_auction_v2_payload,
     list_auction_v2_lots,
     list_auction_v2_map_markers,
@@ -37,6 +38,7 @@ from app.auction_v2 import (
     refresh_auction_v2_infrastructure,
     seed_auction_v2_sources,
     sync_auction_v2_documents,
+    sync_auction_v2_eqazyna_history_backfill,
     sync_auction_v2_full_cycle,
     sync_auction_v2_gov_kz_announcements,
     sync_auction_v2_sources,
@@ -96,6 +98,9 @@ def client_for(session: Session) -> Iterator[TestClient]:
     app.dependency_overrides[get_db] = override_db
     try:
         with TestClient(app) as client:
+            client.headers.update(
+                {"x-csrf-token": web.csrf_token_value("", "testclient")}
+            )
             yield client
     finally:
         app.dependency_overrides.clear()
@@ -112,6 +117,9 @@ def authorize_client(client: TestClient, session: Session, account: Account) -> 
     )
     session.commit()
     client.cookies.set("zhertap_session", token)
+    client.headers.update(
+        {"x-csrf-token": web.csrf_token_value(token, "testclient")}
+    )
 
 
 def make_admin_account() -> Account:
@@ -729,8 +737,8 @@ def test_auction_v2_admin_can_open_map_view() -> None:
         assert "Карта земельных аукционов" in response.text
         assert "auction-v2-map-data" in response.text
         assert "auction-v2-egkn-layer-data" in response.text
-        assert "leaflet@1.9.4/dist/leaflet.css" in response.text
-        assert "leaflet@1.9.4/dist/leaflet.js" in response.text
+        assert "/static/leaflet.css" in response.text
+        assert "/static/leaflet.js" in response.text
         assert "auction-v2-leaflet-map" in response.text
         assert "Границы ЕГКН" in response.text
         assert "Свободные" in response.text
@@ -2134,6 +2142,103 @@ def test_auction_v2_full_cycle_passes_limit_to_eqazyna_sync(
     assert seen["send_notifications"] is False
 
 
+def test_eqazyna_history_backfill_uses_safe_archive_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "eqazyna_history_sync_max_pages", 12)
+    monkeypatch.setattr(settings, "eqazyna_history_sync_max_lots", 250)
+    monkeypatch.setattr(
+        settings,
+        "eqazyna_history_sync_statuses",
+        "SuccessProtocolSigned,FailureProtocolSigned",
+    )
+
+    window_results = [
+        AuctionSyncResult(
+            fetched=20,
+            created=7,
+            updated=13,
+            notifications_sent=0,
+            errors=0,
+            deactivated=0,
+            crawl_complete=True,
+            url_count=40,
+            pages_scanned=24,
+            status_counts={"SuccessProtocolSigned": 30, "FailureProtocolSigned": 10},
+        ),
+        AuctionSyncResult(
+            fetched=5,
+            created=2,
+            updated=3,
+            notifications_sent=0,
+            errors=0,
+            deactivated=0,
+            crawl_complete=True,
+            url_count=8,
+            pages_scanned=6,
+            status_counts={"SuccessProtocolSigned": 3, "FailureProtocolSigned": 5},
+        ),
+    ]
+
+    def fake_sync_current_auctions(session: Session, **kwargs: object) -> AuctionSyncResult:
+        calls.append(kwargs)
+        return window_results[len(calls) - 1]
+
+    monkeypatch.setattr("app.auction_v2.sync_current_auctions", fake_sync_current_auctions)
+
+    with build_session() as session:
+        result = sync_auction_v2_eqazyna_history_backfill(
+            session,
+            publish_date_windows=[
+                ("01.01.2020", "31.12.2020"),
+                ("01.01.2021", "31.12.2021"),
+            ],
+        )
+        row = session.execute(
+            select(AuctionCrawlRun, AuctionSource)
+            .join(AuctionSource, AuctionSource.id == AuctionCrawlRun.source_id)
+            .where(AuctionSource.code == "eqazyna_history_backfill")
+        ).one()
+        run, source = row
+        payload = json.loads(run.raw_payload_json or "{}")
+
+    assert result.fetched == 25
+    assert result.created == 9
+    assert result.updated == 16
+    assert [call["publish_date_windows"] for call in calls] == [
+        [("01.01.2020", "31.12.2020")],
+        [("01.01.2021", "31.12.2021")],
+    ]
+    for call in calls:
+        assert call["max_pages"] == 12
+        assert call["max_lots"] == 250
+        assert call["statuses"] == ["SuccessProtocolSigned", "FailureProtocolSigned"]
+        assert call["deactivate_missing"] is False
+        assert call["send_notifications"] is False
+    assert source.name == "E-Qazyna: архив торгов"
+    assert run.status == "success"
+    assert run.items_seen == 48
+    assert run.items_created == 9
+    assert run.items_updated == 16
+    assert payload["mode"] == "auction_v2_eqazyna_history_backfill"
+    assert payload["deactivated"] == 0
+    assert payload["publish_date_windows_count"] == 2
+    assert payload["status_counts"]["SuccessProtocolSigned"] == 33
+
+
+def test_eqazyna_history_publish_date_windows_use_configured_start_year(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "eqazyna_history_sync_start_year", 2024)
+    monkeypatch.setattr(settings, "eqazyna_history_sync_window_days", 90)
+
+    assert eqazyna_history_publish_date_windows(today=date(2024, 5, 1)) == [
+        ("01.01.2024", "30.03.2024"),
+        ("31.03.2024", "01.05.2024"),
+    ]
+
+
 def test_auction_v2_full_cycle_records_empty_eqazyna_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2484,6 +2589,47 @@ def test_auction_v2_admin_can_trigger_full_cycle_sync_from_cabinet(
         assert calls == 1
 
 
+def test_auction_v2_admin_can_trigger_history_backfill_from_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_history_backfill(_session: Session) -> AuctionSyncResult:
+        nonlocal calls
+        calls += 1
+        return AuctionSyncResult(
+            fetched=40,
+            created=12,
+            updated=28,
+            notifications_sent=0,
+            errors=0,
+            url_count=80,
+            pages_scanned=24,
+        )
+
+    monkeypatch.setattr(web, "sync_auction_v2_eqazyna_history_backfill", fake_history_backfill)
+    with build_session() as session:
+        account = make_admin_account()
+        session.add(account)
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                "/cabinet/auctions-v2/history-backfill",
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+        assert response.headers["location"].startswith(
+            "/cabinet/auctions-v2/sources?backfill=done"
+        )
+        assert "lots_fetched=40" in response.headers["location"]
+        assert "lots_created=12" in response.headers["location"]
+        assert "pages_scanned=24" in response.headers["location"]
+        assert calls == 1
+
+
 def test_auction_v2_full_cycle_is_not_scheduled_twice() -> None:
     from app.config import settings
     from app.tasks import celery_app
@@ -2500,6 +2646,7 @@ def test_auction_v2_full_cycle_is_not_scheduled_twice() -> None:
     )
     assert "sync-auction-v2-sources" not in schedule
     assert "land_scout.sync_auction_v2_full_cycle" in celery_app.tasks
+    assert "land_scout.sync_auction_v2_eqazyna_history_backfill" in celery_app.tasks
 
 
 def test_auction_v2_watchlist_matches_scored_lots() -> None:

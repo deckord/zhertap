@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Обратная связь - Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet">< В кабинет</a>
     </div>
     <div class="section-title">
       <span>Обратная связь</span>
@@ -23,6 +23,7 @@
     <section class="panel-modern feedback-compose-panel">
       <div class="panel-head"><h2>Новое сообщение</h2><span>Обычно достаточно 2-3 предложений</span></div>
       <form class="feedback-compose-form" method="post" action="/cabinet/feedback">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <label>Ваше сообщение
           <textarea name="message" rows="5" maxlength="5000" required placeholder="Например: искал участок в Косшы, поиск завис / не понял оплату / нужен фильтр по району..."></textarea>
         </label>

@@ -1,9 +1,9 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Заявка {{ search.id[:8] }} · {{ app_name }}{% endblock %}
 {% block content %}
 {% set status_badge = admin_search_status(search) %}
 {% set plan_badge = urban_plan_badge(search.urban_plan_status, language=search.language) %}
-<nav class="crumb"><a href="/">← Очередь</a></nav>
+<nav class="crumb"><a href="/">< Очередь</a></nav>
 <section class="section-head">
   <div>
     <h1>{{ search.district }}{% if search.locality %}, {{ search.locality }}{% endif %}</h1>
@@ -28,7 +28,7 @@
   {% elif search.urban_plan_status in ['unavailable', 'waived'] %}
     <br>Простыми словами: место можно смотреть как предварительное, но генплан нужно проверить отдельно по официальному источнику.
   {% endif %}
-  <br><a href="{{ genplan_reference.url }}" target="_blank" rel="noopener">Официальный источник для ручной проверки генплана/ПДП ↗</a>
+  <br><a href="{{ genplan_reference.url }}" target="_blank" rel="noopener">Официальный источник для ручной проверки генплана/ПДП ?</a>
   <details class="inline-details">
     <summary>Технические детали</summary>
     <span class="muted">Внутренний статус: {{ search.urban_plan_status }}{% if search.urban_plan_message %} · {{ search.urban_plan_message }}{% endif %}</span>
@@ -53,7 +53,7 @@
 {% if search.telegram_chat_id %}
 <div class="payment-summary">
   <div><span>Оплата</span><strong>{{ payment_labels.get(search.payment_status, search.payment_status) }}</strong></div>
-  <div><span>Сумма</span><strong>{{ search.payment_amount_kzt or 'не запрошена' }}{% if search.payment_amount_kzt %} ₸{% endif %}</strong></div>
+  <div><span>Сумма</span><strong>{{ search.payment_amount_kzt or 'не запрошена' }}{% if search.payment_amount_kzt %} ?{% endif %}</strong></div>
   <div><span>Telegram chat</span><strong>{{ search.telegram_chat_id }}</strong></div>
   <div><span>Бесплатные участки</span><strong>{{ free_preview_used }} из {{ free_preview_limit }} зарезервировано/выдано</strong></div>
   <div><span>Доступ пользователя</span><strong>{{ 'единый доступ ко всему сервису активен' if paid_access else 'не активирован' }}</strong></div>
@@ -61,10 +61,13 @@
 {% endif %}
 {% if search.status in ['queued', 'processing'] %}
 <div class="notice">Выполняется анализ ЕГКН и открытых данных: {{ search.progress }}%</div>
-<script>window.setTimeout(() => window.location.reload(), 3000);</script>
+{% endif %}
+{% if search.status in ['queued', 'processing'] %}
+<script src="/static/request-detail.js?v=20260807a" defer></script>
 {% endif %}
 {% if search.status == 'failed' %}
 <form action="/admin/searches/{{ search.id }}/retry" method="post" class="deliver-bar failure-action">
+  <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
   <div>
     <strong>Поиск завершился технической ошибкой</strong>
     <span>Создайте повторную заявку с теми же параметрами. Новый поиск будет поставлен в очередь и откроется в панели.</span>
@@ -91,8 +94,8 @@
       <div><span>Назначение соседнего участка</span><strong>{{ item.nearby_land_use or 'нет данных' }}</strong></div>
       <div><span>Категория соседнего участка</span><strong>{{ item.nearby_category_id or 'нет данных' }}</strong></div>
       <div><span>Расстояние до него</span><strong>{{ '%.0f'|format(item.nearby_distance_m) if item.nearby_distance_m is not none else 'нет данных' }} м</strong></div>
-      <div><span>Кладбище</span><strong>{{ ('≈ %.0f м'|format(item.cemetery_distance_m)) if item.cemetery_distance_m is not none else 'рядом не найдено' }}</strong></div>
-      <div><span>Дорога</span><strong>{{ ('≈ %.0f м'|format(item.road_distance_m)) if item.road_distance_m is not none else 'нет данных' }}</strong></div>
+      <div><span>Кладбище</span><strong>{{ ('? %.0f м'|format(item.cemetery_distance_m)) if item.cemetery_distance_m is not none else 'рядом не найдено' }}</strong></div>
+      <div><span>Дорога</span><strong>{{ ('? %.0f м'|format(item.road_distance_m)) if item.road_distance_m is not none else 'нет данных' }}</strong></div>
       <div><span>Итог проверки</span><strong>{{ review_status_labels.get(item.review_status, item.review_status) }}</strong></div>
       <div><span>Генплан/ПДП</span><strong>{{ item_plan_badge.short }}</strong></div>
       <div><span>Градостроительная зона</span><strong>{{ item.urban_plan_zone or 'нет подтверждения' }}</strong></div>
@@ -102,7 +105,7 @@
       <p><b>Электричество:</b> {{ item.power_evidence }}</p>
       <p><b>Вода:</b> {{ item.water_evidence }}</p>
       <p><b>Септик:</b> {{ item.sewer_evidence }}</p>
-      <p><b>Документ:</b> {{ item.urban_plan_document or 'нет подтверждения' }}{% if item.urban_plan_source_url %} · <a href="{{ item.urban_plan_source_url }}" target="_blank" rel="noopener">официальный источник ↗</a>{% endif %}</p>
+      <p><b>Документ:</b> {{ item.urban_plan_document or 'нет подтверждения' }}{% if item.urban_plan_source_url %} · <a href="{{ item.urban_plan_source_url }}" target="_blank" rel="noopener">официальный источник ?</a>{% endif %}</p>
       <details class="terms-snapshot">
         <summary>Техническое объяснение проверки</summary>
         <pre>{{ item.risk_notes }}
@@ -113,10 +116,11 @@
       </details>
     </div>
     <div class="map-actions">
-      <a href="{{ item.google_maps_url }}" target="_blank" rel="noopener">Ручная сверка спутника ↗</a>
-      <a href="{{ item.egkn_url }}" target="_blank" rel="noopener">Открыть ЕГКН ↗</a>
+      <a href="{{ item.google_maps_url }}" target="_blank" rel="noopener">Ручная сверка спутника ?</a>
+      <a href="{{ item.egkn_url }}" target="_blank" rel="noopener">Открыть ЕГКН ?</a>
     </div>
     <form action="/admin/candidates/{{ item.id }}/review" method="post" class="review-form">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <label>Решение
         <select name="status">
           <option value="pending" {% if item.review_status == 'pending' %}selected{% endif %}>Ожидает</option>
@@ -140,9 +144,11 @@
       <div class="deliver-bar">
         <div><strong>Автоматическая отправка не завершилась</strong><span>Зарезервировано {{ search.free_preview_count }} бесплатных участка. Повторите доставку вручную; лимит окончательно расходуется после успешной отправки.</span></div>
         <form action="/admin/searches/{{ search.id }}/approve-free-preview" method="post">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button type="submit" class="primary">Повторить отправку</button>
         </form>
         <form action="/admin/searches/{{ search.id }}/reject-free-preview" method="post">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button type="submit">Не отправлять</button>
         </form>
       </div>
@@ -158,17 +164,21 @@
       <div><strong>Автоматическая оплата</strong><span>Ссылка на оплату выдаётся только после прохождения ЕГКН, OSM и официального слоя генплана/ПДП.</span></div>
       {% if search.payment_status in ['not_requested', 'rejected'] %}
         <form action="/admin/searches/{{ search.id }}/request-payment" method="post">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button type="submit" class="primary">Запросить оплату</button>
         </form>
       {% elif search.payment_status == 'awaiting_transfer' %}
         <form action="/admin/searches/{{ search.id }}/reject-payment" method="post">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button type="submit">Отменить ожидание оплаты</button>
         </form>
       {% elif search.payment_status == 'pending_confirmation' %}
         <form action="/admin/searches/{{ search.id }}/confirm-payment" method="post">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button type="submit" class="primary">Подтвердить поступление</button>
         </form>
         <form action="/admin/searches/{{ search.id }}/reject-payment" method="post">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
           <button type="submit">Платеж не найден</button>
         </form>
       {% elif search.payment_status == 'paid' %}

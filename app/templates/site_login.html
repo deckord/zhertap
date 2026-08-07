@@ -1,4 +1,4 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Вход — Жертап{% endblock %}
 {% block content %}
 <section class="auth-shell">
@@ -31,6 +31,7 @@
     {% if request.query_params.get("locked") %}<div class="form-alert">Аккаунт временно заблокирован. Повторите через 5 минут.</div>{% endif %}
 
     <form class="auth-form auth-mode is-active" data-auth-mode="login" method="post" action="/login">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <label>Телефон
         <input id="login_phone" name="phone" value="{{ phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
       </label>
@@ -43,6 +44,7 @@
 
     {% if register_error %}<div class="form-alert">{{ register_error }}</div>{% endif %}
     <form class="auth-form auth-mode" data-auth-mode="register" method="post" action="/register/request-code">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <div class="step-title">1. Подтвердите телефон</div>
       <label>Телефон
         <input id="register_phone" name="phone" value="{{ register_phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
@@ -55,6 +57,7 @@
     </form>
 
       <form class="auth-form verify auth-mode {% if register_code_requested %}is-ready{% else %}is-disabled{% endif %}" data-auth-mode="register" method="post" action="/register/verify">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <div class="step-title">2. Введите SMS-код и задайте пароль</div>
         {% if not register_code_requested %}
           <div class="step-hint">Сначала нажмите “Получить SMS-код”. После успешной отправки этот блок станет активным.</div>
@@ -77,6 +80,7 @@
 
     {% if reset_error %}<div class="form-alert">{{ reset_error }}</div>{% endif %}
     <form class="auth-form auth-mode" data-auth-mode="reset" method="post" action="/password/reset/request-code">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <div class="step-title">1. Получите SMS-код восстановления</div>
       <label>Телефон
         <input id="reset_phone" name="phone" value="{{ reset_phone or phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
@@ -86,6 +90,7 @@
     </form>
 
     <form class="auth-form verify auth-mode {% if reset_code_requested %}is-ready{% else %}is-disabled{% endif %}" data-auth-mode="reset" method="post" action="/password/reset/verify">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
       <div class="step-title">2. Введите SMS-код и новый пароль</div>
       {% if not reset_code_requested %}
         <div class="step-hint">Сначала нажмите “Получить SMS-код”. После успешной отправки этот блок станет активным.</div>
@@ -115,47 +120,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script>
-  const tabs = document.querySelectorAll("[data-auth-tab]");
-  const modes = document.querySelectorAll("[data-auth-mode]");
-  const registerPhone = document.querySelector("#register_phone");
-  const verifyPhone = document.querySelector("#verify_phone");
-  const loginPhone = document.querySelector("#login_phone");
-  const resetPhone = document.querySelector("#reset_phone");
-  const resetVerifyPhone = document.querySelector("#reset_verify_phone");
-  const setMode = (mode) => {
-    tabs.forEach((tab) => tab.classList.toggle("is-active", tab.dataset.authTab === mode));
-    modes.forEach((panel) => panel.classList.toggle("is-active", panel.dataset.authMode === mode));
-  };
-  tabs.forEach((tab) => tab.addEventListener("click", () => setMode(tab.dataset.authTab)));
-  document.querySelectorAll("[data-auth-switch]").forEach((button) => {
-    button.addEventListener("click", () => {
-      if (button.dataset.authSwitch === "reset" && loginPhone?.value && resetPhone) {
-        resetPhone.value = loginPhone.value;
-        resetVerifyPhone.value = loginPhone.value;
-      }
-      setMode(button.dataset.authSwitch);
-    });
-  });
-  registerPhone?.addEventListener("input", () => {
-    if (verifyPhone) verifyPhone.value = registerPhone.value;
-  });
-  resetPhone?.addEventListener("input", () => {
-    if (resetVerifyPhone) resetVerifyPhone.value = resetPhone.value;
-  });
-  if (
-    document.querySelector(".verify.is-ready") ||
-    new URLSearchParams(window.location.search).has("invalid")
-  ) {
-    setMode("register");
-  }
-  if (
-    document.querySelector("[data-auth-mode='reset'].verify.is-ready") ||
-    new URLSearchParams(window.location.search).has("reset_invalid") ||
-    new URLSearchParams(window.location.search).has("reset_missing")
-  ) {
-    setMode("reset");
-  }
-</script>
+<script src="/static/site-login.js?v=20260807a" defer></script>
 {% endblock %}
 

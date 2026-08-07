@@ -224,6 +224,11 @@ EQAZYNA_SYNC_STATUSES=ApplicationsAccept,Pending,Running,SuccessProtocolSigned,F
 EQAZYNA_SYNC_INTERVAL_MINUTES=30
 EQAZYNA_SYNC_MAX_PAGES=10
 EQAZYNA_SYNC_MAX_LOTS=100
+EQAZYNA_HISTORY_SYNC_STATUSES=SuccessProtocolSigned,FailureProtocolSigned,NullifyResultProtocolSigned,CancelBeforeStart
+EQAZYNA_HISTORY_SYNC_MAX_PAGES=100
+EQAZYNA_HISTORY_SYNC_MAX_LOTS=1000
+EQAZYNA_HISTORY_SYNC_START_YEAR=2020
+EQAZYNA_HISTORY_SYNC_WINDOW_DAYS=366
 EQAZYNA_TIMEOUT_SECONDS=30
 EQAZYNA_VERIFY_TLS=true
 ```
@@ -242,7 +247,7 @@ EQAZYNA_VERIFY_TLS=true
 - дата торгов;
 - история изменений при повторной синхронизации.
 
-Важно: текущий синхронизатор собирает по настроенным статусам и лимитам. Для полной исторической базы нужен отдельный backfill-процесс с увеличенными лимитами/архивными режимами.
+Важно: текущий синхронизатор собирает активные/текущие статусы по обычному расписанию. Для исторической базы есть отдельный backfill E-Qazyna: он идет по архивным статусам и периодам публикации с `EQAZYNA_HISTORY_SYNC_START_YEAR` до текущей даты. Он не деактивирует активные лоты, не отправляет уведомления о новых торгах и не подает заявки; он только пополняет базу для истории, повторных размещений и аналитики цены.
 
 ## Внутренний API
 

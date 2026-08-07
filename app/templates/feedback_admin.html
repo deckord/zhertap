@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Обратная связь · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="section-head admin-hero">
@@ -23,6 +23,7 @@
     </div>
   </div>
   <form action="/admin/feedback/broadcast" method="post" class="feedback-broadcast-form">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <label>Название
       <input name="title" value="Запрос впечатлений">
     </label>

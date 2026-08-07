@@ -45,8 +45,21 @@
       attribution: "Tiles &copy; Esri",
     },
   );
-  const map = L.map("map", { layers: [osm] }).setView([48.1, 67.1], 5);
-  L.control.layers({ OSM: osm, "Esri World Imagery": satellite }).addTo(map);
+  const egknBoundaryLayer = L.geoJSON(null, {
+    interactive: false,
+    style: { color: "#ff00ff", weight: 3, fillOpacity: 0.05, fillColor: "#ff00ff" },
+  });
+  const egknParcelsLayer = L.geoJSON(null, {
+    interactive: false,
+    style: { color: "#00c8ff", weight: 1, fillOpacity: 0.08, fillColor: "#00c8ff" },
+  });
+  const map = L.map("map", { layers: [osm, egknBoundaryLayer] }).setView([48.1, 67.1], 5);
+  L.control
+    .layers(
+      { OSM: osm, "Esri World Imagery": satellite },
+      { "EGKN boundary": egknBoundaryLayer, "EGKN parcels": egknParcelsLayer },
+    )
+    .addTo(map);
   const mapMarkers = L.layerGroup().addTo(map);
   requestAnimationFrame(() => map.invalidateSize());
   window.addEventListener("resize", () => map.invalidateSize());
@@ -313,6 +326,7 @@
         `&cache=${Date.now()}`;
       renderAll();
       await focusRecordMap(recordId);
+      loadEgknOverlays(recordId);
       setExports(Boolean(record.saved?.points?.length));
     } catch (error) {
       showNotice(`Could not open document: ${error.message}`, "error");
@@ -496,6 +510,30 @@
         `The scan opened, but locality boundaries were not found: ${error.message}`,
         "error",
       );
+    }
+  }
+
+  async function loadEgknOverlays(recordId) {
+    egknBoundaryLayer.clearLayers();
+    egknParcelsLayer.clearLayers();
+    try {
+      const boundary = await api(
+        `/api/records/${encodeURIComponent(recordId)}/egkn/boundary`,
+      );
+      egknBoundaryLayer.addData(boundary);
+    } catch (error) {
+      showNotice(
+        `EGKN boundary overlay is unavailable for this record: ${error.message}`,
+        "error",
+      );
+    }
+    try {
+      const parcels = await api(
+        `/api/records/${encodeURIComponent(recordId)}/egkn/parcels`,
+      );
+      egknParcelsLayer.addData(parcels);
+    } catch {
+      // Parcels are a bonus overlay; the boundary error above is enough feedback.
     }
   }
 

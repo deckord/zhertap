@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import app.main as main
+import app.web as web
 from app.db import Base
 from app.models import PlanningCandidateReview, UrbanPlanLayer
 from app.purposes import LPH_HOUSEHOLD_LAYER
@@ -51,6 +52,10 @@ def add_allowed_layer(session: Session) -> UrbanPlanLayer:
     session.add(layer)
     session.commit()
     return layer
+
+
+def csrf_headers() -> dict[str, str]:
+    return {"x-csrf-token": web.csrf_token_value("", "testclient")}
 
 
 def test_admin_candidate_finder_renders_review_controls() -> None:
@@ -96,6 +101,7 @@ def test_admin_planning_candidate_review_saves_marker() -> None:
     try:
         response = TestClient(main.app).post(
             "/admin/planning-candidates/review",
+            headers=csrf_headers(),
             data={
                 "candidate_region": layer.region,
                 "candidate_district": layer.district,
@@ -154,6 +160,7 @@ def test_admin_next_candidate_review_flow() -> None:
         page = TestClient(main.app).get("/admin/planning-candidates/review-next")
         response = TestClient(main.app).post(
             "/admin/planning-candidates/review",
+            headers=csrf_headers(),
             data={
                 "review_return": "next",
                 "candidate_region": layer.region,

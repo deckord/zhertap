@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Проверка точки · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="section-head">
@@ -42,6 +42,7 @@
   </div>
 
   <form action="/admin/planning-candidates/review" method="post" class="urban-plan-form">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <input type="hidden" name="review_return" value="next">
     <input type="hidden" name="candidate_region" value="{{ candidate.region }}">
     <input type="hidden" name="candidate_district" value="{{ candidate.district }}">

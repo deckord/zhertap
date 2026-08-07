@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Очередь · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="section-head">
@@ -11,6 +11,7 @@
 <section class="panel form-panel">
   <h2>Новая заявка</h2>
   <form action="/admin/searches" method="post" class="request-form" id="search-form">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <label>Область
       <select name="region" id="region-select" required>
         <option value="Акмолинская область">Акмолинская область (01)</option>

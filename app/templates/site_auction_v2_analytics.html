@@ -1,12 +1,13 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Районы и аналитика v2 — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet/auctions-v2">← К лотам</a>
+      <a class="back-link" href="/cabinet/auctions-v2">< К лотам</a>
       <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="primary-action compact" type="submit">Обновить данные</button>
       </form>
     </div>

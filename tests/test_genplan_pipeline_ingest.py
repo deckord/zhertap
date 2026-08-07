@@ -1,17 +1,21 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import app.main as main
+import app.web as web
 from app.config import settings
 from app.db import Base
 from app.genplan_pipeline import (
+    build_document_legend_export,
     extract_next_document_legend_draft,
     inspect_genplan_document,
     legend_entry_stats,
+    set_legend_entry_classification,
     sync_manual_genplans_into_pipeline,
 )
 from app.manual_genplans import ManualGenplanRecord
@@ -244,3 +248,224 @@ def test_api_genplan_catalog_returns_pipeline_documents(
     assert payload["total"] == 1
     assert payload["items"][0]["asset_id"] == "asset-api"
     assert payload["items"][0]["legend_entry_count"] == 1
+
+
+def test_set_legend_entry_classification_and_export_document_legend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from PIL import Image, ImageDraw
+
+    image_path = tmp_path / "akmol.png"
+    image = Image.new("RGB", (240, 160), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 119, 159), fill=(38, 166, 91))
+    draw.rectangle((120, 0, 239, 79), fill=(245, 176, 65))
+    draw.rectangle((120, 80, 239, 159), fill=(52, 152, 219))
+    image.save(image_path)
+    record = ManualGenplanRecord(
+        asset_id="asset-legend-export",
+        region="Акмолинская область",
+        district="г.Акколь",
+        locality="г.Акколь",
+        title="Генплан: Акколь",
+        relative_path="archive/akmol.png",
+        filename="akmol.png",
+        extension=".png",
+        media_type="image/png",
+        size_bytes=image_path.stat().st_size,
+        confidence="medium",
+    )
+    monkeypatch.setattr("app.genplan_pipeline.manual_genplan_records", lambda: (record,))
+    monkeypatch.setattr("app.genplan_pipeline.resolve_manual_genplan_file", lambda _: image_path)
+
+    with build_session() as session:
+        sync_manual_genplans_into_pipeline(session, ingested_by="admin")
+        extract_next_document_legend_draft(session, limit_colors=6)
+        document = session.scalar(select(GenplanSourceDocument))
+        assert document is not None
+        entries = session.scalars(
+            select(GenplanLegendEntry).order_by(GenplanLegendEntry.id.asc())
+        ).all()
+        assert len(entries) >= 3
+
+        set_legend_entry_classification(
+            session,
+            entries[0].id,
+            target_category="lph-household",
+            layer_kind="allowed",
+            review_status="approved",
+        )
+        set_legend_entry_classification(
+            session,
+            entries[1].id,
+            target_category="restricted",
+            layer_kind="prohibited",
+            review_status="approved",
+        )
+        set_legend_entry_classification(
+            session,
+            entries[2].id,
+            target_category="red_line",
+            layer_kind="red_line",
+            review_status="approved",
+        )
+
+        payload = build_document_legend_export(
+            session,
+            document.id,
+            reviewer_id="reviewer-a2",
+        )
+        document_source_sha256 = document.source_sha256
+
+    assert payload["record_id"] == "asset-legend-export"
+    assert payload["source_sha256"] == document_source_sha256
+    assert payload["reviewer_id"] == "reviewer-a2"
+    assert len(payload["entries"]) == len(entries)
+
+    from tools.genplan_vectorize.models import LegendDocument
+
+    legend_document = LegendDocument.model_validate(payload)
+    grouped = legend_document.usable_entries_by_layer_kind()
+    assert {kind: len(rows) for kind, rows in grouped.items()} == {
+        "allowed": 1,
+        "prohibited": 1,
+        "red_line": 1,
+    }
+
+
+def test_set_legend_entry_classification_rejects_unknown_entry() -> None:
+    with build_session() as session:
+        with pytest.raises(ValueError, match="not found"):
+            set_legend_entry_classification(
+                session,
+                999,
+                target_category="lph-household",
+                layer_kind="allowed",
+                review_status="approved",
+            )
+
+
+def test_build_document_legend_export_rejects_document_without_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    image_path = tmp_path / "empty.png"
+    image_path.write_bytes(b"not-used")
+    record = ManualGenplanRecord(
+        asset_id="asset-no-legend",
+        region="Акмолинская область",
+        district="г.Акколь",
+        locality="г.Акколь",
+        title="Генплан: Акколь",
+        relative_path="archive/empty.png",
+        filename="empty.png",
+        extension=".png",
+        media_type="image/png",
+        size_bytes=9,
+        confidence="medium",
+    )
+    monkeypatch.setattr("app.genplan_pipeline.manual_genplan_records", lambda: (record,))
+    monkeypatch.setattr("app.genplan_pipeline.resolve_manual_genplan_file", lambda _: image_path)
+
+    with build_session() as session:
+        sync_manual_genplans_into_pipeline(session, ingested_by="admin")
+        document = session.scalar(select(GenplanSourceDocument))
+        assert document is not None
+        with pytest.raises(ValueError, match="no legend entries"):
+            build_document_legend_export(session, document.id, reviewer_id="reviewer-a2")
+
+
+def test_admin_classify_and_export_legend_routes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from PIL import Image, ImageDraw
+
+    image_path = tmp_path / "akmol.png"
+    image = Image.new("RGB", (240, 160), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 119, 159), fill=(38, 166, 91))
+    draw.rectangle((120, 0, 239, 79), fill=(245, 176, 65))
+    draw.rectangle((120, 80, 239, 159), fill=(52, 152, 219))
+    image.save(image_path)
+    record = ManualGenplanRecord(
+        asset_id="asset-admin-routes",
+        region="Акмолинская область",
+        district="г.Акколь",
+        locality="г.Акколь",
+        title="Генплан: Акколь",
+        relative_path="archive/akmol.png",
+        filename="akmol.png",
+        extension=".png",
+        media_type="image/png",
+        size_bytes=image_path.stat().st_size,
+        confidence="medium",
+    )
+    monkeypatch.setattr("app.genplan_pipeline.manual_genplan_records", lambda: (record,))
+    monkeypatch.setattr("app.genplan_pipeline.resolve_manual_genplan_file", lambda _: image_path)
+
+    session = build_session()
+    try:
+        sync_manual_genplans_into_pipeline(session, ingested_by="admin")
+        extract_next_document_legend_draft(session, limit_colors=6)
+        document = session.scalar(select(GenplanSourceDocument))
+        assert document is not None
+        entry = session.scalar(select(GenplanLegendEntry))
+        assert entry is not None
+
+        def override_db():
+            yield session
+
+        main.app.dependency_overrides[main.get_db] = override_db
+        main.app.dependency_overrides[main.require_admin] = lambda: "reviewer-a2"
+        client = TestClient(main.app)
+        client.headers.update({"x-csrf-token": web.csrf_token_value("", "testclient")})
+
+        view_response = client.get(f"/admin/genplan-pipeline/documents/{document.id}/legend")
+        assert view_response.status_code == 200
+        assert entry.color_hex in view_response.text
+
+        classify_response = client.post(
+            f"/admin/genplan-pipeline/legend/{entry.id}/classify",
+            data={
+                "target_category": "lph-household",
+                "layer_kind": "allowed",
+                "review_status": "approved",
+                "document_id": str(document.id),
+            },
+            follow_redirects=False,
+        )
+        assert classify_response.status_code == 303
+        assert classify_response.headers["location"] == (
+            f"/admin/genplan-pipeline/documents/{document.id}/legend"
+        )
+        session.refresh(entry)
+        assert entry.target_category == "lph-household"
+        assert entry.layer_kind == "allowed"
+        assert entry.review_status == "approved"
+
+        missing_view = client.get("/admin/genplan-pipeline/documents/999999/legend")
+        assert missing_view.status_code == 404
+
+        export_response = client.get(
+            f"/admin/genplan-pipeline/documents/{document.id}/legend-export"
+        )
+        assert export_response.status_code == 200
+        assert "attachment" in export_response.headers["content-disposition"]
+        exported = export_response.json()
+        assert exported["record_id"] == "asset-admin-routes"
+        assert exported["reviewer_id"] == "reviewer-a2"
+
+        bad_classify = client.post(
+            "/admin/genplan-pipeline/legend/999999/classify",
+            data={
+                "target_category": "lph-household",
+                "layer_kind": "allowed",
+                "review_status": "approved",
+            },
+        )
+        assert bad_classify.status_code == 400
+    finally:
+        main.app.dependency_overrides.clear()
+        session.close()

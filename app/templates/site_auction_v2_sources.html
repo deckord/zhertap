@@ -1,4 +1,4 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Источники v2 — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
@@ -7,7 +7,12 @@
     <div class="page-actions">
       <a class="back-link" href="/cabinet/auctions-v2">← К лотам</a>
       <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="primary-action compact" type="submit">Обновить все источники</button>
+      </form>
+      <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/history-backfill">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+        <button class="secondary-action compact" type="submit">Подтянуть архив E-Qazyna</button>
       </form>
     </div>
 
@@ -16,6 +21,12 @@
       <h1>Состояние данных аукционов v2</h1>
       <p>Это служебный режим внутри аукционов v2. Он нужен, чтобы понимать, почему в карточке лота есть или нет данные из E-Qazyna, gov.kz, ЕГКН, карт и документов.</p>
     </div>
+
+    {% if request.query_params.get("backfill") == "queued" %}
+      <div class="form-alert neutral">Загрузка архива E-Qazyna поставлена в очередь. Это старые лоты и результаты торгов из открытого списка; заявки не подаются.</div>
+    {% elif request.query_params.get("backfill") == "done" %}
+      <div class="form-alert neutral">Архив E-Qazyna обновлен: найдено {{ request.query_params.get("lots_fetched") or 0 }} карточек, новых {{ request.query_params.get("lots_created") or 0 }}, обновлено {{ request.query_params.get("lots_updated") or 0 }}, страниц проверено {{ request.query_params.get("pages_scanned") or 0 }}. Заявки не подавались.</div>
+    {% endif %}
 
     <section class="auction-v2-kpis">
       <article>

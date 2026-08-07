@@ -1,13 +1,14 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Аукционы v2 — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet/auctions">← Текущие аукционы</a>
+      <a class="back-link" href="/cabinet/auctions">< Текущие аукционы</a>
       <a class="back-link" href="/cabinet">В кабинет</a>
       <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="primary-action compact" type="submit">Обновить данные</button>
       </form>
     </div>
@@ -19,29 +20,6 @@
     </div>
 
     {% include "partials/auction_v2_tabs.html" %}
-
-    <section class="auction-v2-process-strip" aria-label="Как работать с лотом">
-      <article>
-        <span>1</span>
-        <strong>Найти лот</strong>
-        <small>Фильтры, карта и сохраненный мониторинг показывают подходящие участки.</small>
-      </article>
-      <article>
-        <span>2</span>
-        <strong>Понять смысл</strong>
-        <small>Индекс показывает интерес, риск показывает что нужно проверить руками.</small>
-      </article>
-      <article>
-        <span>3</span>
-        <strong>Сверить источники</strong>
-        <small>E-Qazyna, ЕГКН, gov.kz, генплан, документы и карта собраны в карточке.</small>
-      </article>
-      <article>
-        <span>4</span>
-        <strong>Перейти официально</strong>
-        <small>Когда все понятно, открывается E-Qazyna/eGov для юридического действия.</small>
-      </article>
-    </section>
 
     {% if filter_error %}
       <div class="form-alert">{{ filter_error }}</div>
@@ -102,11 +80,14 @@
       <em>{{ dashboard.crawl_runs }} запусков по источникам</em>
     </div>
 
-    <section class="panel-modern auction-v2-process-overview">
-      <div class="panel-head">
-        <h2>Работа до официальной заявки</h2>
-        <span>ZHERTAP не подает заявки и не участвует в торгах</span>
-      </div>
+    <details class="panel-modern auction-v2-collapsible auction-v2-process-overview">
+      <summary>
+        <span>
+          <strong>Работа до официальной заявки</strong>
+          <em>5 шагов от сбора лотов до перехода на официальный портал · ZHERTAP не подает заявки и не участвует в торгах</em>
+        </span>
+        <b>Показать шаги</b>
+      </summary>
       <div class="auction-v2-process-grid">
         <article class="is-done">
           <span>1</span>
@@ -134,7 +115,7 @@
           <p>Подача заявки, ЭЦП, гарантийный взнос и торги остаются только на E-Qazyna/eGov.</p>
         </article>
       </div>
-    </section>
+    </details>
 
     <section class="panel-modern auction-v2-watchlist-panel">
       <div class="panel-head">
@@ -142,6 +123,7 @@
         <span>{{ watchlist_notifications|length }} новых событий · {{ watchlist_matches|length }} подходящих лотов</span>
         {% if watchlist_notifications %}
           <form class="auction-v2-inline-form" method="post" action="/cabinet/auctions-v2/notifications/seen">
+            <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
             <button class="secondary-action compact" type="submit">Отметить события прочитанными</button>
           </form>
         {% endif %}
@@ -204,6 +186,7 @@
         </div>
         <div class="auction-v2-watchlist-side">
           <form class="auction-v2-watchlist-form" method="post" action="/cabinet/auctions-v2/watchlists">
+            <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
             <h3>Слежение за такими лотами</h3>
             <p class="auction-v2-mini-explain">Сохраните текущий отбор — система будет поднимать новые совпадения в эту ленту.</p>
             <label>Название мониторинга
@@ -238,6 +221,7 @@
                   <small>{{ row.filter_description }}</small>
                 {% endif %}
                 <form method="post" action="/cabinet/auctions-v2/watchlists/{{ watchlist.id }}/active">
+                  <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
                   <input type="hidden" name="active" value="{{ 'false' if watchlist.active else 'true' }}">
                   <button class="secondary-action compact" type="submit">{{ "Пауза" if watchlist.active else "Включить" }}</button>
                 </form>
@@ -509,15 +493,15 @@
             </div>
             <div class="auction-v2-card-side">
               <span>Старт</span>
-              <strong>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong>
+              <strong>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong>
               <span>Торги</span>
               <strong>{{ item.deadline_label }}</strong>
               <span>За сотку</span>
-              <strong>{% if analysis.price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.price_per_sotka).replace(",", " ") }} ₸{% else %}—{% endif %}</strong>
+              <strong>{% if analysis.price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.price_per_sotka).replace(",", " ") }} ?{% else %}—{% endif %}</strong>
               <span>OSM</span>
               <strong>{{ item.osm_label }}</strong>
               <span>Лимит</span>
-              <strong>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong>
+              <strong>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong>
               <a class="primary-action compact" href="/cabinet/auctions-v2/{{ lot.id }}">Открыть проверку</a>
             </div>
           </article>
@@ -592,7 +576,7 @@
       {% if has_previous_page or has_next_page %}
         <div class="pagination-actions">
           {% if has_previous_page %}
-            <a class="secondary-action compact" href="/cabinet/auctions-v2?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page - 1 }}">← Предыдущие 30</a>
+            <a class="secondary-action compact" href="/cabinet/auctions-v2?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page - 1 }}">< Предыдущие 30</a>
           {% endif %}
           {% if has_next_page %}
             <a class="primary-action compact" href="/cabinet/auctions-v2?{% if filter_query %}{{ filter_query }}&{% endif %}page={{ page + 1 }}">Следующие 30</a>

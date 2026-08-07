@@ -1,7 +1,7 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Диалог · {{ app_name }}{% endblock %}
 {% block content %}
-<nav class="crumb"><a href="/admin/feedback">← Обратная связь</a></nav>
+<nav class="crumb"><a href="/admin/feedback">< Обратная связь</a></nav>
 
 <section class="section-head">
   <div>
@@ -41,6 +41,7 @@
 <section class="panel form-panel">
   <h2>Ответить клиенту</h2>
   <form action="/admin/feedback/{{ conversation.id }}/reply" method="post" class="feedback-reply-form">
+    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
     <label>Сообщение
       <textarea name="text" rows="5" required placeholder="Напишите ответ клиенту..."></textarea>
     </label>

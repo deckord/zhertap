@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Настройки — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet">← В кабинет</a>
+      <a class="back-link" href="/cabinet">< В кабинет</a>
       <a class="back-link" href="/cabinet/auctions">Аукционы</a>
     </div>
     <div class="section-title">
@@ -41,13 +41,18 @@
         <div><span>Пароль установлен</span><strong>{{ account.password_set_at.strftime("%d.%m.%Y %H:%M") if account.password_set_at else "—" }}</strong></div>
       </div>
       <form class="settings-action-row" method="post" action="/cabinet/telegram/link">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="secondary-action" type="submit">{{ "Обновить привязку Telegram" if account.telegram_user_id else "Привязать Telegram" }}</button>
       </form>
+      {% if not account.telegram_user_id %}
+        <p class="muted-modern">Если вы оплачивали доступ в Telegram, после привязки веб-кабинета и Telegram доступ станет единым и активируется.</p>
+      {% endif %}
     </section>
 
     <section class="panel-modern">
       <div class="panel-head"><h2>Сменить пароль</h2><span>Без SMS</span></div>
       <form class="modern-form settings-form" method="post" action="/cabinet/settings/password">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <label>Текущий пароль
           <input name="current_password" type="password" autocomplete="current-password" required>
         </label>
@@ -65,6 +70,7 @@
       <div class="panel-head"><h2>Безопасность</h2><span>Активная сессия</span></div>
       <p class="muted-modern">Если вы заходили с чужого устройства, завершите сессию после работы.</p>
       <form method="post" action="/logout">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="secondary-action danger-action" type="submit">Выйти из аккаунта</button>
       </form>
     </section>

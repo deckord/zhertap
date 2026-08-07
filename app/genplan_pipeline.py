@@ -5,6 +5,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -323,6 +324,118 @@ def legend_entry_stats(session: Session) -> dict[str, int]:
         "needs_review": sum(1 for row in rows if row.review_status == "needs_review"),
         "approved": sum(1 for row in rows if row.review_status == "approved"),
     }
+
+
+def list_document_legend_entries(
+    session: Session,
+    document_id: int,
+) -> list[GenplanLegendEntry]:
+    return list(
+        session.scalars(
+            select(GenplanLegendEntry)
+            .where(GenplanLegendEntry.document_id == document_id)
+            .order_by(
+                GenplanLegendEntry.pixel_count.desc().nullslast(),
+                GenplanLegendEntry.id.asc(),
+            )
+        )
+    )
+
+
+def set_legend_entry_classification(
+    session: Session,
+    entry_id: int,
+    *,
+    target_category: str,
+    layer_kind: str,
+    review_status: str,
+    notes: str = "",
+) -> GenplanLegendEntry:
+    """Record an operator's color-class decision for one legend entry.
+
+    This only assigns a classification; it never touches search-affecting
+    data. `tools.genplan_vectorize` only segments entries this leaves as
+    review_status="approved".
+    """
+    entry = session.get(GenplanLegendEntry, entry_id)
+    if entry is None:
+        raise ValueError(f"Legend entry {entry_id} not found")
+    if layer_kind not in {"allowed", "prohibited", "red_line", "unknown", "ignore"}:
+        raise ValueError(f"Invalid layer_kind {layer_kind!r}")
+    if review_status not in {"needs_review", "approved", "rejected"}:
+        raise ValueError(f"Invalid review_status {review_status!r}")
+    entry.target_category = target_category.strip() or "unknown"
+    entry.layer_kind = layer_kind
+    entry.review_status = review_status
+    entry.notes = notes.strip() or None
+    session.commit()
+    return entry
+
+
+def build_document_legend_export(
+    session: Session,
+    document_id: int,
+    *,
+    reviewer_id: str,
+) -> dict[str, Any]:
+    """Export a document's reviewed `GenplanLegendEntry` rows as legend.json.
+
+    The output validates against `tools.genplan_vectorize.models.LegendDocument`
+    so it can be handed to `tools.genplan_vectorize --legend` directly,
+    together with the same document's `provenance.json` from
+    `tools.genplan_export` (both reference the same original
+    `source_sha256`, not the exported raster's hash).
+    """
+    from pydantic import ValidationError
+
+    from tools.genplan_vectorize.models import LegendDocument
+
+    document = session.get(GenplanSourceDocument, document_id)
+    if document is None:
+        raise ValueError(f"Genplan document {document_id} not found")
+    if not document.source_sha256:
+        raise ValueError(
+            "Document has no source_sha256 yet; run inventory/inspection first"
+        )
+    entries = session.scalars(
+        select(GenplanLegendEntry)
+        .where(GenplanLegendEntry.document_id == document_id)
+        .order_by(GenplanLegendEntry.color_hex.asc())
+    ).all()
+    if not entries:
+        raise ValueError("Document has no legend entries yet")
+
+    payload: dict[str, Any] = {
+        "schema_version": "genplan-legend/v1",
+        "record_id": document.asset_id,
+        "source_sha256": document.source_sha256,
+        "source_title": document.title or document.filename,
+        "reviewer_id": reviewer_id,
+        "reviewed_at_utc": datetime.now(UTC).isoformat(),
+        "entries": [
+            {
+                "color_hex": entry.color_hex,
+                "red": entry.red,
+                "green": entry.green,
+                "blue": entry.blue,
+                "source": entry.source,
+                "label_ru": entry.label_ru or "",
+                "label_kz": entry.label_kz or "",
+                "target_category": entry.target_category,
+                "layer_kind": entry.layer_kind,
+                "confidence_score": entry.confidence_score,
+                "review_status": entry.review_status,
+                "pixel_count": entry.pixel_count,
+                "notes": entry.notes or "",
+            }
+            for entry in entries
+        ],
+    }
+    try:
+        LegendDocument.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Legend export failed schema validation: {exc}") from exc
+    return payload
 
 
 def _inspect_pdf_payload(

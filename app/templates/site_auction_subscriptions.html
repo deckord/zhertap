@@ -1,11 +1,11 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Подписки на аукционы — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
     <div class="page-actions">
-      <a class="back-link" href="/cabinet/auctions">← Ко всем аукционам</a>
+      <a class="back-link" href="/cabinet/auctions">< Ко всем аукционам</a>
     </div>
     <div class="section-title"><span>Аукционы</span><h1>Подписки</h1><p>Здесь сохраняются фильтры, по которым нужно отслеживать новые лоты.</p></div>
     {% if request.query_params.get("subscription") == "saved" %}
@@ -32,8 +32,8 @@
               <strong>{{ item.region or "Весь Казахстан" }}{% if item.district %} · {{ item.district }}{% endif %}{% if item.locality %} · {{ item.locality }}{% endif %}</strong>
               <span>
                 {{ item.purpose_query or "любое назначение" }}
-                {% if item.min_price_kzt %} · от {{ "{:,.0f}".format(item.min_price_kzt).replace(",", " ") }} ₸{% endif %}
-                {% if item.max_price_kzt %} · до {{ "{:,.0f}".format(item.max_price_kzt).replace(",", " ") }} ₸{% endif %}
+                {% if item.min_price_kzt %} · от {{ "{:,.0f}".format(item.min_price_kzt).replace(",", " ") }} ?{% endif %}
+                {% if item.max_price_kzt %} · до {{ "{:,.0f}".format(item.max_price_kzt).replace(",", " ") }} ?{% endif %}
                 · {{ "активна" if item.active else "отключена" }}
               </span>
             </div>
@@ -42,10 +42,13 @@
               {% if has_paid_unlock %}
                 {% if item.active %}
                   <form method="post" action="/cabinet/auctions/subscriptions/{{ item.id }}/disable"><button type="submit">Отключить</button></form>
+                    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
                 {% else %}
                   <form method="post" action="/cabinet/auctions/subscriptions/{{ item.id }}/enable"><button type="submit">Включить</button></form>
+                    <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
                 {% endif %}
                 <form method="post" action="/cabinet/auctions/subscriptions/{{ item.id }}/delete"><button class="danger-action" type="submit">Удалить</button></form>
+                  <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               {% else %}
                 <button class="locked-action" type="button" disabled>Доступно после оплаты</button>
               {% endif %}

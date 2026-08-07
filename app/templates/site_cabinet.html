@@ -1,4 +1,4 @@
-﻿{% extends "site_base.html" %}
+{% extends "site_base.html" %}
 {% block title %}Кабинет — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
@@ -99,6 +99,8 @@
             <small>ID: {{ account.telegram_user_id }}</small>
           {% else %}
             <form method="post" action="/cabinet/telegram/link"><button class="text-inline-action" type="submit">Привязать</button></form>
+              <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+            <small>Если вы оплачивали доступ в Telegram, после привязки веб-кабинета и Telegram доступ станет единым и активируется.</small>
           {% endif %}
         </div>
       </article>
@@ -171,10 +173,11 @@
           {% endif %}
           {% if not account.telegram_user_id %}
             <form method="post" action="/cabinet/telegram/link">
+              <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               <button type="submit">
                 <span class="kpi-icon success"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></span>
                 <strong>Telegram не подключён</strong>
-                <small>Получайте уведомления активнее</small>
+                <small>Оплата в Telegram активируется в веб-кабинете после привязки. Доступ станет единым.</small>
               </button>
             </form>
           {% endif %}

@@ -7,6 +7,9 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pyproj import Transformer
+from shapely.geometry import mapping
+from shapely.ops import transform as transform_geometry
 
 from tools.genplan_autoreg.pipeline import _load_plan
 from tools.genplan_autoreg.providers import (
@@ -57,6 +60,24 @@ def create_app(
     def fail(exc: WorkbenchError) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
 
+    def record_location(raw: dict[str, Any]) -> tuple[str, str, str]:
+        locality = str(
+            raw.get("normalized_locality") or raw.get("canonical_locality_name") or ""
+        ).strip()
+        region = str(
+            raw.get("egkn_region")
+            or raw.get("normalized_region")
+            or raw.get("canonical_region_name")
+            or ""
+        ).strip()
+        district = str(
+            raw.get("egkn_district")
+            or raw.get("normalized_district")
+            or raw.get("canonical_district_name")
+            or ""
+        ).strip()
+        return region, district, locality
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(STATIC_ROOT / "index.html")
@@ -96,23 +117,7 @@ def create_app(
     def record_bbox(record_id: str) -> dict[str, Any]:
         try:
             raw = store.get_record(record_id)
-            locality = str(
-                raw.get("normalized_locality")
-                or raw.get("canonical_locality_name")
-                or ""
-            ).strip()
-            region = str(
-                raw.get("egkn_region")
-                or raw.get("normalized_region")
-                or raw.get("canonical_region_name")
-                or ""
-            ).strip()
-            district = str(
-                raw.get("egkn_district")
-                or raw.get("normalized_district")
-                or raw.get("canonical_district_name")
-                or ""
-            ).strip()
+            region, district, locality = record_location(raw)
             if not locality:
                 raise WorkbenchError("Locality is missing from the manifest")
             bbox = app.state.bbox_resolver.resolve(
@@ -130,6 +135,73 @@ def create_app(
             "source": bbox.source,
             "label": bbox.label,
         }
+
+    @app.get("/api/records/{record_id}/egkn/boundary")
+    def egkn_boundary(record_id: str) -> dict[str, Any]:
+        from app.providers.egkn import EgknProvider, EgknProviderError
+
+        try:
+            raw = store.get_record(record_id)
+            region, district, locality = record_location(raw)
+            if not (region and district and locality):
+                raise WorkbenchError(
+                    "Region/district/locality are missing from the manifest"
+                )
+            provider = EgknProvider()
+            try:
+                district_info = provider.find_district(region, district)
+                settlement = provider.find_settlement(district_info.id, locality)
+            except EgknProviderError as exc:
+                raise WorkbenchError(f"EGKN lookup failed: {exc}") from exc
+            transformer = Transformer.from_crs(
+                f"EPSG:{district_info.srs}", "EPSG:4326", always_xy=True
+            )
+            geometry_wgs84 = transform_geometry(transformer.transform, settlement.geometry)
+        except WorkbenchError as exc:
+            raise fail(exc) from exc
+        return {
+            "type": "Feature",
+            "properties": {"name": settlement.name, "kato": settlement.kato},
+            "geometry": mapping(geometry_wgs84),
+        }
+
+    @app.get("/api/records/{record_id}/egkn/parcels")
+    def egkn_parcels(record_id: str) -> dict[str, Any]:
+        from app.providers.egkn import EgknProvider, EgknProviderError
+
+        try:
+            raw = store.get_record(record_id)
+            region, district, locality = record_location(raw)
+            if not (region and district and locality):
+                raise WorkbenchError(
+                    "Region/district/locality are missing from the manifest"
+                )
+            provider = EgknProvider()
+            try:
+                district_info = provider.find_district(region, district)
+                settlement = provider.find_settlement(district_info.id, locality)
+                parcels = provider.parcels(district_info, settlement)
+            except EgknProviderError as exc:
+                raise WorkbenchError(f"EGKN lookup failed: {exc}") from exc
+            transformer = Transformer.from_crs(
+                f"EPSG:{district_info.srs}", "EPSG:4326", always_xy=True
+            )
+        except WorkbenchError as exc:
+            raise fail(exc) from exc
+        features = [
+            {
+                "type": "Feature",
+                "properties": {
+                    "cadastre": parcel.cadastre,
+                    "address": parcel.address,
+                    "land_use": parcel.land_use,
+                    "area_m2": parcel.area_m2,
+                },
+                "geometry": mapping(transform_geometry(transformer.transform, parcel.geometry)),
+            }
+            for parcel in parcels
+        ]
+        return {"type": "FeatureCollection", "features": features}
 
     @app.get("/api/records/{record_id}/image")
     def source_image(

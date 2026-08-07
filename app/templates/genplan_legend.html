@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Легенда: {{ document.filename }} · {{ app_name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="/admin/urban-plans#genplan-pipeline">← Конвейер генпланов</a></p>
+
+<section class="section-head">
+  <div>
+    <h1>Цвета легенды: {{ document.filename }}</h1>
+    <p>{{ document.locality or document.district or document.region or 'территория не указана' }}{% if document.region %} · {{ document.region }}{% endif %}</p>
+  </div>
+  <a class="button-link" href="/admin/genplan-pipeline/documents/{{ document.id }}/legend-export">Скачать legend.json</a>
+</section>
+
+{% if request.query_params.get('legend_classified') %}
+<div class="notice">
+  Цвет #{{ request.query_params.get('legend_classified') }} сохранён, статус: {{ request.query_params.get('legend_status') }}.
+</div>
+{% endif %}
+
+<p class="muted">
+  Для каждого найденного цвета отметьте, что он значит на карте, и поставьте статус
+  «утверждено», когда уверены. В legend.json попадут только утвержденные цвета
+  с типом «разрешено / запрещено / красная линия» — остальные тул для
+  векторизации просто пропустит.
+</p>
+
+<section class="candidate-list">
+  {% for entry in entries %}
+  <article class="candidate">
+    <header>
+      <div>
+        <span class="rank" style="display:inline-block;width:1.1em;height:1.1em;border-radius:3px;border:1px solid rgba(0,0,0,.2);background:{{ entry.color_hex }};vertical-align:middle;"></span>
+        <h2>{{ entry.color_hex }}</h2>
+        <p>
+          {{ entry.source }}{% if entry.label_ru %} · {{ entry.label_ru }}{% endif %}
+          {% if entry.pixel_count %} · встречается {{ entry.pixel_count }} px{% endif %}
+          · уверенность {{ "%.0f"|format(entry.confidence_score * 100) }}%
+        </p>
+      </div>
+      <span class="status {{ 'status-delivered' if entry.review_status == 'approved' else '' }}">{{ entry.review_status }}</span>
+    </header>
+    <form action="/admin/genplan-pipeline/legend/{{ entry.id }}/classify" method="post" class="urban-plan-form">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+      <input type="hidden" name="document_id" value="{{ document.id }}">
+      <label>Что значит цвет (target_category)
+        <input name="target_category" value="{{ entry.target_category }}" placeholder="lph-household, restricted, red_line...">
+      </label>
+      <label>Тип зоны (layer_kind)
+        <select name="layer_kind">
+          <option value="allowed" {{ 'selected' if entry.layer_kind == 'allowed' }}>Разрешено (allowed)</option>
+          <option value="prohibited" {{ 'selected' if entry.layer_kind == 'prohibited' }}>Запрещено (prohibited)</option>
+          <option value="red_line" {{ 'selected' if entry.layer_kind == 'red_line' }}>Красная линия (red_line)</option>
+          <option value="unknown" {{ 'selected' if entry.layer_kind == 'unknown' }}>Пока не знаю (unknown)</option>
+          <option value="ignore" {{ 'selected' if entry.layer_kind == 'ignore' }}>Фон/не относится (ignore)</option>
+        </select>
+      </label>
+      <label>Статус
+        <select name="review_status">
+          <option value="needs_review" {{ 'selected' if entry.review_status == 'needs_review' }}>Ждёт проверки</option>
+          <option value="approved" {{ 'selected' if entry.review_status == 'approved' }}>Утверждено</option>
+          <option value="rejected" {{ 'selected' if entry.review_status == 'rejected' }}>Отклонено</option>
+        </select>
+      </label>
+      <label>Заметка<input name="notes" value="{{ entry.notes or '' }}" placeholder="необязательно"></label>
+      <button class="primary" type="submit">Сохранить</button>
+    </form>
+  </article>
+  {% else %}
+  <p class="empty">У этого документа пока нет распознанных цветов. Сначала запустите «Разобрать следующий документ» на странице конвейера.</p>
+  {% endfor %}
+</section>
+{% endblock %}

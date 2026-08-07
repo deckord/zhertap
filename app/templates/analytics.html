@@ -3,8 +3,9 @@
 {% block content %}
 <section class="section-head">
   <div><h1>Аналитика воронки</h1><p>Уникальные пользовательские сессии за последние {{ days }} дней.</p></div>
-  <form class="period-form" method="get"><label>Период<select name="days" onchange="this.form.submit()"><option value="7" {% if days == 7 %}selected{% endif %}>7 дней</option><option value="30" {% if days == 30 %}selected{% endif %}>30 дней</option><option value="90" {% if days == 90 %}selected{% endif %}>90 дней</option></select></label></form>
+  <form class="period-form" method="get"><label>Период<select name="days" id="period-days"><option value="7" {% if days == 7 %}selected{% endif %}>7 дней</option><option value="30" {% if days == 30 %}selected{% endif %}>30 дней</option><option value="90" {% if days == 90 %}selected{% endif %}>90 дней</option></select></label></form>
 </section>
+<script src="/static/analytics.js?v=20260807a" defer></script>
 {% if legacy_event_count %}<p class="notice warning">Старых событий без ID сессии: {{ legacy_event_count }}. Они не включены в конверсию, чтобы не искажать воронку.</p>{% endif %}
 <section class="analytics-grid">
   <article class="panel analytics-panel"><h2>Сайт</h2><table><tbody>{% for name, count in web_rows %}<tr><td>{{ name }}</td><td><strong>{{ count }}</strong>{% if web_registered_count %}<small>{{ (count / web_registered_count * 100)|round(1) }}%</small>{% endif %}</td></tr>{% endfor %}</tbody></table><p class="muted analytics-note">Считаются только веб-аккаунты, заявки и оплаты за выбранный период. Админские Telegram ID исключаются.</p></article>
