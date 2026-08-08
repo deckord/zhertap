@@ -1,10 +1,18 @@
 FROM python:3.12-slim-bookworm
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    WEB_CONCURRENCY=2
+    WEB_CONCURRENCY=2 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 WORKDIR /app
+
+COPY certs/sectigo-public-server-authentication-ca-dv-r36.pem /usr/local/share/ca-certificates/sectigo-public-server-authentication-ca-dv-r36.crt
+RUN update-ca-certificates
 
 COPY pyproject.toml README.md ./
 COPY alembic.ini ./

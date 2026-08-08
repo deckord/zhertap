@@ -9,6 +9,8 @@
 *.crt
 *.p12
 *.pfx
+certs/*.der
+!certs/sectigo-public-server-authentication-ca-dv-r36.pem
 secrets/
 
 # Python caches and build outputs
