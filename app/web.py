@@ -2790,6 +2790,7 @@ def web_auctions_v2(
         account_id=account.id,
         offset=(page - 1) * page_size,
         limit=page_size,
+        prepare_missing=False,
     )
     search_diagnostics = auction_v2_search_diagnostics(
         session,

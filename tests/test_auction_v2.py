@@ -575,12 +575,14 @@ def test_prepare_auction_v2_worklist_limits_document_evidence() -> None:
         assert "Всего документов: 31" in (summary.value_text or "")
 
 
-def test_auction_v2_admin_list_builds_analysis_sources_and_evidence() -> None:
+def test_auction_v2_admin_list_renders_prepared_analysis_sources_and_evidence() -> None:
     with build_session() as session:
         account = make_admin_account()
         lot = make_lot()
         lot.source_search_status = "ApplicationsAccept"
         session.add_all([account, lot])
+        session.commit()
+        build_auction_v2_analysis(session, lot, force=True)
         session.commit()
 
         with client_for(session) as client:
@@ -766,6 +768,23 @@ def test_auction_v2_admin_list_renders_sort_control() -> None:
     assert response.status_code == 200
     assert 'name="sort_by"' in response.text
     assert 'value="price_per_sotka_asc" selected' in response.text
+
+
+def test_auction_v2_web_list_does_not_build_missing_analysis_in_request() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.get("/cabinet/auctions-v2")
+
+        analysis_count = session.scalar(select(func.count(AuctionLotV2Analysis.id)))
+
+    assert response.status_code == 200
+    assert analysis_count == 0
 
 
 def test_auction_v2_filters_match_legacy_district_prefixes() -> None:

@@ -2331,13 +2331,15 @@ def list_auction_v2_lots(
     account_id: str | None = None,
     offset: int = 0,
     limit: int = 30,
+    prepare_missing: bool = True,
 ) -> tuple[list[AuctionV2LotPayload], int]:
-    ensure_auction_v2_analyses_for_filters(
-        session,
-        filters,
-        account_id=account_id,
-        limit=min(settings.auction_v2_refresh_limit, max(limit, offset + limit)),
-    )
+    if prepare_missing:
+        ensure_auction_v2_analyses_for_filters(
+            session,
+            filters,
+            account_id=account_id,
+            limit=min(settings.auction_v2_refresh_limit, max(limit, offset + limit)),
+        )
     conditions = _auction_filter_conditions(_base_filters_for_lot_scope(filters))
     conditions.extend(_lot_scope_conditions(filters.lot_scope))
     conditions.extend(_search_conditions(filters.search_query))
