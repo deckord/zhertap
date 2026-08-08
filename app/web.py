@@ -2072,18 +2072,21 @@ def search_page(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
+    search_error = {
+        "location": "Выберите область и район перед запуском анализа.",
+    }.get(request.query_params.get("error"))
     return templates.TemplateResponse(
         request=request,
         name="site_search.html",
-        context=_cabinet_context(session, account),
+        context=_cabinet_context(session, account, search_error=search_error),
     )
 
 
 @router.post("/cabinet/search")
 def submit_search(
     request: Request,
-    region: str = Form(...),
-    district: str = Form(...),
+    region: str = Form(""),
+    district: str = Form(""),
     locality: str = Form(""),
     purpose: str = Form(LPH_NEW),
     irrigation_type: str = Form(""),
@@ -2091,6 +2094,10 @@ def submit_search(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
+    region = region.strip()
+    district = district.strip()
+    if not region or not district:
+        return RedirectResponse("/cabinet/search?error=location", status_code=303)
     ip = _client_ip(request)
     search_account_state = consume_rate_limit(
         f"web:cabinet:search:account:{account.id}",

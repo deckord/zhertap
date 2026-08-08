@@ -369,6 +369,32 @@ def test_web_gardening_search_can_use_six_sotok(monkeypatch) -> None:
         assert dispatched == [search.id]
 
 
+def test_web_search_redirects_when_location_is_missing() -> None:
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            phone_verified_at=web._now(),
+            password_hash=web._hash_password("password-1"),
+        )
+        session.add(account)
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                "/cabinet/search",
+                data={"purpose": "ЛПХ(новый поиск)"},
+                follow_redirects=False,
+            )
+            form_response = client.get(response.headers["location"])
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/cabinet/search?error=location"
+        assert form_response.status_code == 200
+        assert "Выберите область и район перед запуском анализа." in form_response.text
+        assert session.scalar(select(SearchRequest)) is None
+
+
 def test_password_reset_uses_sms_code_and_updates_password(monkeypatch) -> None:
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(web, "send_login_code", lambda phone, code: sent.append((phone, code)))

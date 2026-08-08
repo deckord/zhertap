@@ -29,6 +29,9 @@
     {% endif %}
 
     <section class="panel-modern analysis-form-panel">
+      {% if search_error %}
+        <div class="form-alert warning" role="alert">{{ search_error }}</div>
+      {% endif %}
       <div class="panel-head">
         <div>
           <span class="eyebrow">Параметры</span>
@@ -90,6 +93,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/site-catalogs.js?v=20260804b" defer></script>
+<script src="/static/site-catalogs.js?v=20260808a" defer></script>
 {% endblock %}
 

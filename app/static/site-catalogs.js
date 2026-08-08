@@ -147,6 +147,20 @@
     district.addEventListener("change", loadLocalities);
     locality.addEventListener("change", updateSubmit);
     purpose?.addEventListener("change", updatePurposeArea);
+    form.addEventListener("submit", (event) => {
+      const regionValue = region.value.trim();
+      const districtValue = district.value.trim();
+      if (!regionValue || !districtValue) {
+        event.preventDefault();
+        setStatus(status, "Выберите область и район перед запуском анализа.", true);
+        (regionValue ? district : region).focus();
+        updateSubmit();
+        return;
+      }
+      // Select values are omitted from FormData while disabled during a catalog refresh.
+      region.disabled = false;
+      district.disabled = false;
+    });
     if (retry) retry.addEventListener("click", loadRegions);
     updatePurposeArea();
     loadRegions();
