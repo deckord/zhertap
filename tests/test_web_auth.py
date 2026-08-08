@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
@@ -257,6 +258,27 @@ def test_login_empty_form_returns_form_error() -> None:
 
         assert response.status_code == 400
         assert "Введите телефон и пароль для входа." in response.text
+
+
+def test_form_body_survives_csrf_middleware_without_header() -> None:
+    with build_session() as session:
+        with client_for(session) as client:
+            client.headers.pop("x-csrf-token", None)
+            login_page = client.get("/login")
+            csrf = re.search(r"name='csrf_token' value='([^']+)'", login_page.text).group(1)
+            response = client.post(
+                "/login",
+                data={
+                    "phone": "+77026669475",
+                    "password": "wrong-password",
+                    "csrf_token": csrf,
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 400
+        assert "Неверные учетные данные" in response.text
+        assert "Введите телефон и пароль для входа." not in response.text
 
 
 def test_web_password_policy_remains_eight_characters() -> None:

@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from io import StringIO
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import (
     BackgroundTasks,
@@ -202,8 +202,15 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 ):
                     token_form_value = request.headers.get("x-csrf-token")
                     if token_form_value is None:
-                        form = await request.form()
-                        token_form_value = form.get("csrf_token")
+                        # Cache the body before parsing the form so downstream FastAPI
+                        # Form parameters can read the same request payload.
+                        body = await request.body()
+                        if content_type.startswith("application/x-www-form-urlencoded"):
+                            parsed = parse_qs(body.decode("utf-8", errors="ignore"))
+                            token_form_value = (parsed.get("csrf_token") or [None])[0]
+                        else:
+                            form = await request.form()
+                            token_form_value = form.get("csrf_token")
 
                     expected_token = web.csrf_token(request)
                     if isinstance(token_form_value, str):
