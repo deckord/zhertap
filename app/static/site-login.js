@@ -6,6 +6,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const loginPhone = document.querySelector("#login_phone");
   const resetPhone = document.querySelector("#reset_phone");
   const resetVerifyPhone = document.querySelector("#reset_verify_phone");
+  const loginForm = document.querySelector('form[action="/login"]');
+  const loginPassword = loginForm?.querySelector('[name="password"]');
+  const loginClientError = loginForm?.querySelector("[data-auth-client-error]");
 
   const setMode = (mode) => {
     tabs.forEach((tab) => {
@@ -15,6 +18,19 @@ document.addEventListener("DOMContentLoaded", () => {
       panel.classList.toggle("is-active", panel.dataset.authMode === mode);
     });
   };
+
+  loginForm?.addEventListener("submit", (event) => {
+    if (loginPhone?.value.trim() && loginPassword?.value) return;
+    event.preventDefault();
+    if (loginClientError) {
+      loginClientError.textContent = "Введите телефон и пароль для входа.";
+      loginClientError.hidden = false;
+    }
+    (loginPhone?.value.trim() ? loginPassword : loginPhone)?.focus();
+  });
+  loginForm?.addEventListener("input", () => {
+    if (loginClientError) loginClientError.hidden = true;
+  });
 
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => setMode(tab.dataset.authTab));

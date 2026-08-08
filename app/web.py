@@ -1347,10 +1347,21 @@ def login_page(request: Request, session: Session = Depends(get_db)):
 @router.post("/login")
 def password_login(
     request: Request,
-    phone: str = Form(...),
-    password: str = Form(...),
+    phone: str = Form(""),
+    password: str = Form(""),
     session: Session = Depends(get_db),
 ):
+    if not phone.strip() or not password:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                error="Введите телефон и пароль для входа.",
+                phone=phone,
+            ),
+            status_code=400,
+        )
     try:
         normalized = normalize_phone(phone)
     except ValueError as exc:

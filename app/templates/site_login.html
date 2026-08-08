@@ -38,6 +38,7 @@
       <label>Пароль
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
+      <div class="form-alert" data-auth-client-error hidden role="alert"></div>
       <button class="primary-action" type="submit">Войти</button>
       <button class="text-action" type="button" data-auth-switch="reset">Забыли пароль?</button>
     </form>
@@ -120,6 +121,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/site-login.js?v=20260807a" defer></script>
+<script src="/static/site-login.js?v=20260808b" defer></script>
 {% endblock %}
 

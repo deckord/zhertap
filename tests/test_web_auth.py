@@ -250,6 +250,15 @@ def test_login_unknown_phone_does_not_reveal_account_state() -> None:
         assert "Неверные учетные данные" in response.text
 
 
+def test_login_empty_form_returns_form_error() -> None:
+    with build_session() as session:
+        with client_for(session) as client:
+            response = client.post("/login", data={}, follow_redirects=False)
+
+        assert response.status_code == 400
+        assert "Введите телефон и пароль для входа." in response.text
+
+
 def test_successful_web_registration_notifies_admin(monkeypatch) -> None:
     sms_codes: list[tuple[str, str]] = []
     admin_messages: list[tuple[str, dict]] = []
