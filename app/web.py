@@ -57,11 +57,11 @@ from app.auction_v2 import (
     RISK_LABELS,
     AuctionV2Filters,
     auction_v2_analytics_payload,
-    auction_v2_dashboard,
     auction_v2_search_diagnostics,
     auction_v2_source_admin_payload,
     auction_v2_watchlist_matches,
     build_auction_v2_dossier_text,
+    cached_auction_v2_dashboard,
     create_auction_v2_market_comparable,
     create_auction_v2_watchlist,
     ensure_default_auction_v2_watchlist,
@@ -2738,7 +2738,7 @@ def web_auctions_v2(
             context=_cabinet_context(
                 session,
                 account,
-                dashboard=auction_v2_dashboard(session),
+                dashboard=cached_auction_v2_dashboard(session),
                 lots=[],
                 total=0,
                 page=page,
@@ -2797,7 +2797,7 @@ def web_auctions_v2(
         filters,
         current_total=total,
     )
-    dashboard = auction_v2_dashboard(session)
+    dashboard = cached_auction_v2_dashboard(session)
     watchlists = list_auction_v2_watchlists(session, account.id)
     watchlist_notifications = list_auction_v2_web_notifications(
         session,
@@ -2911,7 +2911,7 @@ def web_auctions_v2_map(
             context=_cabinet_context(
                 session,
                 account,
-                dashboard=auction_v2_dashboard(session),
+                dashboard=cached_auction_v2_dashboard(session),
                 map_data={
                     "markers": [],
                     "total": 0,
@@ -2955,7 +2955,7 @@ def web_auctions_v2_map(
         account_id=account.id,
         limit=settings.auction_v2_map_limit,
     )
-    dashboard = auction_v2_dashboard(session)
+    dashboard = cached_auction_v2_dashboard(session)
     session.commit()
     return templates.TemplateResponse(
         request=request,
@@ -3004,7 +3004,7 @@ def web_auctions_v2_analytics(
         district=filter_values["district"],
         locality=filter_values["locality"],
     )
-    dashboard = auction_v2_dashboard(session)
+    dashboard = cached_auction_v2_dashboard(session)
     session.commit()
     return templates.TemplateResponse(
         request=request,

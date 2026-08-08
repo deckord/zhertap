@@ -4,11 +4,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from html import escape
 from pathlib import Path
 from statistics import median
+from threading import Lock
 from urllib.parse import quote_plus, urlparse
 
 import httpx
@@ -887,6 +889,25 @@ def auction_v2_dashboard(session: Session) -> dict[str, object]:
             for run, source in recent_runs
         ],
     }
+
+
+_dashboard_cache_lock = Lock()
+_dashboard_cache: tuple[float, dict[str, object]] | None = None
+
+
+def cached_auction_v2_dashboard(session: Session, *, ttl_seconds: int = 15) -> dict[str, object]:
+    """Reuse global auction statistics briefly so every page load avoids 15 count queries."""
+    if settings.app_env.strip().lower() not in {"production", "prod"}:
+        return auction_v2_dashboard(session)
+
+    now = time.monotonic()
+    with _dashboard_cache_lock:
+        global _dashboard_cache
+        if _dashboard_cache is not None and now - _dashboard_cache[0] < ttl_seconds:
+            return _dashboard_cache[1]
+        dashboard = auction_v2_dashboard(session)
+        _dashboard_cache = (time.monotonic(), dashboard)
+        return dashboard
 
 
 def auction_v2_analytics_payload(
