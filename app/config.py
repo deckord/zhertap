@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     run_tasks_inline: bool = True
     trusted_proxy_networks: str = ""
     web_concurrency: int = Field(default=2, ge=1, le=16)
+    monitor_interval_seconds: int = Field(default=60, ge=15, le=3600)
+    monitor_base_url: str = "http://web:8000"
     client_funnel_version: Literal["v1", "v2"] = "v2"
     enable_standard_lph_10: bool = False
 

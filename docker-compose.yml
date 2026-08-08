@@ -101,6 +101,24 @@ services:
       redis:
         condition: service_healthy
 
+  monitor:
+    build: .
+    restart: unless-stopped
+    command: python -m tools.production_monitor
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
+      REDIS_URL: redis://redis:6379/0
+      MONITOR_BASE_URL: http://web:8000
+      RUN_TASKS_INLINE: "false"
+    depends_on:
+      web:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   bot:
     build: .
     restart: unless-stopped
