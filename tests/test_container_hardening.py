@@ -18,3 +18,10 @@ def test_web_service_has_runtime_healthcheck() -> None:
     web_section = compose.split("  web:\n", 1)[1].split("  worker:\n", 1)[0]
     assert "healthcheck:" in web_section
     assert "http://127.0.0.1:8000/health" in web_section
+
+
+def test_beat_schedule_uses_runtime_writable_directory() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    beat_section = compose.split("  beat:\n", 1)[1].split("  bot:\n", 1)[0]
+    assert "--schedule /app/var/celerybeat-schedule" in beat_section

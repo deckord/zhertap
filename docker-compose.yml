@@ -88,7 +88,7 @@ services:
   beat:
     build: .
     restart: unless-stopped
-    command: celery -A app.tasks.celery_app beat --loglevel=INFO
+    command: celery -A app.tasks.celery_app beat --loglevel=INFO --schedule /app/var/celerybeat-schedule
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
