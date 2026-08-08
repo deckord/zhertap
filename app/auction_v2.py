@@ -3168,10 +3168,13 @@ def list_auction_v2_web_notifications(
     )
     if not rows:
         return []
+    lots = [lot for _notification, _watchlist, lot, _analysis in rows]
+    metrics_by_lot = auction_lots_metrics(session, lots)
+    geo_checks = _get_or_build_geo_checks(session, lots)
     pipelines = _pipeline_by_lot(
         session,
         account_id=account_id,
-        lot_ids=[lot.id for _notification, _watchlist, lot, _analysis in rows],
+        lot_ids=[lot.id for lot in lots],
     )
     payloads: list[AuctionV2WebNotificationPayload] = []
     for notification, watchlist, lot, analysis in rows:
@@ -3185,8 +3188,8 @@ def list_auction_v2_web_notifications(
                 item=_payload_from_records(
                     lot=lot,
                     analysis=analysis,
-                    metrics=auction_lot_metrics(session, lot),
-                    geo_check=_get_or_build_geo_check(session, lot),
+                    metrics=metrics_by_lot[lot.id],
+                    geo_check=geo_checks[lot.id],
                     pipeline=pipeline,
                 ),
             )
@@ -3276,10 +3279,13 @@ def auction_v2_watchlist_matches(
         )
     )
     selected_rows = rows[: max(limit * 2, limit)]
+    selected_lots = [lot for lot, _analysis in selected_rows]
+    metrics_by_lot = auction_lots_metrics(session, selected_lots)
+    geo_checks = _get_or_build_geo_checks(session, selected_lots)
     pipelines = _pipeline_by_lot(
         session,
         account_id=account_id,
-        lot_ids=[lot.id for lot, _analysis in selected_rows],
+        lot_ids=[lot.id for lot in selected_lots],
     )
     payloads: list[AuctionV2LotPayload] = []
     for lot, analysis in selected_rows:
@@ -3290,8 +3296,8 @@ def auction_v2_watchlist_matches(
             _payload_from_records(
                 lot=lot,
                 analysis=analysis,
-                metrics=auction_lot_metrics(session, lot),
-                geo_check=_get_or_build_geo_check(session, lot),
+                metrics=metrics_by_lot[lot.id],
+                geo_check=geo_checks[lot.id],
                 pipeline=pipeline,
             )
         )
