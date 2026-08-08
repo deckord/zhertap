@@ -35,9 +35,10 @@ class _RateLimiter:
 
 
 class _UnavailableRateLimiter(_RateLimiter):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, log: bool = True) -> None:
         self._reason = reason
-        logger.error("Distributed rate limiting is unavailable: %s", reason)
+        if log:
+            logger.error("Distributed rate limiting is unavailable: %s", reason)
 
     def consume(self, key: str, *, limit: int, window_seconds: int) -> RateLimitState:
         del key, limit, window_seconds
@@ -85,7 +86,7 @@ class _RedisRateLimiter(_RateLimiter):
         self._redis = redis.Redis.from_url(redis_url)
         self._script = self._redis.register_script(self._SCRIPT)
         self._fallback: _RateLimiter = (
-            _UnavailableRateLimiter("Redis command failed")
+            _UnavailableRateLimiter("Redis command failed", log=False)
             if fail_closed
             else _FALLBACK_STORE
         )
