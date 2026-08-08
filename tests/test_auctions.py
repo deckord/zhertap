@@ -28,6 +28,7 @@ from app.auction_service import (
     auction_district_stats,
     auction_lot_changes,
     auction_lot_metrics,
+    auction_lots_metrics,
     auction_market_snapshot,
     auction_region_stats,
     create_subscription,
@@ -690,8 +691,11 @@ def test_auction_rating_prefers_discounted_documented_lot_with_history(
 
     cheap_metrics = auction_lot_metrics(session, cheap)
     weak_metrics = auction_lot_metrics(session, weak)
+    batch_metrics = auction_lots_metrics(session, [cheap, weak])
 
     assert cheap_metrics.price_per_sotka < weak_metrics.price_per_sotka
+    assert batch_metrics[cheap.id] == cheap_metrics
+    assert batch_metrics[weak.id] == weak_metrics
     assert cheap_metrics.publication_count == 3
     assert cheap_metrics.failed_count == 2
     assert cheap_metrics.document_count == 1

@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -48,7 +48,7 @@ from app.auction_service import (
     list_auction_lots,
 )
 from app.config import settings
-from app.db import get_db, init_db
+from app.db import engine, get_db, init_db
 from app.feedback import (
     DEFAULT_FEEDBACK_KZ,
     DEFAULT_FEEDBACK_RU,
@@ -124,6 +124,7 @@ from app.purposes import (
     purpose_area_ha,
 )
 from app.rate_limit import consume_rate_limit
+from app.request_context import client_ip
 from app.schemas import ReviewUpdate, SearchCreate, SearchCreated
 from app.security import require_admin, require_api_key
 from app.services import (
@@ -152,6 +153,8 @@ logger = logging.getLogger(__name__)
 
 API_RATE_LIMIT_PER_MINUTE = 120
 API_RATE_LIMIT_WINDOW_SECONDS = 60
+ADMIN_RATE_LIMIT_PER_MINUTE = 60
+ADMIN_RATE_LIMIT_WINDOW_SECONDS = 60
 CSP_POLICY = (
     "default-src 'self'; "
     "img-src 'self' data: https://*.tile.openstreetmap.org; "
@@ -248,20 +251,22 @@ review_status_labels = {
 
 
 def _request_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()[:64]
-    return request.client.host[:64] if request.client else ""
+    return client_ip(request)
 
 
 @app.middleware("http")
 async def enforce_api_rate_limit(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api"):
+    if path.startswith("/api") or path.startswith("/admin"):
+        is_admin = path.startswith("/admin")
         state = consume_rate_limit(
-            f"api:ip:{_request_client_ip(request)}",
-            limit=API_RATE_LIMIT_PER_MINUTE,
-            window_seconds=API_RATE_LIMIT_WINDOW_SECONDS,
+            f"{'admin' if is_admin else 'api'}:ip:{_request_client_ip(request)}",
+            limit=ADMIN_RATE_LIMIT_PER_MINUTE if is_admin else API_RATE_LIMIT_PER_MINUTE,
+            window_seconds=(
+                ADMIN_RATE_LIMIT_WINDOW_SECONDS
+                if is_admin
+                else API_RATE_LIMIT_WINDOW_SECONDS
+            ),
         )
         if not state.allowed:
             return JSONResponse(
@@ -445,7 +450,39 @@ def invalidate_urban_plan_coverage(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "environment": settings.app_env}
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness() -> dict[str, object]:
+    checks: dict[str, bool] = {"database": False, "redis": True}
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        checks["database"] = True
+    except Exception:
+        logger.exception("Readiness database check failed")
+
+    if not settings.run_tasks_inline:
+        checks["redis"] = False
+        try:
+            import redis
+
+            client = redis.Redis.from_url(
+                settings.redis_url,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+            checks["redis"] = bool(client.ping())
+        except Exception:
+            logger.exception("Readiness Redis check failed")
+
+    if not all(checks.values()):
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "not_ready", "checks": checks},
+        )
+    return {"status": "ready", "checks": checks}
 
 
 @app.post("/webhooks/apipay")

@@ -575,6 +575,186 @@ def auction_lot_metrics(session: Session, lot: AuctionLot) -> AuctionLotMetrics:
     )
 
 
+def auction_lots_metrics(
+    session: Session,
+    lots: list[AuctionLot],
+) -> dict[str, AuctionLotMetrics]:
+    """Build list-card metrics with bounded database work.
+
+    The detail view still uses ``auction_lot_metrics`` for a single lot. List
+    views need a batch path because district and publication statistics are
+    shared by many cards on the same page.
+    """
+    if not lots:
+        return {}
+
+    district_keys = {
+        (lot.region, lot.district)
+        for lot in lots
+        if lot.region and lot.district
+    }
+    district_averages: dict[tuple[str, str], float] = {}
+    district_activity_by_key: dict[tuple[str, str], _DistrictMarketActivity] = {}
+    if district_keys:
+        status_text = func.lower(
+            func.coalesce(AuctionLot.status, "")
+            + " "
+            + func.coalesce(AuctionLot.source_search_status, "")
+        )
+        successful_condition = or_(
+            status_text.like("%successprotocolsigned%"),
+            and_(
+                status_text.like("%состоя%"),
+                ~status_text.like("%не состоя%"),
+            ),
+        )
+        failed_condition = or_(
+            status_text.like("%failureprotocolsigned%"),
+            status_text.like("%не состоя%"),
+        )
+        price_per_sotka = case(
+            (
+                and_(
+                    AuctionLot.start_price_kzt.is_not(None),
+                    AuctionLot.area_ha.is_not(None),
+                    AuctionLot.area_ha > 0,
+                ),
+                AuctionLot.start_price_kzt / (AuctionLot.area_ha * 100),
+            ),
+            else_=None,
+        )
+        district_rows = session.execute(
+            select(
+                AuctionLot.region,
+                AuctionLot.district,
+                func.count(AuctionLot.id),
+                func.sum(case((successful_condition, 1), else_=0)),
+                func.sum(case((failed_condition, 1), else_=0)),
+                func.avg(price_per_sotka),
+            )
+            .where(
+                or_(
+                    *(
+                        and_(
+                            AuctionLot.region == region,
+                            AuctionLot.district == district,
+                        )
+                        for region, district in district_keys
+                    )
+                )
+            )
+            .group_by(AuctionLot.region, AuctionLot.district)
+        ).all()
+        for (
+            region,
+            district,
+            lot_count,
+            successful_count,
+            failed_count,
+            average_price,
+        ) in district_rows:
+            if not region or not district:
+                continue
+            key = (region, district)
+            successful_count = int(successful_count or 0)
+            failed_count = int(failed_count or 0)
+            if average_price is not None:
+                district_averages[key] = float(average_price)
+            finished_count = successful_count + failed_count
+            district_activity_by_key[key] = _DistrictMarketActivity(
+                lot_count=int(lot_count or 0),
+                successful_count=successful_count,
+                failed_count=failed_count,
+                liquidity_percent=(successful_count / finished_count) * 100
+                if finished_count
+                else None,
+            )
+
+    cadastre_numbers = {lot.cadastre_number for lot in lots if lot.cadastre_number}
+    publication_counts: dict[str, int] = {}
+    failed_publication_counts: dict[str, int] = {}
+    if cadastre_numbers:
+        publication_rows = session.execute(
+            select(
+                AuctionLot.cadastre_number,
+                func.count(AuctionLot.id),
+                func.sum(
+                    case(
+                        (AuctionLot.source_search_status == "FailureProtocolSigned", 1),
+                        else_=0,
+                    )
+                ),
+            )
+            .where(AuctionLot.cadastre_number.in_(cadastre_numbers))
+            .group_by(AuctionLot.cadastre_number)
+        ).all()
+        for cadastre_number, publication_count, failed_count in publication_rows:
+            if cadastre_number:
+                publication_counts[cadastre_number] = int(publication_count or 0)
+                failed_publication_counts[cadastre_number] = int(failed_count or 0)
+
+    history_failed_counts: dict[str, int] = {}
+    if lots:
+        history_rows = session.execute(
+            select(AuctionLotHistory.lot_id, func.count(AuctionLotHistory.id))
+            .where(
+                AuctionLotHistory.lot_id.in_([lot.id for lot in lots]),
+                AuctionLotHistory.status.ilike("%не состоя%"),
+            )
+            .group_by(AuctionLotHistory.lot_id)
+        ).all()
+        history_failed_counts = {
+            lot_id: int(failed_count or 0) for lot_id, failed_count in history_rows
+        }
+
+    metrics_by_lot: dict[str, AuctionLotMetrics] = {}
+    for lot in lots:
+        price_per_sotka = _price_per_sotka(lot)
+        district_average = district_averages.get((lot.region, lot.district))
+        difference = None
+        if price_per_sotka is not None and district_average and district_average > 0:
+            difference = ((price_per_sotka - district_average) / district_average) * 100
+
+        publication_count = (
+            publication_counts.get(lot.cadastre_number, 1)
+            if lot.cadastre_number
+            else 1
+        )
+        failed_count = max(
+            failed_publication_counts.get(lot.cadastre_number, 0)
+            if lot.cadastre_number
+            else 0,
+            history_failed_counts.get(lot.id, 0),
+        )
+        activity = district_activity_by_key.get(
+            (lot.region, lot.district),
+            _DistrictMarketActivity(0, 0, 0, None),
+        )
+        document_count = len(unique_auction_documents(lot.documents))
+        metrics_by_lot[lot.id] = AuctionLotMetrics(
+            price_per_sotka=price_per_sotka,
+            price_per_square_meter=_price_per_square_meter(lot),
+            district_average_price_per_sotka=district_average,
+            district_difference_percent=difference,
+            publication_count=publication_count,
+            failed_count=failed_count,
+            document_count=document_count,
+            district_lot_count=activity.lot_count,
+            district_successful_count=activity.successful_count,
+            district_failed_count=activity.failed_count,
+            district_liquidity_percent=activity.liquidity_percent,
+            rating=_auction_rating(
+                district_difference_percent=difference,
+                publication_count=publication_count,
+                failed_count=failed_count,
+                document_count=document_count,
+                district_activity=activity,
+                auction_starts_at=lot.auction_starts_at,
+            ),
+        )
+    return metrics_by_lot
+
+
 def auction_lot_geo_metrics(lot: AuctionLot) -> AuctionGeoMetrics:
     return auction_geo_metrics(lot)
 

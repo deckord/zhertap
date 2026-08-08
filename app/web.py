@@ -73,7 +73,6 @@ from app.auction_v2 import (
     list_auction_v2_web_notifications,
     mark_auction_v2_web_notifications_seen,
     pipeline_stage_options,
-    refresh_auction_v2_snapshot,
     seed_auction_v2_sources,
     set_auction_v2_watchlist_active,
     sync_auction_v2_eqazyna_history_backfill,
@@ -105,6 +104,7 @@ from app.models import (
 from app.providers.egkn import EgknProvider, EgknProviderError, normalize_name
 from app.purposes import LPH_NEW
 from app.rate_limit import consume_rate_limit
+from app.request_context import client_ip
 from app.schemas import SearchCreate
 from app.search_explanations import explain_search_result
 from app.services import (
@@ -406,10 +406,7 @@ def _require_web_admin_account(account: Account) -> None:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()[:64]
-    return request.client.host[:64] if request.client else ""
+    return client_ip(request)
 
 
 def _user_agent(request: Request) -> str:
@@ -2767,7 +2764,7 @@ def web_auctions_v2(
             status_code=400,
         )
 
-    refresh_stats = refresh_auction_v2_snapshot(session)
+    refresh_stats = {"checked": 0}
     ensure_default_auction_v2_watchlist(session, account.id)
     lots, total = list_auction_v2_lots(
         session,
@@ -2931,7 +2928,7 @@ def web_auctions_v2_map(
             status_code=400,
         )
 
-    refresh_stats = refresh_auction_v2_snapshot(session)
+    refresh_stats = {"checked": 0}
     ensure_default_auction_v2_watchlist(session, account.id)
     map_data = list_auction_v2_map_markers(
         session,
@@ -2980,7 +2977,7 @@ def web_auctions_v2_analytics(
         district=district,
         locality=locality,
     )
-    refresh_stats = refresh_auction_v2_snapshot(session)
+    refresh_stats = {"checked": 0}
     ensure_default_auction_v2_watchlist(session, account.id)
     analytics = auction_v2_analytics_payload(
         session,

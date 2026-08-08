@@ -28,6 +28,7 @@ from app.auction_service import (
     AuctionSyncResult,
     auction_lot_geo_metrics,
     auction_lot_metrics,
+    auction_lots_metrics,
     sync_current_auctions,
 )
 from app.config import settings
@@ -1456,11 +1457,16 @@ def ensure_auction_v2_analyses_for_filters(
     *,
     account_id: str | None = None,
     limit: int | None = None,
+    refresh_stale: bool = False,
 ) -> dict[str, int]:
     candidate_limit = limit or settings.auction_v2_refresh_limit
     cutoff = datetime.now(UTC) - timedelta(minutes=settings.auction_v2_analysis_ttl_minutes)
     conditions = _preanalysis_lot_conditions(filters)
-    conditions.append(_analysis_due_condition(cutoff))
+    conditions.append(
+        _analysis_due_condition(cutoff)
+        if refresh_stale
+        else AuctionLotV2Analysis.id.is_(None)
+    )
     query = (
         select(AuctionLot)
         .options(selectinload(AuctionLot.documents))
@@ -2330,7 +2336,7 @@ def list_auction_v2_lots(
         session,
         filters,
         account_id=account_id,
-        limit=max(settings.auction_v2_refresh_limit, offset + limit),
+        limit=min(settings.auction_v2_refresh_limit, max(limit, offset + limit)),
     )
     conditions = _auction_filter_conditions(_base_filters_for_lot_scope(filters))
     conditions.extend(_lot_scope_conditions(filters.lot_scope))
@@ -2374,10 +2380,12 @@ def list_auction_v2_lots(
     rows = session.execute(query.offset(offset).limit(limit)).all()
     lots = [lot for lot, _analysis in rows]
     pipelines = _pipeline_by_lot(session, account_id=account_id, lot_ids=[lot.id for lot in lots])
+    metrics_by_lot = auction_lots_metrics(session, lots)
+    geo_checks = _get_or_build_geo_checks(session, lots)
     payloads: list[AuctionV2LotPayload] = []
     for lot, analysis in rows:
-        metrics = auction_lot_metrics(session, lot)
-        geo_check = _get_or_build_geo_check(session, lot)
+        metrics = metrics_by_lot[lot.id]
+        geo_check = geo_checks[lot.id]
         payloads.append(
             _payload_from_records(
                 lot=lot,
@@ -4438,10 +4446,44 @@ def _get_or_build_geo_check(session: Session, lot: AuctionLot) -> AuctionLotGeoC
     geo_check = session.scalar(
         select(AuctionLotGeoCheck).where(AuctionLotGeoCheck.lot_id == lot.id)
     )
-    geo_metrics = auction_lot_geo_metrics(lot)
     if geo_check is None:
         geo_check = AuctionLotGeoCheck(lot_id=lot.id)
         session.add(geo_check)
+    _refresh_geo_check(session, lot, geo_check)
+    session.flush()
+    return geo_check
+
+
+def _get_or_build_geo_checks(
+    session: Session,
+    lots: list[AuctionLot],
+) -> dict[str, AuctionLotGeoCheck]:
+    if not lots:
+        return {}
+    lot_ids = [lot.id for lot in lots]
+    checks = {
+        geo_check.lot_id: geo_check
+        for geo_check in session.scalars(
+            select(AuctionLotGeoCheck).where(AuctionLotGeoCheck.lot_id.in_(lot_ids))
+        ).all()
+    }
+    for lot in lots:
+        geo_check = checks.get(lot.id)
+        if geo_check is None:
+            geo_check = AuctionLotGeoCheck(lot_id=lot.id)
+            session.add(geo_check)
+            checks[lot.id] = geo_check
+        _refresh_geo_check(session, lot, geo_check)
+    session.flush()
+    return checks
+
+
+def _refresh_geo_check(
+    session: Session,
+    lot: AuctionLot,
+    geo_check: AuctionLotGeoCheck,
+) -> None:
+    geo_metrics = auction_lot_geo_metrics(lot)
     previous_latitude = geo_check.latitude
     previous_longitude = geo_check.longitude
     now = datetime.now(UTC)
@@ -4507,8 +4549,6 @@ def _get_or_build_geo_check(session: Session, lot: AuctionLot) -> AuctionLotGeoC
     geo_check.notes = _geo_check_notes(geo_check)
     geo_check.checked_at = now
     geo_check.updated_at = now
-    session.flush()
-    return geo_check
 
 
 def _refresh_auction_v2_infrastructure_batch(

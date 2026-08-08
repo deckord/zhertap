@@ -34,6 +34,16 @@ class _RateLimiter:
         raise NotImplementedError
 
 
+class _UnavailableRateLimiter(_RateLimiter):
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+        logger.error("Distributed rate limiting is unavailable: %s", reason)
+
+    def consume(self, key: str, *, limit: int, window_seconds: int) -> RateLimitState:
+        del key, limit, window_seconds
+        return RateLimitState(allowed=False, retry_after_seconds=30)
+
+
 class _InMemoryRateLimiter(_RateLimiter):
     def __init__(self) -> None:
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
@@ -69,12 +79,17 @@ class _RedisRateLimiter(_RateLimiter):
     return current
     """
 
-    def __init__(self, redis_url: str) -> None:
+    def __init__(self, redis_url: str, *, fail_closed: bool) -> None:
         if redis is None:
             raise RuntimeError("redis package is not available")
         self._redis = redis.Redis.from_url(redis_url)
         self._script = self._redis.register_script(self._SCRIPT)
-        # Validate connectivity; fallback to in-memory if unreachable.
+        self._fallback: _RateLimiter = (
+            _UnavailableRateLimiter("Redis command failed")
+            if fail_closed
+            else _FALLBACK_STORE
+        )
+        # Validate connectivity before accepting this process as ready.
         self._redis.ping()
 
     def consume(self, key: str, *, limit: int, window_seconds: int) -> RateLimitState:
@@ -90,18 +105,22 @@ class _RedisRateLimiter(_RateLimiter):
                 ttl = window_seconds
             return RateLimitState(allowed=False, retry_after_seconds=max(1, int(ttl)))
         except Exception:
-            logger.exception("Failed to use Redis for rate limiting; falling back to in-memory")
-            _store = _FALLBACK_STORE
-            return _store.consume(key, limit=limit, window_seconds=window_seconds)
+            logger.exception("Failed to use Redis for distributed rate limiting")
+            return self._fallback.consume(key, limit=limit, window_seconds=window_seconds)
 
 
 def _build_rate_limit_store() -> _RateLimiter:
     try:
         if settings.redis_url and redis is not None:
-            return _RedisRateLimiter(settings.redis_url)
+            return _RedisRateLimiter(
+                settings.redis_url,
+                fail_closed=settings.app_env.lower().strip() in {"production", "prod"},
+            )
         raise RuntimeError("redis not configured")
     except Exception as exc:
         logger.warning("Using in-memory rate limit fallback: %s", exc)
+        if settings.app_env.lower().strip() in {"production", "prod"}:
+            return _UnavailableRateLimiter(str(exc))
         return _InMemoryRateLimiter()
 
 

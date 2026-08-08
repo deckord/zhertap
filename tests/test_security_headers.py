@@ -26,3 +26,9 @@ def test_security_headers_are_present() -> None:
     assert headers.get("permissions-policy") == "geolocation=(self), camera=(), microphone=()"
     assert headers.get("content-security-policy") == CSP_POLICY
     assert "strict-transport-security" in headers
+
+
+def test_health_does_not_expose_environment() -> None:
+    response = TestClient(main.app).get("/health")
+
+    assert response.json() == {"status": "ok"}

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=86400)
     redis_url: str = "redis://localhost:6379/0"
     run_tasks_inline: bool = True
+    trusted_proxy_networks: str = ""
+    web_concurrency: int = Field(default=2, ge=1, le=16)
     client_funnel_version: Literal["v1", "v2"] = "v2"
     enable_standard_lph_10: bool = False
 
@@ -170,10 +172,22 @@ class Settings(BaseSettings):
             problems.append("APIPAY_WEBHOOK_SECRET")
         if not self.session_secret.strip():
             problems.append("SESSION_SECRET")
+        elif len(self.session_secret.strip()) < 32:
+            problems.append("SESSION_SECRET_LENGTH")
+        if len(self.internal_api_key.strip()) < 32:
+            problems.append("INTERNAL_API_KEY_LENGTH")
         if not self.app_base_url.strip().startswith("https://"):
             problems.append("APP_BASE_URL")
         if self.database_url.strip().lower().startswith("sqlite"):
             problems.append("DATABASE_URL")
+        if not self.redis_url.strip():
+            problems.append("REDIS_URL")
+        if self.run_tasks_inline:
+            problems.append("RUN_TASKS_INLINE")
+        if self.demo_data_enabled:
+            problems.append("DEMO_DATA_ENABLED")
+        if not self.eqazyna_verify_tls or not self.gov_kz_verify_tls or not self.egkn_verify_tls:
+            problems.append("TLS_VERIFICATION")
         if problems:
             raise RuntimeError("Insecure production config: " + ", ".join(problems))
         return self

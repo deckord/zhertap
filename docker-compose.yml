@@ -37,6 +37,7 @@ services:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
     ports:
       - "127.0.0.1:8000:8000"
     volumes: *manual-genplan-volume

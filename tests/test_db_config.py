@@ -40,17 +40,22 @@ def test_production_settings_require_hardening() -> None:
 
 
 def test_production_settings_allow_strong_values() -> None:
-    settings = Settings(
+    configured = Settings(
         app_env="production",
         app_base_url="https://example.com",
         admin_password="very-strong-admin-password",
-        internal_api_key="internal-api-key-secret",
+        internal_api_key="internal-api-key-secret-0123456789",
         session_secret="0123456789abcdef" * 4,
         apipay_enabled=True,
         apipay_webhook_secret="apipay-secret",
         database_url="postgresql+psycopg://user:pass@localhost:5432/land_scout",
+        run_tasks_inline=False,
+        demo_data_enabled=False,
+        eqazyna_verify_tls=True,
+        gov_kz_verify_tls=True,
+        egkn_verify_tls=True,
     )
-    assert settings.app_env == "production"
+    assert configured.app_env == "production"
 
 
 def test_init_db_adds_concurrency_indexes() -> None:
