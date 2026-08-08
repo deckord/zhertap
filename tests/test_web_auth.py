@@ -259,6 +259,11 @@ def test_login_empty_form_returns_form_error() -> None:
         assert "Введите телефон и пароль для входа." in response.text
 
 
+def test_web_password_policy_remains_eight_characters() -> None:
+    assert web._password_error("1234567") is not None
+    assert web._password_error("12345678") is None
+
+
 def test_successful_web_registration_notifies_admin(monkeypatch) -> None:
     sms_codes: list[tuple[str, str]] = []
     admin_messages: list[tuple[str, dict]] = []

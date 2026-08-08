@@ -5,6 +5,7 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 WEAK_SECRETS = {"", "change-me-now", "admin", "password", "secret"}
+ADMIN_PASSWORD_MIN_LENGTH = 6
 
 
 class Settings(BaseSettings):
@@ -164,7 +165,10 @@ class Settings(BaseSettings):
         if self.app_env.lower() not in {"production", "prod"}:
             return self
         problems: list[str] = []
-        if self.admin_password.strip().lower() in WEAK_SECRETS or len(self.admin_password) < 16:
+        if (
+            self.admin_password.strip().lower() in WEAK_SECRETS
+            or len(self.admin_password) < ADMIN_PASSWORD_MIN_LENGTH
+        ):
             problems.append("ADMIN_PASSWORD")
         if not self.internal_api_key.strip():
             problems.append("INTERNAL_API_KEY")
