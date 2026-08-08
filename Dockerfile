@@ -22,4 +22,11 @@ COPY tools ./tools
 COPY releases ./releases
 RUN pip install --no-cache-dir .
 
+# Keep runtime processes away from root; only the document cache needs write access.
+RUN addgroup --system app \
+    && adduser --system --ingroup app app \
+    && mkdir -p /app/var/auction-documents \
+    && chown -R app:app /app/var
+USER app
+
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}"]
