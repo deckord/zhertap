@@ -23,18 +23,32 @@
     {% endif %}
 
     {% set pipeline = item.pipeline %}
-    <div class="auction-v2-detail-hero risk-{{ analysis.risk_level }}">
-      <div>
-        <span class="eyebrow">Инвестиционное решение · {{ item.investment_case.strategy_label }}</span>
-        <h1>Лот №{{ lot.auction_number or lot.source_lot_id }}</h1>
+    <section class="auction-v2-detail-hero risk-{{ analysis.risk_level }}">
+      <div class="auction-v2-showcase-media">
+        {% if item.map_embed_url %}
+          <iframe src="{{ item.map_embed_url }}" loading="lazy" title="Карта расположения участка"></iframe>
+          <span>Расположение участка</span>
+        {% else %}
+          <div class="auction-v2-showcase-placeholder"><strong>Участок на карте</strong><span>Координаты появятся после сверки кадастра или документов.</span></div>
+        {% endif %}
+      </div>
+      <div class="auction-v2-showcase-main">
+        <span class="eyebrow">Официальный лот · E-Qazyna</span>
+        <h1>{{ lot.title or ('Лот №' ~ (lot.auction_number or lot.source_lot_id)) }}</h1>
         <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
+        <div class="auction-v2-showcase-tags"><span>№ {{ lot.auction_number or lot.source_lot_id }}</span><span>{{ item.eqazyna_status_label }}</span><span class="cadastre-{{ geo_check.cadastre_status }}">{{ item.cadastre_label }}</span></div>
       </div>
-      <div class="auction-v2-investment-verdict verdict-{{ item.investment_case.verdict_status }}">
-        <span>Экономика сделки</span>
-        <strong>{{ item.investment_case.verdict }}</strong>
-        <small>{{ item.decision_summary.title }}</small>
+      <dl class="auction-v2-showcase-facts">
+        <div><dt>Стартовая цена</dt><dd>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</dd></div>
+        <div><dt>Торги</dt><dd>{{ lot.auction_starts_at.strftime("%d.%m.%Y · %H:%M") if lot.auction_starts_at else "дата уточняется" }}</dd></div>
+        <div><dt>Гарантийный взнос</dt><dd>{% if lot.guarantee_kzt is not none %}{{ "{:,.0f}".format(lot.guarantee_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</dd></div>
+        <div><dt>Площадь</dt><dd>{{ ("%.4f"|format(lot.area_ha)).rstrip("0").rstrip(".") if lot.area_ha is not none else "—" }} га</dd></div>
+      </dl>
+      <div class="auction-v2-showcase-actions">
+        {% if lot.source_url %}<a class="primary-action" href="{{ lot.source_url }}" target="_blank" rel="noopener">Открыть на E-Qazyna</a>{% endif %}
+        <a class="secondary-action" href="#auction-v2-review-board">Проверить лот</a>
       </div>
-    </div>
+    </section>
 
     {% if auction_workspace %}
       <a class="auction-workspace-strip" href="/cabinet/auctions-v2/team"><span>Командная сделка</span><strong>{{ auction_workspace.name }}</strong><small>Роль: {{ auction_workspace_role }}</small></a>

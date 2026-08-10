@@ -6475,18 +6475,18 @@ def _risk_flags(
         flags.append(
             {
                 "code": "no_cadastre",
-                "level": "high",
-                "label": "Нет кадастрового номера",
-                "detail": "Без кадастра сложно быстро проверить границы, ограничения и историю участка.",
+                "level": "medium",
+                "label": "Кадастр не указан в карточке E-Qazyna",
+                "detail": "Это пробел в данных источника, а не риск участка. Перед заявкой уточните номер в документах или на публичной кадастровой карте.",
             }
         )
     elif geo_check.cadastre_status == "not_found":
         flags.append(
             {
                 "code": "cadastre_not_confirmed_egkn",
-                "level": "high",
-                "label": "Кадастр не подтвержден ЕГКН",
-                "detail": "Кадастровый номер указан в лоте, но публичный слой ЕГКН не вернул участок; нужна ручная сверка до перехода на официальный портал.",
+                "level": "medium",
+                "label": "ЕГКН не подтвердил кадастр автоматически",
+                "detail": "Это не означает проблему с участком: номер мог отсутствовать в источнике или отличаться по формату. Сверьте его с документами перед заявкой.",
             }
         )
     elif geo_check.cadastre_status == "unavailable":
@@ -7598,8 +7598,6 @@ def _lot_decision_summary(
     }
     personal_limit_saved = pipeline is not None and pipeline.max_bid_kzt is not None
     hard_blocker_codes = {
-        "no_cadastre",
-        "cadastre_not_confirmed_egkn",
         "no_coordinates",
         "coordinates_unconfirmed",
         "boundary_area_mismatch",
@@ -7741,7 +7739,7 @@ def _v2_score(
     risk_flags: list[dict[str, object]],
 ) -> int:
     score = metrics.rating
-    score += 8 if lot.cadastre_number else -18
+    score += 8 if lot.cadastre_number else -5
     score += 6 if geo_check.coordinate_status == "found" else -10
     if geo_check.osm_status == "checked":
         score += 4
