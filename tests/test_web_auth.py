@@ -514,6 +514,49 @@ def test_web_payment_status_auto_activates_paid_account(monkeypatch) -> None:
         assert payment.payment_confirmed_by == "apipay:901"
 
 
+def test_web_payment_status_upgrades_investor_to_team_plan(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "auction_team_price_kzt", 12990)
+    monkeypatch.setattr(
+        account_payments,
+        "get_invoice",
+        lambda invoice_id: {
+            "id": invoice_id,
+            "status": "paid",
+            "amount": "12990.00",
+        },
+    )
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            phone_verified_at=web._now(),
+            password_hash=web._hash_password("password-1"),
+            paid_access=True,
+            auction_plan="investor",
+        )
+        session.add(account)
+        session.flush()
+        payment = AccountPayment(
+            account_id=account.id,
+            payment_status=PaymentStatus.awaiting_transfer.value,
+            payment_amount_kzt=12990,
+            target_plan="team",
+            payment_provider="apipay",
+            payment_provider_invoice_id="team-901",
+            payment_provider_url="https://qr.kaspi.kz/team",
+        )
+        session.add(payment)
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.get("/cabinet/payment/status")
+
+        session.refresh(account)
+        assert response.status_code == 200
+        assert response.json()["paid"] is True
+        assert account.auction_plan == "team"
+
+
 def test_web_payment_status_regenerates_qr_after_cancelled_invoice(monkeypatch) -> None:
     monkeypatch.setattr(settings, "apipay_enabled", True)
     monkeypatch.setattr(settings, "apipay_polling_enabled", False)
@@ -887,7 +930,7 @@ def test_admin_phone_can_open_hidden_auctions_v2() -> None:
         assert "/cabinet/auctions-v2/analytics" in response.text
 
 
-def test_non_admin_phone_cannot_see_or_open_auctions_v2() -> None:
+def test_non_admin_phone_sees_observer_auction_catalog() -> None:
     with build_session() as session:
         account = Account(
             phone="+77018854333",
@@ -903,6 +946,8 @@ def test_non_admin_phone_cannot_see_or_open_auctions_v2() -> None:
             response = client.get("/cabinet/auctions-v2")
 
         assert cabinet_response.status_code == 200
-        assert "/cabinet/auctions-v2" not in cabinet_response.text
+        assert "/cabinet/auctions-v2" in cabinet_response.text
         assert "/cabinet/auctions-v2/analytics" not in cabinet_response.text
-        assert response.status_code == 404
+        assert response.status_code == 200
+        assert "Режим «Наблюдатель»" in response.text
+        assert "/cabinet/auctions-v2/plans" in response.text

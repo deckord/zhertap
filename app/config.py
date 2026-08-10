@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     analytics_excluded_telegram_user_ids: str = "70557953"
 
     platform_access_price_kzt: int = Field(default=1990, ge=0, le=10_000_000)
+    auction_team_price_kzt: int = Field(default=12990, ge=0, le=10_000_000)
     platform_access_months: int = Field(default=1, ge=1, le=24)
     trial_access_enabled: bool = True
     trial_access_days: int = Field(default=1, ge=0, le=30)

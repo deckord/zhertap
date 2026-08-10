@@ -19,6 +19,13 @@ TERMINAL_PROVIDER_STATUSES = {"cancelled", "expired", "error"}
 ACTIVE_PROVIDER_STATUSES = {"pending", "processing", "cancelling"}
 QR_REFRESH_AFTER_SECONDS = 270
 logger = logging.getLogger(__name__)
+SUPPORTED_ACCOUNT_PLANS = {"investor", "team"}
+
+
+def account_plan_price_kzt(plan: str) -> int:
+    if plan == "team":
+        return settings.auction_team_price_kzt
+    return settings.platform_access_price_kzt
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +74,18 @@ def _qr_invoice_is_stale(payment: AccountPayment) -> bool:
     return updated_at <= datetime.now(UTC) - timedelta(seconds=QR_REFRESH_AFTER_SECONDS)
 
 
-def start_account_payment(session: Session, account: Account) -> AccountPayment:
-    if account_has_paid_access(account):
+def start_account_payment(
+    session: Session,
+    account: Account,
+    *,
+    target_plan: str = "investor",
+) -> AccountPayment:
+    if target_plan not in SUPPORTED_ACCOUNT_PLANS:
+        raise ValueError("Неизвестный тариф")
+    if account_has_paid_access(account) and (
+        account.auction_plan == target_plan
+        or (target_plan == "investor" and account.auction_plan != "team")
+    ):
         payment = latest_account_payment(session, account)
         if payment is not None:
             return payment
@@ -80,6 +97,7 @@ def start_account_payment(session: Session, account: Account) -> AccountPayment:
         select(AccountPayment)
         .where(
             AccountPayment.account_id == account.id,
+            AccountPayment.target_plan == target_plan,
             AccountPayment.payment_status == PaymentStatus.awaiting_transfer.value,
             AccountPayment.payment_provider == "apipay",
             AccountPayment.payment_provider_url.is_not(None),
@@ -93,10 +111,12 @@ def start_account_payment(session: Session, account: Account) -> AccountPayment:
         payment.payment_status = PaymentStatus.rejected.value
         session.commit()
 
+    amount_kzt = account_plan_price_kzt(target_plan)
     payment = AccountPayment(
         account_id=account.id,
         payment_status=PaymentStatus.awaiting_transfer.value,
-        payment_amount_kzt=settings.platform_access_price_kzt,
+        payment_amount_kzt=amount_kzt,
+        target_plan=target_plan,
         payment_provider="apipay",
         payment_requested_at=datetime.now(UTC),
     )
@@ -104,8 +124,12 @@ def start_account_payment(session: Session, account: Account) -> AccountPayment:
     session.flush()
     invoice = create_qr_invoice(
         request_id=f"{ACCOUNT_ORDER_PREFIX}{payment.id}",
-        amount_kzt=settings.platform_access_price_kzt,
-        description="Жертап: полный доступ на 1 месяц",
+        amount_kzt=amount_kzt,
+        description=(
+            "Жертап: тариф Команда на 1 месяц"
+            if target_plan == "team"
+            else "Жертап: тариф Инвестор Pro на 1 месяц"
+        ),
         idempotency_key=_account_invoice_idempotency_key(payment),
     )
     payment.payment_provider_invoice_id = invoice.invoice_id
@@ -180,6 +204,13 @@ def apply_account_apipay_invoice(
             payment.payment_confirmed_at = datetime.now(UTC)
             payment.payment_confirmed_by = f"apipay:{invoice_id}"
         was_active = account_has_paid_access(account)
+        paid_plan = (
+            payment.target_plan
+            if payment.target_plan in SUPPORTED_ACCOUNT_PLANS
+            else "investor"
+        )
+        if paid_plan == "team" or account.auction_plan != "team":
+            account.auction_plan = paid_plan
         grant_account_paid_access(account)
         activated = not was_active
     elif provider_status in {"cancelled", "expired", "error"}:
@@ -200,18 +231,26 @@ def apply_account_apipay_invoice(
 def refresh_account_payment(
     session: Session,
     account: Account,
+    *,
+    target_plan: str | None = None,
 ) -> AccountPayment:
     payment = latest_account_payment(session, account)
+    desired_plan = target_plan or (payment.target_plan if payment else "investor")
     if payment is None or not payment.payment_provider_invoice_id:
-        return start_account_payment(session, account)
-    if account_has_paid_access(account) or payment.payment_status == PaymentStatus.paid.value:
+        return start_account_payment(session, account, target_plan=desired_plan)
+    if target_plan and payment.target_plan != target_plan:
+        return start_account_payment(session, account, target_plan=target_plan)
+    if (
+        account_has_paid_access(account)
+        and account.auction_plan == desired_plan
+    ) or payment.payment_status == PaymentStatus.paid.value:
         return payment
     if payment.payment_provider != "apipay":
-        return start_account_payment(session, account)
+        return start_account_payment(session, account, target_plan=desired_plan)
     if payment.payment_status == PaymentStatus.rejected.value or (
         payment.payment_provider_status or ""
     ) in TERMINAL_PROVIDER_STATUSES:
-        return start_account_payment(session, account)
+        return start_account_payment(session, account, target_plan=desired_plan)
 
     invoice = get_invoice(payment.payment_provider_invoice_id)
     invoice["external_order_id"] = f"{ACCOUNT_ORDER_PREFIX}{payment.id}"
@@ -238,20 +277,28 @@ def refresh_account_payment(
     payment.payment_provider_updated_at = datetime.now(UTC)
     _prepare_account_invoice_refresh(payment)
     session.commit()
-    return start_account_payment(session, account)
+    return start_account_payment(session, account, target_plan=desired_plan)
 
 
 def renew_account_payment(
     session: Session,
     account: Account,
+    *,
+    target_plan: str | None = None,
 ) -> AccountPayment:
     payment = latest_account_payment(session, account)
+    desired_plan = target_plan or (payment.target_plan if payment else "investor")
     if payment is None or not payment.payment_provider_invoice_id:
-        return start_account_payment(session, account)
-    if account_has_paid_access(account) or payment.payment_status == PaymentStatus.paid.value:
+        return start_account_payment(session, account, target_plan=desired_plan)
+    if target_plan and payment.target_plan != target_plan:
+        return start_account_payment(session, account, target_plan=target_plan)
+    if (
+        account_has_paid_access(account)
+        and account.auction_plan == desired_plan
+    ) or payment.payment_status == PaymentStatus.paid.value:
         return payment
     if payment.payment_provider != "apipay":
-        return start_account_payment(session, account)
+        return start_account_payment(session, account, target_plan=desired_plan)
 
     if payment.payment_status != PaymentStatus.rejected.value and (
         payment.payment_provider_status or ""
@@ -278,7 +325,7 @@ def renew_account_payment(
     payment.payment_provider_updated_at = datetime.now(UTC)
     _prepare_account_invoice_refresh(payment)
     session.commit()
-    return start_account_payment(session, account)
+    return start_account_payment(session, account, target_plan=desired_plan)
 
 
 def dispatch_account_payment_reconciliation(payment_id: str) -> None:

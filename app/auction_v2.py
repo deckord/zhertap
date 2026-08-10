@@ -5,8 +5,9 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from statistics import median
@@ -64,8 +65,45 @@ PIPELINE_STAGES: tuple[tuple[str, str], ...] = (
     ("needs_manual_check", "Нужна ручная сверка"),
     ("ready_for_official_site", "Готов к E-Qazyna/eGov"),
     ("decided_to_participate", "Буду участвовать"),
+    ("application_preparing", "Готовлю заявку"),
+    ("application_submitted", "Заявка подана"),
+    ("guarantee_paid", "Гарантийный взнос оплачен"),
+    ("admitted_to_auction", "Допущен к торгам"),
+    ("auction_completed", "Торги завершены"),
+    ("won", "Победа"),
+    ("lost", "Не выиграл"),
+    ("contract_signed", "Договор подписан"),
+    ("rights_registered", "Право зарегистрировано"),
+    ("development", "Освоение участка"),
+    ("listed_for_sale", "Выставлен на продажу"),
+    ("sold", "Сделка закрыта"),
     ("skipped", "Пропустить"),
     ("archived", "Архив"),
+)
+
+INVESTMENT_STRATEGIES: tuple[tuple[str, str], ...] = (
+    ("undecided", "Стратегия не выбрана"),
+    ("resale", "Перепродажа участка"),
+    ("subdivision", "Разделение и продажа частями"),
+    ("development", "Строительство и продажа"),
+    ("rental", "Арендный доход"),
+    ("agriculture", "Сельхозиспользование"),
+    ("own_use", "Для собственного проекта"),
+)
+
+FIELD_INSPECTION_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("not_planned", "Выезд не запланирован"),
+    ("planned", "Выезд запланирован"),
+    ("completed", "Участок осмотрен"),
+    ("repeat_required", "Нужен повторный выезд"),
+    ("rejected", "Отказ после осмотра"),
+)
+
+AUCTION_ACTIVITY_TYPES: tuple[tuple[str, str], ...] = (
+    ("note", "Заметка"),
+    ("task", "Задача"),
+    ("decision", "Решение"),
+    ("expert_request", "Вопрос специалисту"),
 )
 
 RISK_LABELS = {
@@ -119,6 +157,14 @@ CADASTRE_STATUS_LABELS = {
     "not_found": "ЕГКН не подтвердил",
     "unavailable": "ЕГКН не ответил",
     "unknown": "Не проверено",
+}
+
+BOUNDARY_STATUS_LABELS = {
+    "verified": "Граница подтверждена",
+    "warning": "Площадь расходится",
+    "manual_required": "Нужна сверка границы",
+    "not_found": "Граница не найдена",
+    "unknown": "Граница не проверена",
 }
 
 OSM_STATUS_LABELS = {
@@ -504,6 +550,11 @@ class AuctionV2LotPayload:
     manual_process: list[dict[str, object]]
     manual_process_counts: dict[str, int]
     next_actions: list[dict[str, object]]
+    data_quality: dict[str, object]
+    cost_estimate: dict[str, object]
+    investment_case: dict[str, object]
+    field_inspection: dict[str, object]
+    deal_room: dict[str, object]
     decision_summary: dict[str, object]
     risk_label: str
     confidence_label: str
@@ -517,6 +568,7 @@ class AuctionV2LotPayload:
     eqazyna_status_note: str
     coordinate_label: str
     cadastre_label: str
+    boundary_label: str
     urban_plan_label: str
     osm_label: str
     engineering_label: str
@@ -617,6 +669,7 @@ class AuctionV2MarketStats:
     comparable_count: int = 0
     priced_count: int = 0
     average_price_per_sotka: float | None = None
+    median_price_per_sotka: float | None = None
     min_price_per_sotka: float | None = None
     max_price_per_sotka: float | None = None
     source_names: list[str] = field(default_factory=list)
@@ -2769,6 +2822,31 @@ def build_auction_v2_dossier_text(
         f"Рекомендация: {ACTION_LABELS.get(analysis.recommended_action, analysis.recommended_action)}",
         f"Вывод: {analysis.summary}",
         "",
+        "ЭКОНОМИКА СДЕЛКИ",
+        f"Стратегия: {payload.investment_case['strategy_label']}",
+        f"Плановая покупка: {_money(payload.investment_case['acquisition_cost_kzt'])}",
+        f"Полный бюджет: {_money(payload.investment_case['all_in_cost_kzt'])}",
+        f"Ожидаемая цена выхода: {_money(payload.investment_case['expected_exit_value_kzt'])}",
+        f"Ожидаемая прибыль: {_money(payload.investment_case['expected_profit_kzt'])}",
+        f"ROI: {_percent(payload.investment_case['roi_percent'])}",
+        f"До участия — гарантийный взнос: {_money(payload.cost_estimate['cash_before_auction_kzt'])}",
+        f"После победы: {_money(payload.cost_estimate['cash_after_win_kzt'])}",
+        f"Вывод по экономике: {payload.investment_case['verdict']}",
+        "",
+        "ПОЛЕВОЙ ОСМОТР",
+        f"Статус: {payload.field_inspection['status_label']}",
+        f"Проверено на месте: {payload.field_inspection['checked_count']} из {payload.field_inspection['total_checks']}",
+        f"Вывод: {_text(payload.field_inspection['data'].get('conclusion'))}",
+        "",
+        "КОМНАТА СДЕЛКИ",
+        *(
+            [
+                f"{row['created_at'][:16].replace('T', ' ')} · {row['kind_label']}: {row['body']}"
+                for row in payload.deal_room["rows"][:20]
+            ]
+            or ["Записей пока нет"]
+        ),
+        "",
         "РАБОЧИЙ ПРОЦЕСС ДО УЧАСТИЯ",
         *_dossier_workflow_lines(payload.buyer_workflow),
         "",
@@ -2928,7 +3006,11 @@ def update_auction_v2_pipeline(
     stage: str,
     max_bid_kzt: float | None,
     notes: str | None,
+    reminder_at: datetime | None = None,
     pinned: bool = False,
+    costs: dict[str, float | int | str | None] | None = None,
+    investment: dict[str, float | int | str | None] | None = None,
+    inspection: dict[str, str | bool | None] | None = None,
 ) -> AuctionUserLotPipeline:
     if stage not in {value for value, _label in PIPELINE_STAGES}:
         raise ValueError("unknown pipeline stage")
@@ -2939,17 +3021,530 @@ def update_auction_v2_pipeline(
     previous_stage = pipeline.stage
     pipeline.stage = stage
     pipeline.max_bid_kzt = max_bid_kzt
+    if max_bid_kzt is not None and max_bid_kzt < 0:
+        raise ValueError("Личный лимит не может быть отрицательным")
+    if costs is not None:
+        pipeline.costs_json = json.dumps(_normalize_pipeline_costs(costs), ensure_ascii=False)
+    if investment is not None:
+        pipeline.investment_json = json.dumps(
+            _normalize_investment_inputs(investment), ensure_ascii=False
+        )
+    if inspection is not None:
+        pipeline.inspection_json = json.dumps(
+            _normalize_field_inspection(inspection), ensure_ascii=False
+        )
     pipeline.notes = (notes or "").strip() or None
+    pipeline.reminder_at = _aware(reminder_at)
     pipeline.pinned = pinned
     pipeline.updated_at = now
-    if stage in {"decided_to_participate", "skipped"} and previous_stage != stage:
+    participation_stages = {
+        "decided_to_participate",
+        "application_preparing",
+        "application_submitted",
+        "guarantee_paid",
+        "admitted_to_auction",
+        "auction_completed",
+        "won",
+        "lost",
+        "contract_signed",
+        "rights_registered",
+        "development",
+        "listed_for_sale",
+        "sold",
+    }
+    if stage in participation_stages | {"skipped"} and previous_stage != stage:
         pipeline.decided_at = now
-        pipeline.decision = "participate" if stage == "decided_to_participate" else "skip"
-    elif stage not in {"decided_to_participate", "skipped"}:
+        pipeline.decision = "participate" if stage in participation_stages else "skip"
+    elif stage not in participation_stages | {"skipped"}:
         pipeline.decision = None
         pipeline.decided_at = None
     session.flush()
     return pipeline
+
+
+def auction_v2_calendar_payload(
+    session: Session,
+    *,
+    account_id: str,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Build the entrepreneur's action calendar from tracked auction lots."""
+    current = _aware(now) or datetime.now(UTC)
+    pipelines = list(
+        session.scalars(
+            select(AuctionUserLotPipeline)
+            .where(AuctionUserLotPipeline.account_id == account_id)
+            .options(selectinload(AuctionUserLotPipeline.lot))
+            .order_by(AuctionUserLotPipeline.updated_at.desc())
+        ).all()
+    )
+    events: list[dict[str, object]] = []
+
+    def append_event(
+        *,
+        pipeline: AuctionUserLotPipeline,
+        event_at: datetime | None,
+        kind: str,
+        title: str,
+        detail: str,
+    ) -> None:
+        aware_at = _aware(event_at)
+        lot = pipeline.lot
+        if aware_at is None or lot is None:
+            return
+        seconds = (aware_at - current).total_seconds()
+        if seconds < 0:
+            status = "overdue"
+        elif aware_at.date() == current.date():
+            status = "today"
+        elif seconds <= 7 * 86400:
+            status = "soon"
+        else:
+            status = "upcoming"
+        events.append(
+            {
+                "at": aware_at,
+                "kind": kind,
+                "status": status,
+                "title": title,
+                "detail": detail,
+                "lot": lot,
+                "pipeline": pipeline,
+                "stage_label": _stage_label(pipeline.stage) or "В работе",
+                "url": f"/cabinet/auctions-v2/{lot.id}",
+            }
+        )
+
+    for pipeline in pipelines:
+        lot = pipeline.lot
+        if lot is None or pipeline.stage in {"sold", "lost", "skipped", "archived"}:
+            continue
+        append_event(
+            pipeline=pipeline,
+            event_at=pipeline.reminder_at,
+            kind="reminder",
+            title="Контрольная дата",
+            detail="Личный срок по решению, документам или следующему действию.",
+        )
+        append_event(
+            pipeline=pipeline,
+            event_at=lot.auction_starts_at,
+            kind="auction",
+            title="Начало торгов",
+            detail="Проверьте допуск, лимит ставки и переход на официальный портал.",
+        )
+        inspection = _load_pipeline_json(pipeline, "inspection_json")
+        planned_at = inspection.get("planned_at")
+        if planned_at:
+            try:
+                parsed_inspection_at = datetime.fromisoformat(str(planned_at))
+            except ValueError:
+                parsed_inspection_at = None
+            if parsed_inspection_at is not None and parsed_inspection_at.tzinfo is None:
+                parsed_inspection_at = parsed_inspection_at.replace(
+                    tzinfo=timezone(timedelta(hours=5))
+                )
+            append_event(
+                pipeline=pipeline,
+                event_at=parsed_inspection_at,
+                kind="inspection",
+                title="Выезд на участок",
+                detail="Зафиксируйте подъезд, сети, рельеф, окружение и границы.",
+            )
+
+    events.sort(key=lambda row: row["at"])
+    overdue = [row for row in events if row["status"] == "overdue"]
+    upcoming = [row for row in events if row["status"] != "overdue"]
+    return {
+        "events": events,
+        "overdue": overdue,
+        "upcoming": upcoming,
+        "totals": {
+            "tracked_lots": len(pipelines),
+            "overdue": len(overdue),
+            "today": sum(row["status"] == "today" for row in events),
+            "next_7_days": sum(
+                0 <= (row["at"] - current).total_seconds() <= 7 * 86400
+                for row in events
+            ),
+        },
+    }
+
+
+PIPELINE_COST_FIELDS: tuple[tuple[str, str], ...] = (
+    ("road", "Подъезд и земляные работы"),
+    ("utilities", "Подключение сетей"),
+    ("project", "Проектирование и изыскания"),
+    ("registration", "Оформление и регистрация"),
+    ("taxes", "Налоги и сборы"),
+    ("other", "Прочие расходы"),
+)
+
+INVESTMENT_NUMBER_FIELDS = {
+    "planned_purchase_price_kzt",
+    "expected_exit_value_kzt",
+    "expected_monthly_income_kzt",
+    "holding_months",
+    "financing_cost_kzt",
+    "contingency_percent",
+}
+
+INSPECTION_BOOLEAN_FIELDS = {
+    "access_ok",
+    "power_visible",
+    "water_visible",
+    "flat_terrain",
+    "no_flood_signs",
+    "boundaries_visible",
+}
+
+
+def _normalize_pipeline_costs(value: dict[str, float | int | str | None]) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for key, _label in PIPELINE_COST_FIELDS:
+        raw = value.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            amount = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Расходы должны быть числами") from exc
+        if amount < 0:
+            raise ValueError("Расходы не могут быть отрицательными")
+        normalized[key] = round(amount, 2)
+    return normalized
+
+
+def _pipeline_costs(pipeline: AuctionUserLotPipeline | None) -> dict[str, float]:
+    if pipeline is None or not pipeline.costs_json:
+        return {}
+    try:
+        raw = json.loads(pipeline.costs_json)
+    except json.JSONDecodeError:
+        return {}
+    return _normalize_pipeline_costs(raw) if isinstance(raw, dict) else {}
+
+
+def _load_pipeline_json(pipeline: AuctionUserLotPipeline | None, attribute: str) -> dict:
+    if pipeline is None:
+        return {}
+    value = getattr(pipeline, attribute, None)
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_investment_inputs(
+    value: dict[str, float | int | str | None],
+) -> dict[str, float | str]:
+    allowed_strategies = {key for key, _label in INVESTMENT_STRATEGIES}
+    strategy = str(value.get("strategy") or "undecided").strip()
+    if strategy not in allowed_strategies:
+        raise ValueError("Неизвестная инвестиционная стратегия")
+    normalized: dict[str, float | str] = {"strategy": strategy}
+    for key in INVESTMENT_NUMBER_FIELDS:
+        raw = value.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            amount = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Параметры инвестиционного сценария должны быть числами") from exc
+        if amount < 0:
+            raise ValueError("Параметры инвестиционного сценария не могут быть отрицательными")
+        if key == "contingency_percent" and amount > 100:
+            raise ValueError("Резерв не может превышать 100%")
+        normalized[key] = round(amount, 2)
+    return normalized
+
+
+def _normalize_field_inspection(
+    value: dict[str, str | bool | None],
+) -> dict[str, str | bool]:
+    statuses = {key for key, _label in FIELD_INSPECTION_OPTIONS}
+    status = str(value.get("status") or "not_planned").strip()
+    if status not in statuses:
+        raise ValueError("Неизвестный статус выезда")
+    normalized: dict[str, str | bool] = {"status": status}
+    for key in INSPECTION_BOOLEAN_FIELDS:
+        normalized[key] = value.get(key) in {True, "true", "1", "on", "yes"}
+    for key in ("planned_at", "inspected_at", "road_note", "utilities_note", "terrain_note", "surroundings_note", "conclusion"):
+        text = str(value.get(key) or "").strip()
+        if text:
+            normalized[key] = text[:2000]
+    return normalized
+
+
+def _investment_case(
+    lot: AuctionLot,
+    pipeline: AuctionUserLotPipeline | None,
+    *,
+    known_extra_costs_kzt: float,
+) -> dict[str, object]:
+    raw = _load_pipeline_json(pipeline, "investment_json")
+    inputs = _normalize_investment_inputs(raw) if raw else {"strategy": "undecided"}
+    strategy = str(inputs.get("strategy") or "undecided")
+    strategy_labels = dict(INVESTMENT_STRATEGIES)
+    acquisition = float(
+        inputs.get("planned_purchase_price_kzt")
+        or (pipeline.max_bid_kzt if pipeline and pipeline.max_bid_kzt is not None else 0)
+        or lot.start_price_kzt
+        or 0
+    )
+    financing = float(inputs.get("financing_cost_kzt") or 0)
+    reserve_percent = float(inputs.get("contingency_percent") or 0)
+    reserve = round(known_extra_costs_kzt * reserve_percent / 100, 2)
+    all_in = round(acquisition + known_extra_costs_kzt + financing + reserve, 2)
+    exit_value = float(inputs.get("expected_exit_value_kzt") or 0)
+    monthly_income = float(inputs.get("expected_monthly_income_kzt") or 0)
+    profit = round(exit_value - all_in, 2) if exit_value and all_in else None
+    roi = round(profit / all_in * 100, 1) if profit is not None and all_in else None
+    margin = round(profit / exit_value * 100, 1) if profit is not None and exit_value else None
+    payback_months = round(all_in / monthly_income, 1) if monthly_income and all_in else None
+    holding_months = inputs.get("holding_months")
+    if profit is None:
+        verdict = "Нужно заполнить цену выхода"
+        verdict_status = "incomplete"
+    elif profit <= 0:
+        verdict = "Экономика отрицательная"
+        verdict_status = "negative"
+    elif roi is not None and roi < 15:
+        verdict = "Доходность ниже запаса риска"
+        verdict_status = "warning"
+    else:
+        verdict = "Экономика требует проверки рисков" if roi is not None and roi < 25 else "Сценарий выглядит привлекательным"
+        verdict_status = "positive"
+    return {
+        "inputs": inputs,
+        "strategy": strategy,
+        "strategy_label": strategy_labels.get(strategy, strategy),
+        "acquisition_cost_kzt": acquisition or None,
+        "known_extra_costs_kzt": known_extra_costs_kzt or None,
+        "financing_cost_kzt": financing or None,
+        "reserve_percent": reserve_percent,
+        "reserve_kzt": reserve or None,
+        "all_in_cost_kzt": all_in or None,
+        "expected_exit_value_kzt": exit_value or None,
+        "expected_monthly_income_kzt": monthly_income or None,
+        "holding_months": holding_months,
+        "expected_profit_kzt": profit,
+        "roi_percent": roi,
+        "margin_percent": margin,
+        "payback_months": payback_months,
+        "verdict": verdict,
+        "verdict_status": verdict_status,
+        "has_user_inputs": len(inputs) > 1 or strategy != "undecided",
+    }
+
+
+def _field_inspection(pipeline: AuctionUserLotPipeline | None) -> dict[str, object]:
+    raw = _load_pipeline_json(pipeline, "inspection_json")
+    data = _normalize_field_inspection(raw) if raw else {"status": "not_planned"}
+    status = str(data.get("status") or "not_planned")
+    checked = sum(bool(data.get(key)) for key in INSPECTION_BOOLEAN_FIELDS)
+    return {
+        "data": data,
+        "status": status,
+        "status_label": dict(FIELD_INSPECTION_OPTIONS).get(status, status),
+        "checked_count": checked,
+        "total_checks": len(INSPECTION_BOOLEAN_FIELDS),
+        "completed": status == "completed",
+    }
+
+
+def _pipeline_activity(pipeline: AuctionUserLotPipeline | None) -> list[dict[str, str]]:
+    if pipeline is None or not pipeline.activity_json:
+        return []
+    try:
+        raw = json.loads(pipeline.activity_json)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    allowed = {value for value, _label in AUCTION_ACTIVITY_TYPES}
+    labels = dict(AUCTION_ACTIVITY_TYPES)
+    rows: list[dict[str, str]] = []
+    for item in raw[-100:]:
+        if not isinstance(item, dict):
+            continue
+        body = str(item.get("body") or "").strip()
+        if not body:
+            continue
+        kind = str(item.get("kind") or "note")
+        if kind not in allowed:
+            kind = "note"
+        rows.append(
+            {
+                "id": str(item.get("id") or ""),
+                "kind": kind,
+                "kind_label": labels[kind],
+                "body": body[:3000],
+                "created_at": str(item.get("created_at") or ""),
+                "actor_account_id": str(item.get("actor_account_id") or ""),
+                "actor_label": str(item.get("actor_label") or "")[:80],
+            }
+        )
+    return list(reversed(rows))
+
+
+def add_auction_v2_activity(
+    session: Session,
+    *,
+    account_id: str,
+    lot_id: str,
+    kind: str,
+    body: str,
+    actor_account_id: str | None = None,
+    actor_label: str | None = None,
+) -> AuctionUserLotPipeline:
+    allowed = {value for value, _label in AUCTION_ACTIVITY_TYPES}
+    if kind not in allowed:
+        raise ValueError("Неизвестный тип записи")
+    clean_body = body.strip()
+    if not clean_body:
+        raise ValueError("Введите текст записи")
+    if len(clean_body) > 3000:
+        raise ValueError("Запись не должна превышать 3000 символов")
+    pipeline = get_auction_v2_pipeline(session, account_id, lot_id, create=True)
+    if pipeline is None:
+        raise ValueError("account is required")
+    existing = list(reversed(_pipeline_activity(pipeline)))
+    existing.append(
+        {
+            "id": str(uuid.uuid4()),
+            "kind": kind,
+            "body": clean_body,
+            "created_at": datetime.now(UTC).isoformat(),
+            "actor_account_id": actor_account_id or account_id,
+            "actor_label": (actor_label or "").strip()[:80],
+        }
+    )
+    pipeline.activity_json = json.dumps(existing[-100:], ensure_ascii=False)
+    pipeline.updated_at = datetime.now(UTC)
+    session.flush()
+    return pipeline
+
+
+def _deal_room(pipeline: AuctionUserLotPipeline | None) -> dict[str, object]:
+    rows = _pipeline_activity(pipeline)
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "types": [
+            {"value": value, "label": label}
+            for value, label in AUCTION_ACTIVITY_TYPES
+        ],
+        "has_expert_requests": any(row["kind"] == "expert_request" for row in rows),
+    }
+
+
+def auction_v2_portfolio_payload(
+    session: Session,
+    *,
+    account_id: str,
+) -> dict[str, object]:
+    pipelines = list(
+        session.scalars(
+            select(AuctionUserLotPipeline)
+            .where(AuctionUserLotPipeline.account_id == account_id)
+            .order_by(
+                AuctionUserLotPipeline.pinned.desc(),
+                AuctionUserLotPipeline.updated_at.desc(),
+            )
+        ).all()
+    )
+    rows: list[dict[str, object]] = []
+    stage_counts: dict[str, int] = {}
+    total_budget = 0.0
+    blocked_capital = 0.0
+    expected_profit = 0.0
+    profit_count = 0
+    for pipeline in pipelines:
+        payload = get_auction_v2_payload(
+            session,
+            pipeline.lot_id,
+            account_id=account_id,
+        )
+        if payload is None:
+            continue
+        case = payload.investment_case
+        budget = float(case.get("all_in_cost_kzt") or 0)
+        profit = case.get("expected_profit_kzt")
+        guarantee = float(payload.cost_estimate.get("cash_before_auction_kzt") or 0)
+        total_budget += budget
+        blocked_capital += guarantee
+        if profit is not None:
+            expected_profit += float(profit)
+            profit_count += 1
+        stage_counts[pipeline.stage] = stage_counts.get(pipeline.stage, 0) + 1
+        rows.append(
+            {
+                "payload": payload,
+                "lot": payload.lot,
+                "pipeline": pipeline,
+                "investment": case,
+                "inspection": payload.field_inspection,
+                "stage_label": _stage_label(pipeline.stage),
+            }
+        )
+    return {
+        "rows": rows,
+        "totals": {
+            "tracked": len(rows),
+            "total_budget_kzt": round(total_budget, 2) or None,
+            "blocked_capital_kzt": round(blocked_capital, 2) or None,
+            "expected_profit_kzt": round(expected_profit, 2) if profit_count else None,
+            "with_economics": profit_count,
+            "won": sum(stage_counts.get(stage, 0) for stage in {"won", "contract_signed", "rights_registered", "development", "listed_for_sale", "sold"}),
+            "closed": stage_counts.get("sold", 0),
+        },
+        "stages": [
+            {"value": value, "label": label, "count": stage_counts.get(value, 0)}
+            for value, label in PIPELINE_STAGES
+            if stage_counts.get(value, 0)
+        ],
+    }
+
+
+def _cost_estimate(
+    lot: AuctionLot,
+    pipeline: AuctionUserLotPipeline | None,
+) -> dict[str, object]:
+    costs = _pipeline_costs(pipeline)
+    known_extra = round(sum(costs.values()), 2)
+    start_price = float(lot.start_price_kzt or 0)
+    guarantee = float(lot.guarantee_kzt or 0)
+    unknown = [label for key, label in PIPELINE_COST_FIELDS if key not in costs]
+    acquisition = float(
+        (_load_pipeline_json(pipeline, "investment_json").get("planned_purchase_price_kzt"))
+        or (pipeline.max_bid_kzt if pipeline and pipeline.max_bid_kzt is not None else 0)
+        or start_price
+    )
+    return {
+        "start_price_kzt": start_price or None,
+        "guarantee_kzt": guarantee or None,
+        "known_extra_costs_kzt": known_extra or None,
+        "planned_purchase_price_kzt": acquisition or None,
+        "known_total_cost_kzt": round(acquisition + known_extra, 2) or None,
+        "cash_before_auction_kzt": guarantee or None,
+        "cash_after_win_kzt": round(max(acquisition - guarantee, 0) + known_extra, 2) or None,
+        "items": [
+            {
+                "code": key,
+                "label": label,
+                "value_kzt": costs.get(key),
+                "status": "entered" if key in costs else "unknown",
+            }
+            for key, label in PIPELINE_COST_FIELDS
+        ],
+        "unknown_items": unknown,
+        "has_user_inputs": bool(costs),
+        "disclaimer": "Гарантийный взнос показан как временно заблокированный капитал и не прибавляется к стоимости земли. Неизвестные расходы нужно подтвердить до участия.",
+    }
 
 
 def list_auction_v2_market_comparables(
@@ -4276,6 +4871,20 @@ def _payload_from_records(
         review_steps=review_steps,
     )
     next_actions = _lot_next_actions(review_steps)
+    data_quality = _data_quality_summary(
+        lot=lot,
+        analysis=analysis,
+        metrics=metrics,
+        geo_check=geo_check,
+    )
+    cost_estimate = _cost_estimate(lot, pipeline)
+    investment_case = _investment_case(
+        lot,
+        pipeline,
+        known_extra_costs_kzt=float(cost_estimate["known_extra_costs_kzt"] or 0),
+    )
+    field_inspection = _field_inspection(pipeline)
+    deal_room = _deal_room(pipeline)
     lot_scope = _lot_search_scope(lot)
     return AuctionV2LotPayload(
         lot=lot,
@@ -4294,6 +4903,11 @@ def _payload_from_records(
         manual_process=manual_process,
         manual_process_counts=_manual_process_counts(manual_process),
         next_actions=next_actions,
+        data_quality=data_quality,
+        cost_estimate=cost_estimate,
+        investment_case=investment_case,
+        field_inspection=field_inspection,
+        deal_room=deal_room,
         decision_summary=_lot_decision_summary(
             lot=lot,
             analysis=analysis,
@@ -4301,6 +4915,7 @@ def _payload_from_records(
             geo_check=geo_check,
             pipeline=pipeline,
             review_steps=review_steps,
+            risk_flags=risk_flags,
             next_actions=next_actions,
         ),
         risk_label=RISK_LABELS.get(analysis.risk_level, analysis.risk_level),
@@ -4323,6 +4938,10 @@ def _payload_from_records(
         cadastre_label=CADASTRE_STATUS_LABELS.get(
             geo_check.cadastre_status,
             geo_check.cadastre_status,
+        ),
+        boundary_label=BOUNDARY_STATUS_LABELS.get(
+            geo_check.boundary_status,
+            geo_check.boundary_status,
         ),
         urban_plan_label=URBAN_PLAN_STATUS_LABELS.get(
             geo_check.urban_plan_status,
@@ -4481,6 +5100,152 @@ def _get_or_build_geo_check(session: Session, lot: AuctionLot) -> AuctionLotGeoC
     _refresh_geo_check(session, lot, geo_check)
     session.flush()
     return geo_check
+
+
+def _data_quality_summary(
+    *,
+    lot: AuctionLot,
+    analysis: AuctionLotV2Analysis,
+    metrics: AuctionLotMetrics,
+    geo_check: AuctionLotGeoCheck,
+) -> dict[str, object]:
+    """Return the small, user-facing completeness layer for a lot.
+
+    The detailed review checklist remains available below the fold. This layer
+    answers the first question a buyer has: which decision inputs are already
+    confirmed and which ones still need a manual check.
+    """
+
+    def row(
+        code: str,
+        title: str,
+        value: str,
+        detail: str,
+        *,
+        status: str,
+        anchor: str | None = None,
+    ) -> dict[str, object]:
+        labels = {
+            "done": "Подтверждено",
+            "manual": "Проверить",
+            "missing": "Не найдено",
+        }
+        return {
+            "code": code,
+            "title": title,
+            "value": value,
+            "detail": detail,
+            "status": status,
+            "status_label": labels.get(status, "Проверить"),
+            "anchor": anchor,
+        }
+
+    rows = [
+        row(
+            "official_lot",
+            "Официальный лот",
+            "Есть" if lot.source_url else "Нет",
+            "Ссылка на карточку E-Qazyna"
+            if lot.source_url
+            else "Нужна официальная ссылка на лот",
+            status="done" if lot.source_url else "missing",
+            anchor="#auction-v2-decision-form",
+        ),
+        row(
+            "documents",
+            "Документы",
+            str(metrics.document_count),
+            "Приложения и условия доступны в карточке"
+            if metrics.document_count
+            else "Нужно открыть приложения на E-Qazyna",
+            status="done" if metrics.document_count else "missing",
+            anchor="#auction-v2-documents",
+        ),
+        row(
+            "cadastre",
+            "Кадастровый номер",
+            "Сверено"
+            if geo_check.cadastre_status == "verified"
+            else "Проверить",
+            "Номер и координаты подтверждены ЕГКН"
+            if geo_check.cadastre_status == "verified"
+            else "Сверить номер, границу и площадь в ЕГКН",
+            status=(
+                "done"
+                if geo_check.cadastre_status == "verified"
+                else "manual"
+            ),
+            anchor="#auction-v2-map-panel",
+        ),
+        row(
+            "boundary",
+            "Граница и площадь",
+            "Подтверждена"
+            if geo_check.boundary_status == "verified"
+            else "Расхождение"
+            if geo_check.boundary_status == "warning"
+            else "Проверить",
+            (
+                f"ЕГКН: {geo_check.boundary_area_ha:.4f} га; отличие от лота "
+                f"{abs(geo_check.boundary_difference_percent or 0):.1f}%"
+                if geo_check.boundary_status == "warning"
+                else "Геометрия и площадь подтверждены источником"
+                if geo_check.boundary_status == "verified"
+                else "Сверить схему, площадь и поворотные точки в ЕГКН"
+            ),
+            status=(
+                "done"
+                if geo_check.boundary_status == "verified"
+                else "missing"
+                if geo_check.boundary_status == "not_found"
+                else "manual"
+            ),
+            anchor="#auction-v2-map-panel",
+        ),
+        row(
+            "restrictions",
+            "Ограничения",
+            "Проверено" if geo_check.urban_plan_status == "checked" else "Ручная проверка",
+            "Генплан, ПДП и функциональные зоны"
+            if geo_check.urban_plan_status == "checked"
+            else "Проверить генплан, ПДП, красные линии и зоны",
+            status="done" if geo_check.urban_plan_status == "checked" else "manual",
+            anchor="#auction-v2-review-board",
+        ),
+        row(
+            "infrastructure",
+            "Подъезд и сети",
+            "Проверено" if geo_check.osm_status == "checked" else "Ручная проверка",
+            "Открытые данные по окружению собраны"
+            if geo_check.osm_status == "checked"
+            else "Проверить реальный подъезд и технические условия",
+            status="done" if geo_check.osm_status == "checked" else "manual",
+            anchor="#auction-v2-map-panel",
+        ),
+        row(
+            "price",
+            "Цена и лимит",
+            _money(analysis.max_bid_market_kzt)
+            if analysis.max_bid_market_kzt is not None
+            else "Нет ориентира",
+            "Есть районный или рыночный ориентир"
+            if analysis.max_bid_market_kzt is not None
+            else "Нужны сопоставимые цены или история торгов",
+            status="done" if analysis.max_bid_market_kzt is not None else "manual",
+            anchor="#auction-v2-district-context",
+        ),
+    ]
+    counts = {
+        "done": sum(item["status"] == "done" for item in rows),
+        "manual": sum(item["status"] == "manual" for item in rows),
+        "missing": sum(item["status"] == "missing" for item in rows),
+        "total": len(rows),
+    }
+    return {
+        "rows": rows,
+        "counts": counts,
+        "label": f"{counts['done']} из {counts['total']} ключевых блоков подтверждено",
+    }
 
 
 def _get_or_build_geo_checks(
@@ -4925,6 +5690,19 @@ def _apply_egkn_lookup_result(
         previous_latitude = geo_check.latitude
         previous_longitude = geo_check.longitude
         geo_check.cadastre_status = "verified"
+        geo_check.boundary_source = result.source_layer
+        if result.area_m2 is not None and result.area_m2 > 0:
+            geo_check.boundary_area_ha = result.area_m2 / 10_000
+        if result.geometry is not None:
+            geo_check.boundary_status = "verified"
+        else:
+            geo_check.boundary_status = "manual_required"
+        if lot.area_ha and geo_check.boundary_area_ha:
+            geo_check.boundary_difference_percent = (
+                (geo_check.boundary_area_ha - lot.area_ha) / lot.area_ha
+            ) * 100
+            if abs(geo_check.boundary_difference_percent) > 10:
+                geo_check.boundary_status = "warning"
         if result.latitude is not None and result.longitude is not None:
             geo_check.coordinate_status = "found"
             geo_check.latitude = result.latitude
@@ -4959,6 +5737,8 @@ def _apply_egkn_lookup_result(
         return
 
     geo_check.cadastre_status = "not_found"
+    geo_check.boundary_status = "not_found"
+    geo_check.boundary_source = result.source_layer
     geo_check.notes = _geo_check_notes(geo_check, extra=result.message)
     _upsert_evidence(
         session,
@@ -5357,6 +6137,7 @@ def _market_comparable_stats(
         comparable_count=len(active_comparables),
         priced_count=len(prices),
         average_price_per_sotka=sum(prices) / len(prices),
+        median_price_per_sotka=median(prices),
         min_price_per_sotka=min(prices),
         max_price_per_sotka=max(prices),
         source_names=source_names,
@@ -5370,6 +6151,10 @@ def _market_status_detail(market_stats: AuctionV2MarketStats) -> str:
     if market_stats.average_price_per_sotka is not None:
         parts.append(
             f"Средняя цена аналогов: {_money(market_stats.average_price_per_sotka)} за сотку."
+        )
+    if market_stats.median_price_per_sotka is not None:
+        parts.append(
+            f"Медиана: {_money(market_stats.median_price_per_sotka)} за сотку."
         )
     if market_stats.source_names:
         parts.append("Источники: " + ", ".join(market_stats.source_names[:4]) + ".")
@@ -5673,6 +6458,28 @@ def _risk_flags(
                 "level": "medium",
                 "label": "ЕГКН временно недоступен",
                 "detail": "Не удалось автоматически подтвердить кадастровую геометрию; нужно повторить синхронизацию или проверить публичную кадастровую карту вручную.",
+            }
+        )
+    if geo_check.boundary_status == "warning":
+        difference = geo_check.boundary_difference_percent
+        flags.append(
+            {
+                "code": "boundary_area_mismatch",
+                "level": "high",
+                "label": "Площадь границы отличается",
+                "detail": (
+                    f"ЕГКН и карточка лота расходятся примерно на {abs(difference or 0):.1f}%. "
+                    "До решения нужно сверить схему, координаты и документ-основание."
+                ),
+            }
+        )
+    elif geo_check.boundary_status == "manual_required":
+        flags.append(
+            {
+                "code": "boundary_not_confirmed",
+                "level": "high",
+                "label": "Граница участка не подтверждена",
+                "detail": "Номер найден или указан, но геометрия участка еще не подтверждена в доступном источнике.",
             }
         )
     if geo_check.coordinate_status == "unconfirmed":
@@ -6725,6 +7532,7 @@ def _lot_decision_summary(
     geo_check: AuctionLotGeoCheck,
     pipeline: AuctionUserLotPipeline | None,
     review_steps: list[dict[str, object]],
+    risk_flags: list[dict[str, object]],
     next_actions: list[dict[str, object]],
 ) -> dict[str, object]:
     status_counts = {
@@ -6751,8 +7559,28 @@ def _lot_decision_summary(
         "skipped",
     }
     personal_limit_saved = pipeline is not None and pipeline.max_bid_kzt is not None
+    hard_blocker_codes = {
+        "no_cadastre",
+        "cadastre_not_confirmed_egkn",
+        "no_coordinates",
+        "coordinates_unconfirmed",
+        "boundary_area_mismatch",
+        "boundary_not_confirmed",
+        "no_documents",
+        "auction_started_or_finished",
+    }
+    blockers = [
+        item for item in risk_flags if str(item.get("code") or "") in hard_blocker_codes
+    ]
 
-    if missing_count:
+    if blockers:
+        status = "blocked"
+        title = "Решение заблокировано до проверки"
+        detail = (
+            f"Есть критические пробелы: {len(blockers)}. "
+            "Система не считает участок подходящим, пока не подтверждены границы, документы и ключевые условия."
+        )
+    elif missing_count:
         status = "blocked"
         title = "Пока нельзя идти к участию"
         detail = (
@@ -6787,6 +7615,8 @@ def _lot_decision_summary(
     primary_url_label = "Перейти на E-Qazyna" if primary_url else ""
     return {
         "status": status,
+        "fit_status": "blocked" if blockers else "not_confirmed" if status != "ready" else "ready",
+        "blockers": blockers[:6],
         "title": title,
         "detail": detail,
         "primary_url": primary_url,
@@ -6995,9 +7825,13 @@ def _bid_limits(
     if not lot.start_price_kzt:
         return {"conservative": None, "market": None, "aggressive": None}
     market_anchor = None
-    if market_stats.average_price_per_sotka and lot.area_ha:
-        market_anchor = market_stats.average_price_per_sotka * lot.area_ha * 100
-    elif metrics.district_average_price_per_sotka and lot.area_ha:
+    if market_stats.median_price_per_sotka and lot.area_ha:
+        market_anchor = market_stats.median_price_per_sotka * lot.area_ha * 100
+    elif (
+        metrics.district_average_price_per_sotka
+        and metrics.district_lot_count >= 3
+        and lot.area_ha
+    ):
         market_anchor = metrics.district_average_price_per_sotka * lot.area_ha * 100
 
     base = float(lot.start_price_kzt)
@@ -7012,15 +7846,15 @@ def _bid_limits(
         aggressive_multiplier = 1.10
 
     conservative = base * conservative_multiplier
-    market = market_anchor if market_anchor is not None else base * 1.08
-    aggressive = max(base, market) * aggressive_multiplier
+    market = market_anchor
+    aggressive = max(base, market_anchor) * aggressive_multiplier if market_anchor is not None else None
     if market_anchor is not None:
         conservative = min(conservative, max(base, market_anchor * 0.9))
-        aggressive = min(aggressive, max(base, market_anchor * 1.08))
+        aggressive = min(aggressive, max(base, market_anchor * 1.08)) if aggressive is not None else None
     return {
         "conservative": round(conservative),
-        "market": round(market),
-        "aggressive": round(aggressive),
+        "market": round(market) if market is not None else None,
+        "aggressive": round(aggressive) if aggressive is not None else None,
     }
 
 
@@ -7118,6 +7952,46 @@ def _area_text(value: float | None) -> str:
 def _datetime_text(value: datetime | None) -> str:
     aware = _aware(value)
     return aware.strftime("%d.%m.%Y %H:%M") if aware else "—"
+
+
+def format_auction_v2_telegram_card(payload: AuctionV2LotPayload) -> str:
+    """Format a short decision-first lot card for Telegram."""
+    lot = payload.lot
+    quality = payload.data_quality
+    counts = quality.get("counts") if isinstance(quality, dict) else {}
+    rows = quality.get("rows") if isinstance(quality, dict) else []
+    rows = rows if isinstance(rows, list) else []
+    open_checks = [
+        str(item.get("title") or "Проверка")
+        for item in rows
+        if isinstance(item, dict) and item.get("status") in {"manual", "missing"}
+    ]
+    open_checks_text = ", ".join(open_checks[:3]) or "критичных пробелов не найдено"
+    location = " · ".join(
+        str(value) for value in (lot.region, lot.district, lot.locality) if value
+    ) or "местоположение не указано"
+    decision = payload.decision_summary
+    summary = str(decision.get("title") or payload.action_label)
+    detail = str(decision.get("detail") or "")
+    if len(detail) > 300:
+        detail = detail[:297].rstrip() + "..."
+    done_count = counts.get("done", 0) if isinstance(counts, dict) else 0
+    total_count = counts.get("total", 0) if isinstance(counts, dict) else 0
+    parts = [
+        f"<b>Лот №{escape(str(lot.auction_number or lot.source_lot_id))}</b>",
+        escape(location),
+        "",
+        f"<b>Решение:</b> {escape(summary)}",
+        f"<b>Риск:</b> {escape(payload.risk_label)} · <b>данные:</b> {escape(payload.confidence_label)}",
+        f"<b>Срок:</b> {escape(payload.deadline_label)}",
+        f"<b>Старт:</b> {_money(lot.start_price_kzt)} · <b>площадь:</b> {_area_text(lot.area_ha)}",
+        f"<b>Кадастр:</b> {escape(lot.cadastre_number or 'не указан')}",
+        f"<b>Данные:</b> {done_count} из {total_count} ключевых блоков подтверждено",
+        f"<b>Сейчас проверить:</b> {escape(open_checks_text)}",
+        "",
+        escape(detail),
+    ]
+    return "\n".join(parts).strip()
 
 
 def _coordinate_text(latitude: float | None, longitude: float | None) -> str:

@@ -33,7 +33,22 @@ from app.account_payments import (
     renew_account_payment,
     start_account_payment,
 )
+from app.auction_commercial import (
+    INVESTOR_PLAN,
+    PLAN_LABELS,
+    TEAM_PLAN,
+    TEAM_ROLE_LABELS,
+    TEAM_ROLES,
+    add_workspace_member,
+    auction_data_scope,
+    auction_entitlement,
+    deactivate_workspace_member,
+    effective_auction_plan,
+    ensure_team_workspace,
+    list_workspace_members,
+)
 from app.auction_documents import unique_auction_documents
+from app.auction_exports import auction_lot_publication_history
 from app.auction_service import (
     AuctionFilters,
     auction_lot_changes,
@@ -52,11 +67,16 @@ from app.auction_v2 import (
     EQAZYNA_STATUS_FILTER_LABELS,
     EVIDENCE_STATUS_LABELS,
     EVIDENCE_TYPE_LABELS,
+    FIELD_INSPECTION_OPTIONS,
     GEO_STATUS_LABELS,
+    INVESTMENT_STRATEGIES,
     LOT_SCOPE_LABELS,
     RISK_LABELS,
     AuctionV2Filters,
+    add_auction_v2_activity,
     auction_v2_analytics_payload,
+    auction_v2_calendar_payload,
+    auction_v2_portfolio_payload,
     auction_v2_search_diagnostics,
     auction_v2_source_admin_payload,
     auction_v2_watchlist_matches,
@@ -188,6 +208,16 @@ def _to_almaty(value: datetime | None) -> datetime | None:
 def _format_almaty(value: datetime | None, fmt: str = "%d.%m.%Y %H:%M") -> str:
     local_value = _to_almaty(value)
     return local_value.strftime(fmt) if local_value else ""
+
+
+def _parse_almaty_datetime_local(value: str) -> datetime | None:
+    clean_value = value.strip()
+    if not clean_value:
+        return None
+    parsed = datetime.fromisoformat(clean_value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ALMATY_TZ)
+    return parsed.astimezone(UTC)
 
 
 def _notify_admin_web_registration(account: Account, request: Request) -> None:
@@ -467,16 +497,53 @@ def _cabinet_context(
         and account.onboarding_tour_available_at is not None
         and account.onboarding_tour_dismissed_at is None
     )
+    admin_account = is_web_admin_account(account)
+    entitlement = auction_entitlement(
+        session,
+        account,
+        is_admin=admin_account,
+    )
+    scope = auction_data_scope(session, account, is_admin=admin_account)
     context = {
         "app_name": settings.app_name,
         "account": account,
-        "is_web_admin": is_web_admin_account(account),
+        "is_web_admin": admin_account,
+        "auction_access": entitlement.as_context(),
+        "auction_workspace": scope.workspace,
+        "auction_workspace_role": (
+            TEAM_ROLE_LABELS.get(scope.role, scope.role) if scope.workspace else None
+        ),
         "show_onboarding_tour": show_onboarding_tour,
         "urban_plan_badge": urban_plan_badge_payload,
     }
     context.update(_access_context(session, account))
     context.update(extra)
     return context
+
+
+def _require_auction_feature(
+    session: Session,
+    account: Account,
+    feature: str,
+) -> None:
+    entitlement = auction_entitlement(
+        session,
+        account,
+        is_admin=is_web_admin_account(account),
+    )
+    if not bool(getattr(entitlement, feature, False)):
+        raise HTTPException(
+            status_code=303,
+            headers={"Location": "/cabinet/auctions-v2/plans?required=1"},
+        )
+
+
+def _auction_scope_account_id(session: Session, account: Account) -> str:
+    return auction_data_scope(
+        session,
+        account,
+        is_admin=is_web_admin_account(account),
+    ).account_id
 
 
 def _qr_data_uri(value: str | None) -> str | None:
@@ -513,6 +580,7 @@ def _payment_context(payment: AccountPayment | None) -> dict[str, object]:
         "payment_amount": (
             payment.payment_amount_kzt if payment and payment.payment_amount_kzt else settings.platform_access_price_kzt
         ),
+        "payment_target_plan": payment.target_plan if payment else INVESTOR_PLAN,
     }
 
 
@@ -1849,13 +1917,25 @@ def cabinet_payment(
     session: Session = Depends(get_db),
 ):
     account_has_permanent_access(session, account)
+    requested_plan = request.query_params.get("plan") or ""
+    target_plan = requested_plan if requested_plan in {INVESTOR_PLAN, TEAM_PLAN} else None
     payment = latest_account_payment(session, account)
-    if not account_has_paid_access(account):
+    needs_payment = not account_has_paid_access(account) or bool(
+        target_plan == TEAM_PLAN and account.auction_plan != TEAM_PLAN
+    )
+    if needs_payment:
         try:
-            if payment is None or payment.payment_status != PaymentStatus.awaiting_transfer.value or (
-                payment.payment_provider_status or ""
-            ) in TERMINAL_PROVIDER_STATUSES:
-                payment = refresh_account_payment(session, account)
+            if (
+                payment is None
+                or (target_plan and payment.target_plan != target_plan)
+                or payment.payment_status != PaymentStatus.awaiting_transfer.value
+                or (payment.payment_provider_status or "") in TERMINAL_PROVIDER_STATUSES
+            ):
+                payment = refresh_account_payment(
+                    session,
+                    account,
+                    target_plan=target_plan,
+                )
         except Exception:
             session.rollback()
             logger.exception("Could not prepare web account payment for account %s", account.id)
@@ -1867,6 +1947,16 @@ def cabinet_payment(
             session,
             account,
             price_kzt=settings.platform_access_price_kzt,
+            team_price_kzt=settings.auction_team_price_kzt,
+            selected_plan=(
+                target_plan
+                or (
+                    account.auction_plan
+                    if account_has_paid_access(account)
+                    and account.auction_plan in {INVESTOR_PLAN, TEAM_PLAN}
+                    else (payment.target_plan if payment else INVESTOR_PLAN)
+                )
+            ),
             apipay_enabled=settings.apipay_enabled,
             started=request.query_params.get("started") == "1",
             refreshed=request.query_params.get("refreshed") == "1",
@@ -1878,14 +1968,19 @@ def cabinet_payment(
 
 @router.post("/cabinet/payment/start")
 def start_cabinet_payment(
+    plan: str = Form(INVESTOR_PLAN),
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    if account_has_permanent_access(session, account):
+    target_plan = plan if plan in {INVESTOR_PLAN, TEAM_PLAN} else INVESTOR_PLAN
+    if account_has_permanent_access(session, account) and (
+        account.auction_plan == target_plan
+        or (target_plan == INVESTOR_PLAN and account.auction_plan != TEAM_PLAN)
+    ):
         session.commit()
         return RedirectResponse("/cabinet/payment?paid=1", status_code=303)
     try:
-        start_account_payment(session, account)
+        start_account_payment(session, account, target_plan=target_plan)
     except ValueError:
         return RedirectResponse("/cabinet/payment?error=unavailable", status_code=303)
     return RedirectResponse("/cabinet/payment?started=1", status_code=303)
@@ -1893,11 +1988,13 @@ def start_cabinet_payment(
 
 @router.post("/cabinet/payment/refresh")
 def refresh_cabinet_payment(
+    plan: str = Form(""),
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
+    target_plan = plan if plan in {INVESTOR_PLAN, TEAM_PLAN} else None
     try:
-        renew_account_payment(session, account)
+        renew_account_payment(session, account, target_plan=target_plan)
     except Exception:
         session.rollback()
         logger.exception("Could not renew web account payment for account %s", account.id)
@@ -1912,7 +2009,11 @@ def cabinet_payment_status(
 ) -> dict[str, object]:
     try:
         payment = latest_account_payment(session, account)
-        if not account_has_paid_access(account):
+        if not account_has_paid_access(account) or bool(
+            payment
+            and payment.target_plan == TEAM_PLAN
+            and account.auction_plan != TEAM_PLAN
+        ):
             payment = refresh_account_payment(session, account)
     except Exception:
         session.rollback()
@@ -1929,6 +2030,165 @@ def cabinet_payment_status(
         "payment_url": _payment_context(payment)["payment_url"],
         "payment_qr_image_url": _payment_context(payment)["payment_qr_image_url"],
     }
+
+
+@router.get("/cabinet/auctions-v2/plans", response_class=HTMLResponse)
+def cabinet_auction_plans(
+    request: Request,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    current_plan = effective_auction_plan(session, account)
+    return templates.TemplateResponse(
+        request=request,
+        name="site_auction_plans.html",
+        context=_cabinet_context(
+            session,
+            account,
+            current_auction_plan=current_plan,
+            plan_labels=PLAN_LABELS,
+            investor_price_kzt=settings.platform_access_price_kzt,
+            team_price_kzt=settings.auction_team_price_kzt,
+        ),
+    )
+
+
+@router.get("/cabinet/auctions-v2/team", response_class=HTMLResponse)
+def cabinet_auction_team(
+    request: Request,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    entitlement = auction_entitlement(session, account)
+    if entitlement.plan != TEAM_PLAN:
+        return RedirectResponse("/cabinet/auctions-v2/plans?team=required", status_code=303)
+    scope = auction_data_scope(session, account)
+    workspace = scope.workspace
+    if workspace is None and account.auction_plan == TEAM_PLAN:
+        workspace = ensure_team_workspace(session, account)
+        session.commit()
+        scope = auction_data_scope(session, account)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Рабочее пространство не найдено")
+    members = list_workspace_members(session, workspace.id)
+    member_rows = [
+        {
+            "member": member,
+            "account": member.account,
+            "role_label": TEAM_ROLE_LABELS.get(member.role, member.role),
+        }
+        for member in members
+    ]
+    return templates.TemplateResponse(
+        request=request,
+        name="site_auction_team.html",
+        context=_cabinet_context(
+            session,
+            account,
+            workspace=workspace,
+            members=member_rows,
+            team_roles=TEAM_ROLES,
+            can_manage_team=entitlement.can_manage_team,
+            current_member=scope.member,
+        ),
+    )
+
+
+@router.post("/cabinet/auctions-v2/team/settings")
+def update_cabinet_auction_team(
+    name: str = Form(""),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    entitlement = auction_entitlement(session, account)
+    scope = auction_data_scope(session, account)
+    if not entitlement.can_manage_team or scope.workspace is None:
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    clean_name = name.strip()[:160]
+    if not clean_name:
+        return RedirectResponse("/cabinet/auctions-v2/team?error=name", status_code=303)
+    scope.workspace.name = clean_name
+    session.commit()
+    return RedirectResponse("/cabinet/auctions-v2/team?saved=settings", status_code=303)
+
+
+@router.post("/cabinet/auctions-v2/team/members")
+def invite_cabinet_auction_team_member(
+    phone: str = Form(""),
+    role: str = Form("analyst"),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    entitlement = auction_entitlement(session, account)
+    scope = auction_data_scope(session, account)
+    if not entitlement.can_manage_team or scope.workspace is None:
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    try:
+        normalized_phone = normalize_phone(phone)
+    except ValueError:
+        return RedirectResponse("/cabinet/auctions-v2/team?error=phone", status_code=303)
+    invited_account = session.scalar(
+        select(Account).where(Account.phone == normalized_phone)
+    )
+    if invited_account is None or invited_account.phone_verified_at is None:
+        return RedirectResponse("/cabinet/auctions-v2/team?error=not_found", status_code=303)
+    try:
+        add_workspace_member(
+            session,
+            workspace=scope.workspace,
+            invited_by=account,
+            account=invited_account,
+            role=role,
+        )
+    except ValueError as exc:
+        session.rollback()
+        code = "limit" if "5" in str(exc) else "membership"
+        return RedirectResponse(f"/cabinet/auctions-v2/team?error={code}", status_code=303)
+    session.commit()
+    return RedirectResponse("/cabinet/auctions-v2/team?saved=member", status_code=303)
+
+
+@router.post("/cabinet/auctions-v2/team/members/{member_id}/remove")
+def remove_cabinet_auction_team_member(
+    member_id: int,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    entitlement = auction_entitlement(session, account)
+    scope = auction_data_scope(session, account)
+    if not entitlement.can_manage_team or scope.workspace is None:
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    member = deactivate_workspace_member(
+        session,
+        workspace_id=scope.workspace.id,
+        member_id=member_id,
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="Участник не найден")
+    session.commit()
+    return RedirectResponse("/cabinet/auctions-v2/team?saved=removed", status_code=303)
+
+
+@router.get("/cabinet/auction-plans")
+def legacy_cabinet_auction_plans(request: Request):
+    query = request.url.query
+    target = "/cabinet/auctions-v2/plans"
+    return RedirectResponse(f"{target}?{query}" if query else target, status_code=303)
+
+
+@router.get("/cabinet/auction-team")
+def legacy_cabinet_auction_team(request: Request):
+    query = request.url.query
+    target = "/cabinet/auctions-v2/team"
+    return RedirectResponse(f"{target}?{query}" if query else target, status_code=303)
+
+
+@router.post("/cabinet/auction-team/{legacy_path:path}")
+def legacy_cabinet_auction_team_post(legacy_path: str):
+    return RedirectResponse(
+        f"/cabinet/auctions-v2/team/{legacy_path}",
+        status_code=307,
+    )
 
 
 @router.get("/cabinet/settings", response_class=HTMLResponse)
@@ -2426,7 +2686,7 @@ def web_auction_compare(
     )
 
 
-@router.get("/cabinet/auctions/subscriptions", response_class=HTMLResponse)
+@router.get("/cabinet/auctions-legacy/subscriptions", response_class=HTMLResponse)
 def web_auction_subscriptions(
     request: Request,
     account: Account = Depends(require_web_account),
@@ -2449,7 +2709,7 @@ def web_auction_subscriptions(
     )
 
 
-@router.post("/cabinet/auctions/subscriptions")
+@router.post("/cabinet/auctions-legacy/subscriptions")
 def web_create_auction_subscription(
     region: str = Form(""),
     district: str = Form(""),
@@ -2512,7 +2772,7 @@ def web_create_auction_subscription(
     return _redirect_with_query("/cabinet/auctions/subscriptions", subscription="saved")
 
 
-@router.post("/cabinet/auctions/subscriptions/{subscription_id}/disable")
+@router.post("/cabinet/auctions-legacy/subscriptions/{subscription_id}/disable")
 def web_disable_auction_subscription(
     subscription_id: int,
     account: Account = Depends(require_web_account),
@@ -2535,7 +2795,7 @@ def web_disable_auction_subscription(
     return _redirect_with_query("/cabinet/auctions/subscriptions", subscription="disabled")
 
 
-@router.post("/cabinet/auctions/subscriptions/{subscription_id}/enable")
+@router.post("/cabinet/auctions-legacy/subscriptions/{subscription_id}/enable")
 def web_enable_auction_subscription(
     subscription_id: int,
     account: Account = Depends(require_web_account),
@@ -2560,7 +2820,7 @@ def web_enable_auction_subscription(
     return _redirect_with_query("/cabinet/auctions/subscriptions", subscription="enabled")
 
 
-@router.post("/cabinet/auctions/subscriptions/{subscription_id}/delete")
+@router.post("/cabinet/auctions-legacy/subscriptions/{subscription_id}/delete")
 def web_delete_auction_subscription(
     subscription_id: int,
     account: Account = Depends(require_web_account),
@@ -2585,6 +2845,26 @@ def web_delete_auction_subscription(
         subscription.updated_at = _now()
         session.commit()
     return _redirect_with_query("/cabinet/auctions/subscriptions", subscription="deleted")
+
+
+@router.get("/cabinet/auctions/subscriptions")
+def legacy_web_auction_subscriptions(request: Request):
+    query = request.url.query
+    target = "/cabinet/auctions-v2/subscriptions"
+    return RedirectResponse(f"{target}?{query}" if query else target, status_code=303)
+
+
+@router.post("/cabinet/auctions/subscriptions")
+def legacy_web_create_auction_subscription():
+    return RedirectResponse("/cabinet/auctions-v2/watchlists", status_code=307)
+
+
+@router.post("/cabinet/auctions/subscriptions/{legacy_path:path}")
+def legacy_web_manage_auction_subscription(legacy_path: str):
+    return RedirectResponse(
+        f"/cabinet/auctions-legacy/subscriptions/{legacy_path}",
+        status_code=307,
+    )
 
 
 @router.get("/cabinet/auctions", response_class=HTMLResponse)
@@ -2703,7 +2983,7 @@ def web_auctions_v2(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    scope_account_id = _auction_scope_account_id(session, account)
     page = max(page, 1)
     page_size = 30
     filter_values = _auction_v2_filter_values(
@@ -2757,9 +3037,6 @@ def web_auctions_v2(
                 sort_labels=AUCTION_V2_SORT_LABELS,
                 stage_options=pipeline_stage_options(),
                 refresh_stats={"checked": 0},
-                watchlists=[],
-                watchlist_notifications=[],
-                watchlist_matches=[],
                 all_lots_filter_query=_auction_v2_query_with(
                     filter_values,
                     lot_scope="all",
@@ -2783,11 +3060,10 @@ def web_auctions_v2(
         )
 
     refresh_stats = {"checked": 0}
-    ensure_default_auction_v2_watchlist(session, account.id)
     lots, total = list_auction_v2_lots(
         session,
         filters,
-        account_id=account.id,
+        account_id=scope_account_id,
         offset=(page - 1) * page_size,
         limit=page_size,
         prepare_missing=False,
@@ -2798,12 +3074,6 @@ def web_auctions_v2(
         current_total=total,
     )
     dashboard = cached_auction_v2_dashboard(session)
-    watchlists = list_auction_v2_watchlists(session, account.id)
-    watchlist_notifications = list_auction_v2_web_notifications(
-        session,
-        account_id=account.id,
-    )
-    watchlist_matches = auction_v2_watchlist_matches(session, account_id=account.id)
     session.commit()
     return templates.TemplateResponse(
         request=request,
@@ -2830,9 +3100,6 @@ def web_auctions_v2(
             sort_labels=AUCTION_V2_SORT_LABELS,
             stage_options=pipeline_stage_options(),
             refresh_stats=refresh_stats,
-            watchlists=watchlists,
-            watchlist_notifications=watchlist_notifications,
-            watchlist_matches=watchlist_matches,
             all_lots_filter_query=_auction_v2_query_with(
                 filter_values,
                 lot_scope="all",
@@ -2879,7 +3146,8 @@ def web_auctions_v2_map(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_use_map")
+    scope_account_id = _auction_scope_account_id(session, account)
     filter_values = _auction_v2_filter_values(
         q=q,
         lot_scope=lot_scope,
@@ -2948,11 +3216,11 @@ def web_auctions_v2_map(
         )
 
     refresh_stats = {"checked": 0}
-    ensure_default_auction_v2_watchlist(session, account.id)
+    ensure_default_auction_v2_watchlist(session, scope_account_id)
     map_data = list_auction_v2_map_markers(
         session,
         filters,
-        account_id=account.id,
+        account_id=scope_account_id,
         limit=settings.auction_v2_map_limit,
     )
     dashboard = cached_auction_v2_dashboard(session)
@@ -2990,14 +3258,17 @@ def web_auctions_v2_analytics(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_use_analytics")
     filter_values = _auction_v2_filter_values(
         region=region,
         district=district,
         locality=locality,
     )
     refresh_stats = {"checked": 0}
-    ensure_default_auction_v2_watchlist(session, account.id)
+    ensure_default_auction_v2_watchlist(
+        session,
+        _auction_scope_account_id(session, account),
+    )
     analytics = auction_v2_analytics_payload(
         session,
         region=filter_values["region"],
@@ -3018,6 +3289,99 @@ def web_auctions_v2_analytics(
             filter_query=_auction_v2_filter_query(filter_values),
             refresh_stats=refresh_stats,
         ),
+    )
+
+
+@router.get("/cabinet/auctions-v2/portfolio", response_class=HTMLResponse)
+def web_auctions_v2_portfolio(
+    request: Request,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_use_portfolio")
+    portfolio = auction_v2_portfolio_payload(
+        session,
+        account_id=_auction_scope_account_id(session, account),
+    )
+    session.commit()
+    return templates.TemplateResponse(
+        request=request,
+        name="site_auction_v2_portfolio.html",
+        context=_cabinet_context(
+            session,
+            account,
+            portfolio=portfolio,
+        ),
+    )
+
+
+@router.get("/cabinet/auctions-v2/subscriptions", response_class=HTMLResponse)
+def web_auctions_v2_subscriptions(
+    request: Request,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    entitlement = auction_entitlement(
+        session,
+        account,
+        is_admin=is_web_admin_account(account),
+    )
+    scope_account_id = _auction_scope_account_id(session, account)
+    if entitlement.can_monitor:
+        ensure_default_auction_v2_watchlist(session, scope_account_id)
+        watchlists = list_auction_v2_watchlists(session, scope_account_id)
+        notifications = list_auction_v2_web_notifications(
+            session,
+            account_id=scope_account_id,
+            limit=20,
+        )
+        matches = auction_v2_watchlist_matches(
+            session,
+            account_id=scope_account_id,
+            limit=16,
+        )
+    else:
+        watchlists = []
+        notifications = []
+        matches = []
+    session.commit()
+    return templates.TemplateResponse(
+        request=request,
+        name="site_auction_v2_subscriptions.html",
+        context=_cabinet_context(
+            session,
+            account,
+            filters=_auction_v2_filter_values(),
+            watchlists=watchlists,
+            watchlist_notifications=notifications,
+            watchlist_matches=matches,
+            risk_labels=RISK_LABELS,
+            confidence_labels=CONFIDENCE_LABELS,
+            deadline_labels=DEADLINE_STATUS_LABELS,
+            geo_status_labels=GEO_STATUS_LABELS,
+            lot_scope_labels=LOT_SCOPE_LABELS,
+            stage_options=pipeline_stage_options(),
+        ),
+    )
+
+
+@router.get("/cabinet/auctions-v2/calendar", response_class=HTMLResponse)
+def web_auctions_v2_calendar(
+    request: Request,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_use_portfolio")
+    calendar = auction_v2_calendar_payload(
+        session,
+        account_id=_auction_scope_account_id(session, account),
+    )
+    for event in calendar["events"]:
+        event["local_at"] = _to_almaty(event["at"])
+    return templates.TemplateResponse(
+        request=request,
+        name="site_auction_v2_calendar.html",
+        context=_cabinet_context(session, account, calendar=calendar),
     )
 
 
@@ -3043,7 +3407,8 @@ def web_auction_v2_create_watchlist(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_monitor")
+    scope_account_id = _auction_scope_account_id(session, account)
     try:
         filters = AuctionV2Filters(
             base=_filters_from_values(
@@ -3066,15 +3431,21 @@ def web_auction_v2_create_watchlist(
             geo_status=geo_status or None,
         )
     except ValueError:
-        return _redirect_with_query("/cabinet/auctions-v2", watchlist="invalid")
+        return _redirect_with_query(
+            "/cabinet/auctions-v2/subscriptions",
+            watchlist="invalid",
+        )
     create_auction_v2_watchlist(
         session,
-        account_id=account.id,
+        account_id=scope_account_id,
         name=name,
         filters=filters,
     )
     session.commit()
-    return _redirect_with_query("/cabinet/auctions-v2", watchlist="saved")
+    return _redirect_with_query(
+        "/cabinet/auctions-v2/subscriptions",
+        watchlist="saved",
+    )
 
 
 @router.post("/cabinet/auctions-v2/watchlists/{watchlist_id}/active")
@@ -3084,10 +3455,10 @@ def web_auction_v2_set_watchlist_active(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_monitor")
     watchlist = set_auction_v2_watchlist_active(
         session,
-        account_id=account.id,
+        account_id=_auction_scope_account_id(session, account),
         watchlist_id=watchlist_id,
         active=active,
     )
@@ -3095,7 +3466,7 @@ def web_auction_v2_set_watchlist_active(
         raise HTTPException(status_code=404, detail="Watchlist not found")
     session.commit()
     return _redirect_with_query(
-        "/cabinet/auctions-v2",
+        "/cabinet/auctions-v2/subscriptions",
         watchlist="enabled" if active else "disabled",
     )
 
@@ -3157,11 +3528,14 @@ def web_auction_v2_notifications_seen(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
-    count = mark_auction_v2_web_notifications_seen(session, account_id=account.id)
+    _require_auction_feature(session, account, "can_monitor")
+    count = mark_auction_v2_web_notifications_seen(
+        session,
+        account_id=_auction_scope_account_id(session, account),
+    )
     session.commit()
     return _redirect_with_query(
-        "/cabinet/auctions-v2",
+        "/cabinet/auctions-v2/subscriptions",
         notifications="seen",
         count=str(count),
     )
@@ -3192,17 +3566,18 @@ def web_auction_v2_dossier(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_open_detail")
+    scope_account_id = _auction_scope_account_id(session, account)
     text = build_auction_v2_dossier_text(
         session,
         lot_id,
-        account_id=account.id,
+        account_id=scope_account_id,
     )
     if text is None:
         raise HTTPException(status_code=404, detail="Лот не найден")
     mark_auction_v2_web_notifications_seen(
         session,
-        account_id=account.id,
+        account_id=scope_account_id,
         lot_id=lot_id,
     )
     session.commit()
@@ -3223,8 +3598,14 @@ def web_auction_v2_detail(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
-    payload = get_auction_v2_payload(session, lot_id, account_id=account.id, force=True)
+    _require_auction_feature(session, account, "can_open_detail")
+    scope_account_id = _auction_scope_account_id(session, account)
+    payload = get_auction_v2_payload(
+        session,
+        lot_id,
+        account_id=scope_account_id,
+        force=True,
+    )
     if payload is None:
         raise HTTPException(status_code=404, detail="Лот не найден")
     lot_context = auction_v2_analytics_payload(
@@ -3235,6 +3616,10 @@ def web_auction_v2_detail(
         limit=12,
     )
     history = auction_lot_history(session, lot_id)[:10]
+    parcel_history = auction_lot_publication_history(
+        session,
+        cadastre_number=payload.lot.cadastre_number,
+    ) if payload.lot.cadastre_number else None
     changes = auction_lot_changes(session, lot_id)[:12]
     market_comparables = list_auction_v2_market_comparables(session, lot_id)
     evidence = session.scalars(
@@ -3245,7 +3630,7 @@ def web_auction_v2_detail(
     ).all()
     mark_auction_v2_web_notifications_seen(
         session,
-        account_id=account.id,
+        account_id=scope_account_id,
         lot_id=lot_id,
     )
     session.commit()
@@ -3263,12 +3648,19 @@ def web_auction_v2_detail(
             metrics=payload.metrics,
             lot_context=lot_context,
             history=history,
+            parcel_history=parcel_history,
             changes=changes,
             market_comparables=market_comparables,
             evidence=evidence,
             evidence_type_labels=EVIDENCE_TYPE_LABELS,
             evidence_status_labels=EVIDENCE_STATUS_LABELS,
             stage_options=pipeline_stage_options(),
+            investment_strategies=INVESTMENT_STRATEGIES,
+            field_inspection_options=FIELD_INSPECTION_OPTIONS,
+            pipeline_reminder_at=_format_almaty(
+                payload.pipeline.reminder_at if payload.pipeline else None,
+                "%Y-%m-%dT%H:%M",
+            ),
         ),
     )
 
@@ -3278,30 +3670,125 @@ def web_auction_v2_pipeline(
     lot_id: str,
     stage: str = Form("watching"),
     max_bid_kzt: str = Form(""),
+    road_cost_kzt: str = Form(""),
+    utilities_cost_kzt: str = Form(""),
+    project_cost_kzt: str = Form(""),
+    registration_cost_kzt: str = Form(""),
+    taxes_cost_kzt: str = Form(""),
+    other_cost_kzt: str = Form(""),
+    strategy: str = Form("undecided"),
+    planned_purchase_price_kzt: str = Form(""),
+    expected_exit_value_kzt: str = Form(""),
+    expected_monthly_income_kzt: str = Form(""),
+    holding_months: str = Form(""),
+    financing_cost_kzt: str = Form(""),
+    contingency_percent: str = Form(""),
+    inspection_status: str = Form("not_planned"),
+    inspection_planned_at: str = Form(""),
+    inspection_inspected_at: str = Form(""),
+    inspection_road_note: str = Form(""),
+    inspection_utilities_note: str = Form(""),
+    inspection_terrain_note: str = Form(""),
+    inspection_surroundings_note: str = Form(""),
+    inspection_conclusion: str = Form(""),
+    inspection_access_ok: bool = Form(False),
+    inspection_power_visible: bool = Form(False),
+    inspection_water_visible: bool = Form(False),
+    inspection_flat_terrain: bool = Form(False),
+    inspection_no_flood_signs: bool = Form(False),
+    inspection_boundaries_visible: bool = Form(False),
+    reminder_at: str = Form(""),
     notes: str = Form(""),
     pinned: bool = Form(False),
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_edit")
+    scope_account_id = _auction_scope_account_id(session, account)
     lot = get_auction_lot(session, lot_id)
     if lot is None:
         raise HTTPException(status_code=404, detail="Лот не найден")
     try:
         parsed_max_bid = _optional_float(max_bid_kzt)
+        costs = {
+            "road": _optional_float(road_cost_kzt),
+            "utilities": _optional_float(utilities_cost_kzt),
+            "project": _optional_float(project_cost_kzt),
+            "registration": _optional_float(registration_cost_kzt),
+            "taxes": _optional_float(taxes_cost_kzt),
+            "other": _optional_float(other_cost_kzt),
+        }
+        investment = {
+            "strategy": strategy,
+            "planned_purchase_price_kzt": _optional_float(planned_purchase_price_kzt),
+            "expected_exit_value_kzt": _optional_float(expected_exit_value_kzt),
+            "expected_monthly_income_kzt": _optional_float(expected_monthly_income_kzt),
+            "holding_months": _optional_float(holding_months),
+            "financing_cost_kzt": _optional_float(financing_cost_kzt),
+            "contingency_percent": _optional_float(contingency_percent),
+        }
+        inspection = {
+            "status": inspection_status,
+            "planned_at": inspection_planned_at,
+            "inspected_at": inspection_inspected_at,
+            "road_note": inspection_road_note,
+            "utilities_note": inspection_utilities_note,
+            "terrain_note": inspection_terrain_note,
+            "surroundings_note": inspection_surroundings_note,
+            "conclusion": inspection_conclusion,
+            "access_ok": inspection_access_ok,
+            "power_visible": inspection_power_visible,
+            "water_visible": inspection_water_visible,
+            "flat_terrain": inspection_flat_terrain,
+            "no_flood_signs": inspection_no_flood_signs,
+            "boundaries_visible": inspection_boundaries_visible,
+        }
         update_auction_v2_pipeline(
             session,
-            account_id=account.id,
+            account_id=scope_account_id,
             lot_id=lot.id,
             stage=stage,
             max_bid_kzt=parsed_max_bid,
+            reminder_at=_parse_almaty_datetime_local(reminder_at),
             notes=notes,
             pinned=pinned,
+            costs=costs,
+            investment=investment,
+            inspection=inspection,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.commit()
     return _redirect_with_query(f"/cabinet/auctions-v2/{lot.id}", pipeline="saved")
+
+
+@router.post("/cabinet/auctions-v2/{lot_id}/activity")
+def web_auction_v2_activity(
+    lot_id: str,
+    kind: str = Form("note"),
+    body: str = Form(""),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_edit")
+    scope_account_id = _auction_scope_account_id(session, account)
+    lot = get_auction_lot(session, lot_id)
+    if lot is None:
+        raise HTTPException(status_code=404, detail="Лот не найден")
+    try:
+        add_auction_v2_activity(
+            session,
+            account_id=scope_account_id,
+            lot_id=lot.id,
+            kind=kind,
+            body=body,
+            actor_account_id=account.id,
+            actor_label=account.phone,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session.commit()
+    return _redirect_with_query(f"/cabinet/auctions-v2/{lot.id}", activity="saved")
 
 
 @router.post("/cabinet/auctions-v2/{lot_id}/market-comparables")
@@ -3316,7 +3803,7 @@ def web_auction_v2_create_market_comparable(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    _require_web_admin_account(account)
+    _require_auction_feature(session, account, "can_edit")
     lot = get_auction_lot(session, lot_id)
     if lot is None:
         raise HTTPException(status_code=404, detail="Лот не найден")

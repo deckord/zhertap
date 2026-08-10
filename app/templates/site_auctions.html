@@ -31,7 +31,7 @@
     <div class="auction-toolbar">
       {% if has_paid_unlock %}
         <a class="secondary-action compact" href="/cabinet/auctions/favorites">Избранное</a>
-        <a class="secondary-action compact" href="/cabinet/auctions/subscriptions">Подписки</a>
+        <a class="secondary-action compact" href="/cabinet/auctions-v2/subscriptions">Подписки</a>
         <a class="secondary-action compact" href="/cabinet/auctions/compare">Сравнить</a>
       {% else %}
         <button class="secondary-action compact locked-action" type="button" disabled>Избранное</button>
@@ -70,7 +70,7 @@
       <a class="secondary-action compact" href="/cabinet/auctions">Сбросить</a>
     </form>
     {% if has_paid_unlock %}
-      <form class="subscribe-current-form" method="post" action="/cabinet/auctions/subscriptions">
+      <form class="subscribe-current-form" method="post" action="/cabinet/auctions-v2/watchlists">
         <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <input type="hidden" name="region" value="{{ filters.region }}">
         <input type="hidden" name="district" value="{{ filters.district }}">

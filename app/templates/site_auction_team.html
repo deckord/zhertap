@@ -1,0 +1,58 @@
+{% extends "site_base.html" %}
+{% block title %}Команда аукционов — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell auction-commercial-shell">
+    <div class="section-kicker"><a class="back-link" href="/cabinet/auctions-v2">← К аукционам</a><a class="back-link" href="/cabinet/auctions-v2/portfolio">Общий портфель</a></div>
+    {% include "partials/auction_v2_tabs.html" %}
+    <header class="auction-commercial-hero auction-team-hero">
+      <div><span class="eyebrow">Тариф Команда · общее рабочее пространство</span><h1>{{ workspace.name }}</h1><p>Все участники работают с одним портфелем, этапами, экономикой и журналом решений. Изменения не дублируются по личным кабинетам.</p></div>
+      <span class="auction-plan-current">{{ members|selectattr('member.status', 'equalto', 'active')|list|length }} из 5 мест</span>
+    </header>
+
+    {% if request.query_params.get('saved') %}<div class="form-alert neutral">Изменения команды сохранены.</div>{% endif %}
+    {% if request.query_params.get('error') == 'not_found' %}<div class="form-alert">Аккаунт с таким подтверждённым номером не найден. Сначала участник должен зарегистрироваться в Жертап.</div>
+    {% elif request.query_params.get('error') == 'limit' %}<div class="form-alert">Все 5 мест уже заняты.</div>
+    {% elif request.query_params.get('error') %}<div class="form-alert">Не удалось выполнить действие. Проверьте данные участника.</div>{% endif %}
+
+    <div class="auction-team-layout">
+      <section class="panel-modern auction-team-members">
+        <div class="panel-head"><div><h2>Участники</h2><p>Доступ к единому портфелю и комнате сделки.</p></div><span>{{ members|length }} записей</span></div>
+        <div class="auction-team-list">
+          {% for row in members %}
+            <article class="{{ 'is-inactive' if row.member.status != 'active' else '' }}">
+              <span class="profile-avatar">{{ row.account.phone[-2:] }}</span>
+              <div><strong>{{ row.account.phone }}</strong><small>{{ row.role_label }} · {{ 'активен' if row.member.status == 'active' else 'отключён' }}</small></div>
+              {% if can_manage_team and row.member.role != 'owner' and row.member.status == 'active' %}
+                <form method="post" action="/cabinet/auctions-v2/team/members/{{ row.member.id }}/remove"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="secondary-action compact" type="submit">Отключить</button></form>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <aside class="auction-team-controls">
+        {% if can_manage_team %}
+          <form class="panel-modern auction-team-form" method="post" action="/cabinet/auctions-v2/team/members">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <div><span class="eyebrow">Новое место</span><h2>Добавить участника</h2></div>
+            <label>Телефон аккаунта<input name="phone" inputmode="tel" required placeholder="+7 7XX XXX XX XX"></label>
+            <label>Роль<select name="role">{% for value, label in team_roles %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+            <button class="primary-action" type="submit">Добавить в команду</button>
+            <small>Участник должен заранее зарегистрировать этот номер в Жертап.</small>
+          </form>
+          <form class="panel-modern auction-team-form" method="post" action="/cabinet/auctions-v2/team/settings">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <div><span class="eyebrow">Настройка</span><h2>Название пространства</h2></div>
+            <label>Название<input name="name" value="{{ workspace.name }}" maxlength="160" required></label>
+            <button class="secondary-action" type="submit">Сохранить название</button>
+          </form>
+        {% else %}
+          <div class="panel-modern auction-team-form"><span class="eyebrow">Ваша роль</span><h2>{{ auction_workspace_role }}</h2><p>Управление составом команды доступно владельцу и управляющему.</p></div>
+        {% endif %}
+      </aside>
+    </div>
+  </div>
+</section>
+{% endblock %}

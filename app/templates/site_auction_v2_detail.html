@@ -10,10 +10,11 @@
       <a class="secondary-action compact" href="/cabinet/auctions-v2/{{ lot.id }}/dossier.txt">Скачать досье</a>
     </div>
 
-    {% include "partials/auction_v2_tabs.html" %}
-
     {% if request.query_params.get("pipeline") == "saved" %}
       <div class="form-alert neutral">Рабочий статус сохранен.</div>
+    {% endif %}
+    {% if request.query_params.get("activity") == "saved" %}
+      <div class="form-alert neutral">Запись добавлена в комнату сделки.</div>
     {% endif %}
     {% if request.query_params.get("market") == "saved" %}
       <div class="form-alert neutral">Рыночный аналог добавлен, анализ и лимиты пересчитаны.</div>
@@ -21,30 +22,37 @@
       <div class="form-alert">Проверьте источник, ссылку, цену и площадь рыночного аналога.</div>
     {% endif %}
 
+    {% set pipeline = item.pipeline %}
     <div class="auction-v2-detail-hero risk-{{ analysis.risk_level }}">
       <div>
-        <span class="eyebrow">Проверка перед официальным порталом · {{ item.action_label }}</span>
+        <span class="eyebrow">Инвестиционное решение · {{ item.investment_case.strategy_label }}</span>
         <h1>Лот №{{ lot.auction_number or lot.source_lot_id }}</h1>
         <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
       </div>
-      <div class="auction-v2-hero-score">
-        <strong>{{ analysis.score }}</strong>
-        <span>индекс преимущества</span>
+      <div class="auction-v2-investment-verdict verdict-{{ item.investment_case.verdict_status }}">
+        <span>Экономика сделки</span>
+        <strong>{{ item.investment_case.verdict }}</strong>
+        <small>{{ item.decision_summary.title }}</small>
       </div>
     </div>
 
-    <section class="auction-metric-grid auction-v2-metrics">
-      <article><span>Риск</span><strong>{{ item.risk_label }}</strong><small>Что нужно проверить руками</small></article>
-      <article><span>Полнота данных</span><strong>{{ item.confidence_label }}</strong><small>Сколько фактов уже собрано</small></article>
-      <article><span>Срок</span><strong>{{ item.deadline_label }}</strong><small>Насколько срочно смотреть</small></article>
-      <article><span>Статус E-Qazyna</span><strong>{{ item.eqazyna_status_label }}</strong><small>{{ item.eqazyna_status_note }}</small></article>
-      <article><span>Цена за сотку</span><strong>{% if analysis.price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.price_per_sotka).replace(",", " ") }} ?{% else %}—{% endif %}</strong><small>Стартовая цена в пересчете</small></article>
-      <article><span>Районный ориентир</span><strong>{% if analysis.district_average_price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.district_average_price_per_sotka).replace(",", " ") }} ?{% else %}—{% endif %}</strong><small>Средняя цена похожих участков</small></article>
-      <article><span>Осторожный лимит</span><strong>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong><small>Без агрессивной переплаты</small></article>
-      <article><span>Рыночный лимит</span><strong>{% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong><small>После сравнения с рынком</small></article>
+    {% if auction_workspace %}
+      <a class="auction-workspace-strip" href="/cabinet/auctions-v2/team"><span>Командная сделка</span><strong>{{ auction_workspace.name }}</strong><small>Роль: {{ auction_workspace_role }}</small></a>
+    {% endif %}
+
+    {% include "partials/auction_v2_tabs.html" %}
+
+    <section class="auction-metric-grid auction-v2-metrics auction-v2-investment-metrics">
+      <article><span>Полный бюджет</span><strong>{% if item.investment_case.all_in_cost_kzt %}{{ "{:,.0f}".format(item.investment_case.all_in_cost_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>Покупка, известные расходы, финансирование и резерв</small></article>
+      <article><span>Потенциальная прибыль</span><strong>{% if item.investment_case.expected_profit_kzt is not none %}{{ "{:,.0f}".format(item.investment_case.expected_profit_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>До налогов на доход и непредвиденных расходов</small></article>
+      <article><span>ROI</span><strong>{% if item.investment_case.roi_percent is not none %}{{ item.investment_case.roi_percent }}%{% else %}—{% endif %}</strong><small>{% if item.investment_case.holding_months %}Горизонт {{ item.investment_case.holding_months|int }} мес.{% else %}Укажите горизонт сделки{% endif %}</small></article>
+      <article><span>До участия</span><strong>{% if item.cost_estimate.cash_before_auction_kzt %}{{ "{:,.0f}".format(item.cost_estimate.cash_before_auction_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>Гарантийный взнос — замороженный капитал, не расход</small></article>
+      <article><span>Максимум ставки</span><strong>{% if pipeline and pipeline.max_bid_kzt is not none %}{{ "{:,.0f}".format(pipeline.max_bid_kzt).replace(",", " ") }} ₸{% elif analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>Ваш лимит или осторожный расчет</small></article>
+      <article><span>Риск сделки</span><strong>{{ item.risk_label }}</strong><small>{{ item.decision_summary.blockers|length }} критических блокеров</small></article>
+      <article><span>Срок</span><strong>{{ item.deadline_label }}</strong><small>{{ item.eqazyna_status_label }}</small></article>
+      <article><span>Полевой осмотр</span><strong>{{ item.field_inspection.status_label }}</strong><small>{{ item.field_inspection.checked_count }} из {{ item.field_inspection.total_checks }} фактов отмечено</small></article>
     </section>
 
-    {% set pipeline = item.pipeline %}
     <section class="panel-modern auction-v2-decision-summary decision-{{ item.decision_summary.status }}">
       <div class="auction-v2-decision-main">
         <div>
@@ -79,6 +87,7 @@
           <span class="fact-{{ fact.status }}"><strong>{{ fact.label }}</strong><small>{{ fact.value }}</small></span>
         {% endfor %}
       </div>
+      {% if auction_access.can_edit %}
       <form id="auction-v2-decision-form" class="auction-v2-decision-form" method="post" action="/cabinet/auctions-v2/{{ lot.id }}/pipeline">
         <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <div class="auction-v2-decision-form-head">
@@ -92,10 +101,80 @@
             {% endfor %}
           </select>
         </label>
-        <label>Мой максимум ставки, ?
+        <label>Мой максимум ставки, ₸
           <input name="max_bid_kzt" inputmode="decimal" value="{{ '%.0f'|format(pipeline.max_bid_kzt) if pipeline and pipeline.max_bid_kzt is not none else '' }}">
-          <small>Осторожно: {% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ?{% else %}—{% endif %} · рынок: {% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</small>
+          <small>Осторожно: {% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}—{% endif %} · рынок: {% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ₸{% else %}недостаточно аналогов{% endif %}</small>
         </label>
+        <label>Контрольная дата
+          <input type="datetime-local" name="reminder_at" value="{{ pipeline_reminder_at }}">
+          <small>Когда вернуться к документам, решению или следующему действию.</small>
+        </label>
+        <div class="auction-v2-cost-fields wide-field">
+          <div class="auction-v2-form-subhead">Дополнительные расходы, ₸</div>
+          <small>Введите только известные суммы. Пустые поля остаются неопределенными и не маскируются как ноль.</small>
+          {% for cost in item.cost_estimate['items'] %}
+            <label>{{ cost.label }}
+              <input name="{{ cost.code }}{% if cost.code == 'road' %}_cost_kzt{% elif cost.code == 'utilities' %}_cost_kzt{% elif cost.code == 'project' %}_cost_kzt{% elif cost.code == 'registration' %}_cost_kzt{% elif cost.code == 'taxes' %}_cost_kzt{% else %}_cost_kzt{% endif %}" inputmode="decimal" value="{{ '%.0f'|format(cost.value_kzt) if cost.value_kzt is not none else '' }}">
+            </label>
+          {% endfor %}
+        </div>
+        {% set investment_inputs = item.investment_case.inputs %}
+        <details class="auction-v2-form-details wide-field" open>
+          <summary><strong>Экономика и сценарий выхода</strong><span>прибыль, ROI и капитал</span></summary>
+          <div class="auction-v2-investment-form-grid">
+            <label>Стратегия
+              <select name="strategy">
+                {% for value, label in investment_strategies %}<option value="{{ value }}" {% if investment_inputs.strategy == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Плановая цена покупки, ₸
+              <input name="planned_purchase_price_kzt" inputmode="decimal" value="{{ '%.0f'|format(investment_inputs.planned_purchase_price_kzt) if investment_inputs.planned_purchase_price_kzt is defined else '' }}">
+            </label>
+            <label>Ожидаемая цена выхода, ₸
+              <input name="expected_exit_value_kzt" inputmode="decimal" value="{{ '%.0f'|format(investment_inputs.expected_exit_value_kzt) if investment_inputs.expected_exit_value_kzt is defined else '' }}">
+            </label>
+            <label>Ежемесячный доход, ₸
+              <input name="expected_monthly_income_kzt" inputmode="decimal" value="{{ '%.0f'|format(investment_inputs.expected_monthly_income_kzt) if investment_inputs.expected_monthly_income_kzt is defined else '' }}">
+            </label>
+            <label>Горизонт сделки, месяцев
+              <input name="holding_months" inputmode="decimal" value="{{ '%.0f'|format(investment_inputs.holding_months) if investment_inputs.holding_months is defined else '' }}">
+            </label>
+            <label>Стоимость финансирования, ₸
+              <input name="financing_cost_kzt" inputmode="decimal" value="{{ '%.0f'|format(investment_inputs.financing_cost_kzt) if investment_inputs.financing_cost_kzt is defined else '' }}">
+            </label>
+            <label>Резерв на непредвиденное, %
+              <input name="contingency_percent" inputmode="decimal" value="{{ investment_inputs.contingency_percent if investment_inputs.contingency_percent is defined else '' }}">
+            </label>
+          </div>
+        </details>
+        {% set inspection = item.field_inspection.data %}
+        <details class="auction-v2-form-details wide-field">
+          <summary><strong>Полевой осмотр</strong><span>{{ item.field_inspection.status_label }}</span></summary>
+          <div class="auction-v2-inspection-form">
+            <div class="auction-v2-investment-form-grid">
+              <label>Статус выезда
+                <select name="inspection_status">{% for value, label in field_inspection_options %}<option value="{{ value }}" {% if inspection.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+              </label>
+              <label>Запланирован на <input type="datetime-local" name="inspection_planned_at" value="{{ inspection.planned_at if inspection.planned_at is defined else '' }}"></label>
+              <label>Осмотрен <input type="datetime-local" name="inspection_inspected_at" value="{{ inspection.inspected_at if inspection.inspected_at is defined else '' }}"></label>
+            </div>
+            <div class="auction-v2-inspection-checks">
+              <label><input type="checkbox" name="inspection_access_ok" value="true" {% if inspection.access_ok %}checked{% endif %}> Подъезд пригоден</label>
+              <label><input type="checkbox" name="inspection_power_visible" value="true" {% if inspection.power_visible %}checked{% endif %}> Электричество рядом</label>
+              <label><input type="checkbox" name="inspection_water_visible" value="true" {% if inspection.water_visible %}checked{% endif %}> Вода доступна</label>
+              <label><input type="checkbox" name="inspection_flat_terrain" value="true" {% if inspection.flat_terrain %}checked{% endif %}> Рельеф приемлемый</label>
+              <label><input type="checkbox" name="inspection_no_flood_signs" value="true" {% if inspection.no_flood_signs %}checked{% endif %}> Нет признаков подтопления</label>
+              <label><input type="checkbox" name="inspection_boundaries_visible" value="true" {% if inspection.boundaries_visible %}checked{% endif %}> Границы понятны на местности</label>
+            </div>
+            <div class="auction-v2-investment-form-grid">
+              <label>Подъезд <textarea name="inspection_road_note" rows="2">{{ inspection.road_note if inspection.road_note is defined else '' }}</textarea></label>
+              <label>Сети <textarea name="inspection_utilities_note" rows="2">{{ inspection.utilities_note if inspection.utilities_note is defined else '' }}</textarea></label>
+              <label>Рельеф и грунт <textarea name="inspection_terrain_note" rows="2">{{ inspection.terrain_note if inspection.terrain_note is defined else '' }}</textarea></label>
+              <label>Окружение <textarea name="inspection_surroundings_note" rows="2">{{ inspection.surroundings_note if inspection.surroundings_note is defined else '' }}</textarea></label>
+            </div>
+            <label>Вывод по осмотру <textarea name="inspection_conclusion" rows="3">{{ inspection.conclusion if inspection.conclusion is defined else '' }}</textarea></label>
+          </div>
+        </details>
         <label class="wide-field">Заметка перед официальным переходом
           <textarea name="notes" rows="3">{{ pipeline.notes if pipeline and pipeline.notes else "" }}</textarea>
         </label>
@@ -105,6 +184,9 @@
         </label>
         <button class="primary-action" type="submit">Сохранить решение</button>
       </form>
+      {% else %}
+        <div class="auction-viewer-notice"><strong>Режим наблюдателя</strong><span>Вы видите общую сделку, но изменять расчёты и этапы может аналитик или управляющий.</span></div>
+      {% endif %}
       {% if item.decision_summary.remaining %}
         <div class="auction-v2-decision-remaining">
           <strong>Что еще мешает идти на официальный портал</strong>
@@ -118,7 +200,58 @@
       {% endif %}
     </section>
 
-    <section class="panel-modern auction-v2-manual-process">
+    <section class="panel-modern auction-v2-deal-room">
+      <div class="panel-head">
+        <div><span class="eyebrow">Без AI · приватно</span><h2>Комната сделки</h2></div>
+        <span>{{ item.deal_room.count }} записей</span>
+      </div>
+      <p class="auction-v2-helper-text">Фиксируйте задачи, решения, вопросы специалистам и договоренности по лоту. Записи доступны только внутри вашего рабочего кабинета.</p>
+      {% if auction_access.can_edit %}<form class="auction-v2-activity-form" method="post" action="/cabinet/auctions-v2/{{ lot.id }}/activity">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label>Тип записи
+          <select name="kind">{% for option in item.deal_room.types %}<option value="{{ option.value }}">{{ option.label }}</option>{% endfor %}</select>
+        </label>
+        <label>Текст
+          <textarea name="body" rows="3" maxlength="3000" required placeholder="Например: запросить технические условия по электричеству до пятницы"></textarea>
+        </label>
+        <button class="primary-action" type="submit">Добавить запись</button>
+      </form>{% endif %}
+      <div class="auction-v2-activity-list">
+        {% for activity in item.deal_room.rows %}
+          <article class="activity-{{ activity.kind }}">
+            <div><span>{{ activity.kind_label }}{% if activity.actor_label %} · {{ activity.actor_label }}{% endif %}</span><time>{{ activity.created_at[:16].replace('T', ' ') if activity.created_at else '' }}</time></div>
+            <p>{{ activity.body }}</p>
+          </article>
+        {% else %}
+          <div class="empty-state compact"><strong>Журнал пока пуст</strong><span>Добавьте первую задачу или решение по этому лоту.</span></div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="panel-modern auction-v2-data-quality" id="auction-v2-data-quality">
+      <div class="panel-head">
+        <div>
+          <h2>Что уже подтверждено</h2>
+          <p class="auction-v2-helper-text">{{ item.data_quality.label }}. Остальное влияет на решение и показано как отдельная проверка.</p>
+        </div>
+        <span>{{ item.data_quality.counts.manual + item.data_quality.counts.missing }} открыто</span>
+      </div>
+      <div class="auction-v2-quality-grid">
+        {% for row in item.data_quality.rows %}
+          <a class="auction-v2-quality-row quality-{{ row.status }}" href="{{ row.anchor or '#auction-v2-review-board' }}">
+            <span class="auction-v2-quality-dot" aria-hidden="true"></span>
+            <span>
+              <strong>{{ row.title }}</strong>
+              <small>{{ row.value }} · {{ row.detail }}</small>
+            </span>
+            <em>{{ row.status_label }}</em>
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <details class="panel-modern auction-v2-manual-process auction-v2-collapsible">
+      <summary><span><strong>Техническое покрытие проверки</strong><em>Источники и ручной маршрут — открывайте при необходимости</em></span><b>Показать</b></summary>
       <div class="panel-head">
         <h2>Покрытие ручного процесса</h2>
         <span>{{ item.manual_process_counts.required_done }} из {{ item.manual_process_counts.required }} обязательных закрыто</span>
@@ -176,7 +309,7 @@
           {% endfor %}
         </div>
       </details>
-    </section>
+    </details>
 
     <section class="panel-modern auction-v2-next-actions">
       <div class="panel-head">
@@ -450,7 +583,8 @@
           </div>
         </section>
 
-        <section class="panel-modern">
+        <details class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Источники проверки</strong><em>{{ item.source_statuses|length }} источников и служебных статусов</em></span><b>Показать</b></summary>
           <div class="panel-head"><h2>Источники проверки</h2><span>{{ item.source_statuses|length }}</span></div>
           <p class="auction-v2-helper-text">Здесь не все источники являются местом размещения аукциона. E-Qazyna — источник торгов. ЕГКН, gov.kz, генпланы и карты — источники проверки. Рыночные сайты нужны только для сравнения цены.</p>
           <div class="auction-v2-source-table">
@@ -472,9 +606,10 @@
               {% endif %}
             {% endfor %}
           </div>
-        </section>
+        </details>
 
-        <section class="panel-modern">
+        <details class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Подтверждающие данные</strong><em>{{ evidence|length }} технических записей</em></span><b>Показать</b></summary>
           <div class="panel-head"><h2>Что система уже сверила</h2><span>{{ evidence|length }}</span></div>
           <div class="auction-v2-evidence-list">
             {% for row in evidence %}
@@ -621,7 +756,33 @@
               </tbody>
             </table>
           </div>
-        </section>
+        </details>
+        {% if parcel_history and parcel_history.publication_count > history|length %}
+          <section class="panel-modern auction-v2-parcel-history">
+            <div class="panel-head"><h2>История участка по кадастру</h2><span>{{ parcel_history.publication_count }} публикаций</span></div>
+            <p class="auction-v2-helper-text">Это сводка повторных публикаций по кадастровому номеру, а не только изменения текущей карточки. Она помогает увидеть, возвращался ли участок на торги и как менялась стартовая цена.</p>
+            <div class="auction-v2-history-summary">
+              <span>Лотов в базе: <strong>{{ parcel_history.lot_count }}</strong></span>
+              <span>Несостоявшихся: <strong>{{ parcel_history.failed_count }}</strong></span>
+              {% if parcel_history.start_price_change_percent is not none %}<span>Изменение старта: <strong>{{ "%.1f"|format(parcel_history.start_price_change_percent) }}%</strong></span>{% endif %}
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Наблюдалось</th><th>Статус</th><th>Старт</th><th>Продажа</th></tr></thead>
+                <tbody>
+                {% for row in parcel_history.publications[-8:]|reverse %}
+                  <tr>
+                    <td>{{ row.observed_at[:10] if row.observed_at else "—" }}</td>
+                    <td>{{ row.status or "—" }}</td>
+                    <td>{% if row.start_price_kzt is not none %}{{ "{:,.0f}".format(row.start_price_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</td>
+                    <td>{% if row.sale_price_kzt is not none %}{{ "{:,.0f}".format(row.sale_price_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</td>
+                  </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        {% endif %}
       </div>
 
       <aside class="auction-v2-side">
@@ -647,18 +808,33 @@
 
         <section class="panel-modern">
           <div class="panel-head"><h2>Ставка</h2><span>ориентиры</span></div>
-          <p class="auction-v2-helper-text">Это расчетные ориентиры до участия. Финальное решение остается за пользователем после сверки документов.</p>
+          <p class="auction-v2-helper-text">Рыночный и агрессивный лимиты показываются только при наличии районной статистики или рыночных аналогов. Стартовая цена сама по себе не является подтверждением рынка.</p>
           <div class="auction-v2-bid-stack">
             <div><span>Осторожно</span><strong>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong></div>
-            <div><span>Рынок</span><strong>{% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong></div>
-            <div><span>Агрессивно</span><strong>{% if analysis.max_bid_aggressive_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_aggressive_kzt).replace(",", " ") }} ?{% else %}—{% endif %}</strong></div>
+            <div><span>Рынок</span><strong>{% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ₸{% else %}нет данных{% endif %}</strong></div>
+            <div><span>Агрессивно</span><strong>{% if analysis.max_bid_aggressive_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_aggressive_kzt).replace(",", " ") }} ₸{% else %}нет данных{% endif %}</strong></div>
           </div>
+        </section>
+
+        <section class="panel-modern auction-v2-cost-card" id="auction-v2-costs">
+          <div class="panel-head"><h2>Бюджет сделки</h2><span>введенные суммы</span></div>
+          <p class="auction-v2-helper-text">Гарантийный взнос — временно заблокированный капитал для допуска к торгам, а не дополнительная стоимость земли.</p>
+          <div class="auction-v2-cost-summary">
+            <div><span>Плановая покупка</span><strong>{% if item.cost_estimate.planned_purchase_price_kzt %}{{ "{:,.0f}".format(item.cost_estimate.planned_purchase_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong></div>
+            <div><span>До участия</span><strong>{% if item.cost_estimate.cash_before_auction_kzt %}{{ "{:,.0f}".format(item.cost_estimate.cash_before_auction_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>гарантийный взнос</small></div>
+            <div><span>После победы</span><strong>{% if item.cost_estimate.cash_after_win_kzt %}{{ "{:,.0f}".format(item.cost_estimate.cash_after_win_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>остаток покупки и известные расходы</small></div>
+            <div><span>Полный известный бюджет</span><strong>{% if item.investment_case.all_in_cost_kzt %}{{ "{:,.0f}".format(item.investment_case.all_in_cost_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong></div>
+          </div>
+          {% if item.cost_estimate.unknown_items %}
+            <p class="auction-v2-cost-warning">Не оценено: {{ item.cost_estimate.unknown_items|join(", ") }}.</p>
+          {% endif %}
+          <a class="secondary-action compact" href="#auction-v2-decision-form">Заполнить расходы</a>
         </section>
 
         <section class="panel-modern">
           <div class="panel-head"><h2>Добавить рыночный аналог</h2><span>не аукцион</span></div>
           <p class="auction-v2-helper-text">Сюда добавляются похожие объявления только для сравнения цены. Лоты аукционов берутся из официальных источников.</p>
-          <form class="auction-v2-pipeline-form" method="post" action="/cabinet/auctions-v2/{{ lot.id }}/market-comparables">
+          {% if auction_access.can_edit %}<form class="auction-v2-pipeline-form" method="post" action="/cabinet/auctions-v2/{{ lot.id }}/market-comparables">
             <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
             <label>Источник
               <input name="source_name" value="Рыночный сайт">
@@ -683,7 +859,7 @@
               </select>
             </label>
             <button class="primary-action" type="submit">Добавить</button>
-          </form>
+          </form>{% else %}<p class="muted-modern">Добавление аналогов недоступно для роли наблюдателя.</p>{% endif %}
         </section>
 
         <section class="panel-modern">
@@ -692,6 +868,9 @@
             <div><span>Широта</span><strong>{{ "%.6f"|format(geo_check.latitude) if geo_check.latitude is not none else "—" }}</strong></div>
             <div><span>Долгота</span><strong>{{ "%.6f"|format(geo_check.longitude) if geo_check.longitude is not none else "—" }}</strong></div>
             <div><span>Кадастр</span><strong>{{ item.cadastre_label }}</strong></div>
+            <div><span>Граница</span><strong>{{ item.boundary_label }}</strong></div>
+            <div><span>Площадь ЕГКН</span><strong>{{ "%.4f"|format(geo_check.boundary_area_ha) if geo_check.boundary_area_ha is not none else "—" }} га</strong></div>
+            <div><span>Расхождение площади</span><strong>{{ "%.1f"|format(geo_check.boundary_difference_percent) if geo_check.boundary_difference_percent is not none else "—" }}%</strong></div>
             <div><span>Генплан</span><strong>{{ item.urban_plan_label }}</strong></div>
             <div><span>OSM</span><strong>{{ item.osm_label }}</strong></div>
             <div><span>Инженерия</span><strong>{{ item.engineering_label }}</strong></div>

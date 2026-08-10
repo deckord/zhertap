@@ -93,6 +93,9 @@ class Account(Base):
     telegram_chat_id: Mapped[str | None] = mapped_column(String(32))
     telegram_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     paid_access: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    auction_plan: Mapped[str] = mapped_column(
+        String(24), default="observer", index=True
+    )
     access_granted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     trial_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -108,6 +111,55 @@ class Account(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AuctionWorkspace(Base):
+    __tablename__ = "auction_workspaces"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    name: Mapped[str] = mapped_column(String(160))
+    owner_account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id"), unique=True, index=True
+    )
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    owner: Mapped[Account] = relationship(foreign_keys=[owner_account_id])
+
+
+class AuctionWorkspaceMember(Base):
+    __tablename__ = "auction_workspace_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "account_id", name="uq_auction_workspace_member"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_workspaces.id"), index=True
+    )
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    role: Mapped[str] = mapped_column(String(24), default="analyst", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="active", index=True)
+    invited_by_account_id: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    workspace: Mapped[AuctionWorkspace] = relationship()
+    account: Mapped[Account] = relationship(foreign_keys=[account_id])
+    invited_by: Mapped[Account | None] = relationship(
+        foreign_keys=[invited_by_account_id]
     )
 
 
@@ -163,6 +215,7 @@ class AccountPayment(Base):
         String(32), default=PaymentStatus.awaiting_transfer.value, index=True
     )
     payment_amount_kzt: Mapped[int | None] = mapped_column(Integer)
+    target_plan: Mapped[str] = mapped_column(String(24), default="investor", index=True)
     payment_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     payment_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     payment_confirmed_by: Mapped[str | None] = mapped_column(String(64))
@@ -978,6 +1031,10 @@ class AuctionLotGeoCheck(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     lot_id: Mapped[str] = mapped_column(ForeignKey("auction_lots.id"), index=True)
     cadastre_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    boundary_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    boundary_area_ha: Mapped[float | None] = mapped_column(Float)
+    boundary_difference_percent: Mapped[float | None] = mapped_column(Float)
+    boundary_source: Mapped[str | None] = mapped_column(String(120))
     coordinate_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
     urban_plan_status: Mapped[str] = mapped_column(
         String(32), default="manual_required", index=True
@@ -1115,6 +1172,10 @@ class AuctionUserLotPipeline(Base):
     priority: Mapped[int] = mapped_column(Integer, default=50, index=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     max_bid_kzt: Mapped[float | None] = mapped_column(Float)
+    costs_json: Mapped[str] = mapped_column(Text, default="{}")
+    investment_json: Mapped[str] = mapped_column(Text, default="{}")
+    inspection_json: Mapped[str] = mapped_column(Text, default="{}")
+    activity_json: Mapped[str] = mapped_column(Text, default="[]")
     notes: Mapped[str | None] = mapped_column(Text)
     reminder_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

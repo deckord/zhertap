@@ -1,0 +1,54 @@
+{% extends "site_base.html" %}
+{% block title %}Портфель земельных сделок — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell">
+    {% include "partials/auction_v2_tabs.html" %}
+    <div class="section-title auction-v2-title">
+      <span>Аукционы</span>
+      <h1>Портфель земельных сделок</h1>
+      <p>Капитал, ожидаемая прибыль и текущий этап по всем лотам, которые находятся в работе.</p>
+    </div>
+
+    <section class="auction-v2-kpis auction-v2-portfolio-kpis">
+      <article><span>В работе</span><strong>{{ portfolio.totals.tracked }}</strong><small>лотов с рабочим статусом</small></article>
+      <article><span>Полный бюджет</span><strong>{% if portfolio.totals.total_budget_kzt %}{{ "{:,.0f}".format(portfolio.totals.total_budget_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>по заполненным сценариям</small></article>
+      <article><span>Заблокированный капитал</span><strong>{% if portfolio.totals.blocked_capital_kzt %}{{ "{:,.0f}".format(portfolio.totals.blocked_capital_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>гарантийные взносы</small></article>
+      <article><span>Ожидаемая прибыль</span><strong>{% if portfolio.totals.expected_profit_kzt is not none %}{{ "{:,.0f}".format(portfolio.totals.expected_profit_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>{{ portfolio.totals.with_economics }} сделок с расчетом</small></article>
+      <article><span>Победы</span><strong>{{ portfolio.totals.won }}</strong><small>{{ portfolio.totals.closed }} закрытых сделок</small></article>
+    </section>
+
+    {% if portfolio.stages %}
+      <section class="panel-modern auction-v2-portfolio-stages">
+        <div class="panel-head"><h2>Воронка сделок</h2><span>{{ portfolio.totals.tracked }} лотов</span></div>
+        <div>{% for stage in portfolio.stages %}<span><strong>{{ stage.count }}</strong>{{ stage.label }}</span>{% endfor %}</div>
+      </section>
+    {% endif %}
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Сделки</h2><span>от отбора до продажи</span></div>
+      <div class="auction-v2-portfolio-list">
+        {% for row in portfolio.rows %}
+          <article class="portfolio-{{ row.investment.verdict_status }}">
+            <div class="auction-v2-portfolio-main">
+              <span>{{ row.stage_label }}</span>
+              <h3><a href="/cabinet/auctions-v2/{{ row.lot.id }}">{{ row.lot.title }}</a></h3>
+              <p>{{ row.lot.region or "Регион не указан" }}{% if row.lot.district %} · {{ row.lot.district }}{% endif %}</p>
+              <small>{{ row.investment.strategy_label }} · {{ row.inspection.status_label }}</small>
+            </div>
+            <dl>
+              <div><dt>Бюджет</dt><dd>{% if row.investment.all_in_cost_kzt %}{{ "{:,.0f}".format(row.investment.all_in_cost_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</dd></div>
+              <div><dt>Прибыль</dt><dd>{% if row.investment.expected_profit_kzt is not none %}{{ "{:,.0f}".format(row.investment.expected_profit_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</dd></div>
+              <div><dt>ROI</dt><dd>{% if row.investment.roi_percent is not none %}{{ row.investment.roi_percent }}%{% else %}—{% endif %}</dd></div>
+            </dl>
+            <a class="secondary-action compact" href="/cabinet/auctions-v2/{{ row.lot.id }}">Открыть сделку</a>
+          </article>
+        {% else %}
+          <div class="empty-state"><strong>Портфель пока пуст</strong><span>Откройте лот, выберите рабочий статус и заполните экономику сделки.</span><a class="primary-action compact" href="/cabinet/auctions-v2">Найти лоты</a></div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</section>
+{% endblock %}

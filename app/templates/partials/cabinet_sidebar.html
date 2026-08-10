@@ -22,27 +22,9 @@
       История анализов
     </a>
 
-    <a class="{{ 'is-active' if request.url.path == '/cabinet/auctions' else '' }}" href="/cabinet/auctions">
+    <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions-v2') else '' }}" href="/cabinet/auctions-v2">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6"/><path d="m4 14 6 6"/><path d="m7 17 10-10"/><path d="m3 21 6-6"/><path d="m15 9 6-6"/></svg>
-      Все аукционы
-    </a>
-    {% if is_web_admin %}
-      <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions-v2') else '' }}" href="/cabinet/auctions-v2">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h7"/><path d="m16 15 2 2 4-5"/></svg>
-        Аукционы v2
-      </a>
-    {% endif %}
-    <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions/favorites') else '' }}" href="/cabinet/auctions/favorites">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>
-      Избранное
-    </a>
-    <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions/compare') else '' }}" href="/cabinet/auctions/compare">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 16 5 5 5-5"/><path d="M12 21V3"/><path d="m17 8-5-5-5 5"/></svg>
-      Сравнение
-    </a>
-    <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions/subscriptions') else '' }}" href="/cabinet/auctions/subscriptions">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
-      Подписки
+      Аукционы
     </a>
 
     <span class="side-separator"></span>

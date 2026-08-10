@@ -14,13 +14,16 @@ from sqlalchemy.pool import StaticPool
 
 import app.services as services
 import app.web as web
+from app.auction_commercial import add_workspace_member, ensure_team_workspace
 from app.auction_service import AuctionFilters, AuctionSyncResult
 from app.auction_v2 import (
     AuctionV2Filters,
     AuctionV2FullSyncResult,
     AuctionV2SyncResult,
     auction_v2_analytics_payload,
+    auction_v2_calendar_payload,
     auction_v2_dashboard,
+    auction_v2_portfolio_payload,
     auction_v2_watchlist_matches,
     build_auction_v2_analysis,
     build_auction_v2_dossier_text,
@@ -28,6 +31,7 @@ from app.auction_v2 import (
     create_auction_v2_watchlist,
     dispatch_auction_v2_watchlist_notifications,
     eqazyna_history_publish_date_windows,
+    format_auction_v2_telegram_card,
     get_auction_v2_payload,
     list_auction_v2_lots,
     list_auction_v2_map_markers,
@@ -1068,11 +1072,34 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
                 data={
                     "stage": "decided_to_participate",
                     "max_bid_kzt": "1200000",
+                    "road_cost_kzt": "250000",
+                    "utilities_cost_kzt": "400000",
+                    "project_cost_kzt": "",
+                    "strategy": "resale",
+                    "planned_purchase_price_kzt": "1200000",
+                    "expected_exit_value_kzt": "2400000",
+                    "holding_months": "12",
+                    "financing_cost_kzt": "100000",
+                    "contingency_percent": "10",
+                    "inspection_status": "completed",
+                    "inspection_access_ok": "true",
+                    "inspection_flat_terrain": "true",
+                    "inspection_conclusion": "Подъезд хороший, участок подходит",
                     "notes": "Проверить красные линии перед E-Qazyna",
                     "pinned": "true",
                 },
                 follow_redirects=False,
             )
+            portfolio_response = client.get("/cabinet/auctions-v2/portfolio")
+            activity_response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/activity",
+                data={
+                    "kind": "expert_request",
+                    "body": "Проверить технические условия по электричеству",
+                },
+                follow_redirects=False,
+            )
+            activity_detail_response = client.get(f"/cabinet/auctions-v2/{lot.id}")
 
         pipeline = session.scalar(select(AuctionUserLotPipeline))
         assert detail_response.status_code == 200
@@ -1117,6 +1144,12 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         assert "Можно готовить проверку и заявку" in detail_response.text
         assert "E-Qazyna" in detail_response.text
         assert update_response.status_code == 303
+        assert portfolio_response.status_code == 200
+        assert "Портфель земельных сделок" in portfolio_response.text
+        assert "Ожидаемая прибыль" in portfolio_response.text
+        assert activity_response.status_code == 303
+        assert "Комната сделки" in activity_detail_response.text
+        assert "Проверить технические условия по электричеству" in activity_detail_response.text
         assert update_response.headers["location"] == (
             f"/cabinet/auctions-v2/{lot.id}?pipeline=saved"
         )
@@ -1124,10 +1157,25 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         assert pipeline.stage == "decided_to_participate"
         assert pipeline.decision == "participate"
         assert pipeline.max_bid_kzt == 1_200_000
+        assert json.loads(pipeline.costs_json) == {"road": 250000.0, "utilities": 400000.0}
+        assert json.loads(pipeline.investment_json)["strategy"] == "resale"
+        assert json.loads(pipeline.inspection_json)["status"] == "completed"
+        assert json.loads(pipeline.activity_json)[0]["kind"] == "expert_request"
         assert pipeline.pinned is True
         payload = get_auction_v2_payload(session, lot.id, account_id=account.id)
         assert payload is not None
         assert payload.next_actions
+        assert payload.cost_estimate["known_extra_costs_kzt"] == 650000.0
+        assert payload.cost_estimate["cash_before_auction_kzt"] == 150000.0
+        assert payload.cost_estimate["cash_after_win_kzt"] == 1700000.0
+        assert payload.investment_case["all_in_cost_kzt"] == 2015000.0
+        assert payload.investment_case["expected_profit_kzt"] == 385000.0
+        assert payload.field_inspection["status"] == "completed"
+        assert payload.field_inspection["checked_count"] == 2
+        portfolio = auction_v2_portfolio_payload(session, account_id=account.id)
+        assert portfolio["totals"]["tracked"] == 1
+        assert portfolio["totals"]["total_budget_kzt"] == 2015000.0
+        assert portfolio["totals"]["expected_profit_kzt"] == 385000.0
         assert payload.eqazyna_status_label == "Прием заявок"
         assert payload.next_actions[0]["status"] in {"manual", "missing", "warning", "external"}
 
@@ -1291,7 +1339,7 @@ def test_auction_v2_official_readiness_tracks_external_steps_and_user_decision()
         assert "1 250 000" in ready_steps["personal_limit"]["detail"]
 
 
-def test_auction_v2_routes_are_hidden_from_non_admin_phone() -> None:
+def test_auction_v2_observer_catalog_and_paid_features_are_separated() -> None:
     with build_session() as session:
         account = make_non_admin_account()
         lot = make_lot()
@@ -1300,22 +1348,36 @@ def test_auction_v2_routes_are_hidden_from_non_admin_phone() -> None:
 
         with client_for(session) as client:
             authorize_client(client, session, account)
-            responses = [
-                client.get("/cabinet/auctions-v2"),
-                client.get("/cabinet/auctions-v2/map"),
-                client.get("/cabinet/auctions-v2/analytics"),
-                client.post("/cabinet/auctions-v2/sync"),
-                client.post("/cabinet/auctions-v2/watchlists", data={"name": "x"}),
+            catalog = client.get("/cabinet/auctions-v2")
+            protected_responses = [
+                client.get("/cabinet/auctions-v2/map", follow_redirects=False),
+                client.get("/cabinet/auctions-v2/analytics", follow_redirects=False),
+                client.post(
+                    "/cabinet/auctions-v2/watchlists",
+                    data={"name": "x"},
+                    follow_redirects=False,
+                ),
                 client.post(
                     "/cabinet/auctions-v2/watchlists/1/active",
                     data={"active": "false"},
+                    follow_redirects=False,
                 ),
-                client.post("/cabinet/auctions-v2/notifications/seen"),
-                client.get(f"/cabinet/auctions-v2/{lot.id}/dossier.txt"),
-                client.get(f"/cabinet/auctions-v2/{lot.id}"),
+                client.post(
+                    "/cabinet/auctions-v2/notifications/seen",
+                    follow_redirects=False,
+                ),
+                client.get(
+                    f"/cabinet/auctions-v2/{lot.id}/dossier.txt",
+                    follow_redirects=False,
+                ),
+                client.get(
+                    f"/cabinet/auctions-v2/{lot.id}",
+                    follow_redirects=False,
+                ),
                 client.post(
                     f"/cabinet/auctions-v2/{lot.id}/pipeline",
                     data={"stage": "watching"},
+                    follow_redirects=False,
                 ),
                 client.post(
                     f"/cabinet/auctions-v2/{lot.id}/market-comparables",
@@ -1326,10 +1388,149 @@ def test_auction_v2_routes_are_hidden_from_non_admin_phone() -> None:
                         "area_ha": "0.1",
                         "price_kzt": "1500000",
                     },
+                    follow_redirects=False,
                 ),
             ]
+            admin_only = client.post(
+                "/cabinet/auctions-v2/sync",
+                follow_redirects=False,
+            )
 
-        assert [response.status_code for response in responses] == [404] * len(responses)
+        assert catalog.status_code == 200
+        assert "Режим «Наблюдатель»" in catalog.text
+        assert [response.status_code for response in protected_responses] == [303] * len(
+            protected_responses
+        )
+        assert all(
+                response.headers["location"].startswith("/cabinet/auctions-v2/plans")
+            for response in protected_responses
+        )
+        assert admin_only.status_code == 404
+
+
+def test_paid_non_admin_can_use_auction_investor_workspace() -> None:
+    with build_session() as session:
+        account = make_non_admin_account()
+        account.paid_access = True
+        account.auction_plan = "investor"
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            detail = client.get(f"/cabinet/auctions-v2/{lot.id}")
+            portfolio = client.get("/cabinet/auctions-v2/portfolio")
+            pipeline = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/pipeline",
+                data={"stage": "checking", "max_bid_kzt": "1300000"},
+                follow_redirects=False,
+            )
+            sync = client.post(
+                "/cabinet/auctions-v2/sync",
+                follow_redirects=False,
+            )
+
+        assert detail.status_code == 200
+        assert portfolio.status_code == 200
+        assert pipeline.status_code == 303
+        assert sync.status_code == 404
+        stored = session.scalar(
+            select(AuctionUserLotPipeline).where(
+                AuctionUserLotPipeline.account_id == account.id,
+                AuctionUserLotPipeline.lot_id == lot.id,
+            )
+        )
+        assert stored is not None
+        assert stored.stage == "checking"
+
+
+def test_team_member_uses_owner_portfolio_and_authored_deal_room() -> None:
+    with build_session() as session:
+        owner = make_non_admin_account()
+        owner.phone = "+77018854001"
+        owner.paid_access = True
+        owner.auction_plan = "team"
+        member = make_non_admin_account()
+        member.phone = "+77018854002"
+        lot = make_lot()
+        session.add_all([owner, member, lot])
+        session.flush()
+        workspace = ensure_team_workspace(session, owner)
+        add_workspace_member(
+            session,
+            workspace=workspace,
+            invited_by=owner,
+            account=member,
+            role="analyst",
+        )
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, member)
+            pipeline_response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/pipeline",
+                data={"stage": "decided_to_participate", "max_bid_kzt": "1400000"},
+                follow_redirects=False,
+            )
+            activity_response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/activity",
+                data={"kind": "decision", "body": "Участвуем до лимита"},
+                follow_redirects=False,
+            )
+            team_response = client.get("/cabinet/auctions-v2/team")
+            detail_response = client.get(f"/cabinet/auctions-v2/{lot.id}")
+
+        stored = session.scalar(
+            select(AuctionUserLotPipeline).where(
+                AuctionUserLotPipeline.account_id == owner.id,
+                AuctionUserLotPipeline.lot_id == lot.id,
+            )
+        )
+        assert pipeline_response.status_code == 303
+        assert activity_response.status_code == 303
+        assert team_response.status_code == 200
+        assert detail_response.status_code == 200
+        assert stored is not None
+        assert stored.stage == "decided_to_participate"
+        assert member.phone in detail_response.text
+        assert "Участвуем до лимита" in detail_response.text
+
+
+def test_team_viewer_cannot_change_shared_pipeline() -> None:
+    with build_session() as session:
+        owner = make_non_admin_account()
+        owner.phone = "+77018854101"
+        owner.paid_access = True
+        owner.auction_plan = "team"
+        viewer = make_non_admin_account()
+        viewer.phone = "+77018854102"
+        lot = make_lot()
+        session.add_all([owner, viewer, lot])
+        session.flush()
+        workspace = ensure_team_workspace(session, owner)
+        add_workspace_member(
+            session,
+            workspace=workspace,
+            invited_by=owner,
+            account=viewer,
+            role="viewer",
+        )
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, viewer)
+            detail = client.get(f"/cabinet/auctions-v2/{lot.id}")
+            update = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/pipeline",
+                data={"stage": "won"},
+                follow_redirects=False,
+            )
+
+        assert detail.status_code == 200
+        assert "Режим наблюдателя" in detail.text
+        assert update.status_code == 303
+        assert session.scalar(select(AuctionUserLotPipeline)) is None
 
 
 def test_auction_v2_analysis_flags_missing_cadastre_and_coordinates() -> None:
@@ -1346,6 +1547,23 @@ def test_auction_v2_analysis_flags_missing_cadastre_and_coordinates() -> None:
         assert "no_cadastre" in risk_codes
         assert "no_coordinates" in risk_codes
         assert analysis.recommended_action in {"manual_check", "skip"}
+
+
+def test_auction_v2_data_quality_is_available_in_web_payload_and_telegram_card() -> None:
+    with build_session() as session:
+        lot = make_lot()
+        session.add(lot)
+        session.commit()
+
+        payload = get_auction_v2_payload(session, lot.id, force=True)
+
+        assert payload is not None
+        assert payload.data_quality["counts"]["total"] == 7
+        assert payload.data_quality["counts"]["done"] >= 2
+        card = format_auction_v2_telegram_card(payload)
+        assert "Решение:" in card
+        assert "Сейчас проверить:" in card
+        assert "ключевых блоков подтверждено" in card
 
 
 def test_auction_v2_rejects_coordinates_outside_kazakhstan() -> None:
@@ -1806,6 +2024,7 @@ def test_auction_v2_market_comparable_updates_analysis_limits_and_dossier() -> N
         session.commit()
         base_analysis = build_auction_v2_analysis(session, lot, force=True)
         base_market_limit = base_analysis.max_bid_market_kzt
+        assert base_market_limit is None
 
         comparable = create_auction_v2_market_comparable(
             session,
@@ -2781,7 +3000,9 @@ def test_auction_v2_admin_can_create_and_pause_watchlist_from_cabinet() -> None:
 
         session.refresh(watchlist)
         assert create_response.status_code == 303
-        assert create_response.headers["location"] == "/cabinet/auctions-v2?watchlist=saved"
+        assert create_response.headers["location"] == (
+            "/cabinet/auctions-v2/subscriptions?watchlist=saved"
+        )
         assert watchlist.lot_scope == "future"
         assert watchlist.region == "Астана"
         assert watchlist.district == "Есиль"
@@ -2799,5 +3020,100 @@ def test_auction_v2_admin_can_create_and_pause_watchlist_from_cabinet() -> None:
         assert watchlist.deadline_status == "normal"
         assert watchlist.geo_status == "coordinates_found"
         assert pause_response.status_code == 303
-        assert pause_response.headers["location"] == "/cabinet/auctions-v2?watchlist=disabled"
+        assert pause_response.headers["location"] == (
+            "/cabinet/auctions-v2/subscriptions?watchlist=disabled"
+        )
         assert watchlist.active is False
+
+
+def test_auction_v2_internal_navigation_subscriptions_and_calendar() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        now = web._now()
+        lot.auction_starts_at = now + timedelta(days=2)
+        session.add_all([account, lot])
+        session.commit()
+        update_auction_v2_pipeline(
+            session,
+            account_id=account.id,
+            lot_id=lot.id,
+            stage="checking",
+            max_bid_kzt=1_400_000,
+            reminder_at=now + timedelta(days=1),
+            notes="Проверить допуск",
+            inspection={
+                "status": "planned",
+                "planned_at": (now + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M"),
+            },
+        )
+        session.commit()
+
+        payload = auction_v2_calendar_payload(
+            session,
+            account_id=account.id,
+            now=now,
+        )
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            catalog = client.get("/cabinet/auctions-v2")
+            subscriptions = client.get("/cabinet/auctions-v2/subscriptions")
+            calendar = client.get("/cabinet/auctions-v2/calendar")
+            plans = client.get("/cabinet/auctions-v2/plans")
+            legacy_plans = client.get("/cabinet/auction-plans", follow_redirects=False)
+            legacy_subscriptions = client.get(
+                "/cabinet/auctions/subscriptions",
+                follow_redirects=False,
+            )
+
+        assert len(payload["events"]) == 3
+        assert payload["totals"]["next_7_days"] == 3
+        assert {event["kind"] for event in payload["events"]} == {
+            "auction",
+            "inspection",
+            "reminder",
+        }
+        assert catalog.status_code == 200
+        assert "Лента важных событий" not in catalog.text
+        assert "Все аукционы" not in catalog.text
+        assert subscriptions.status_code == 200
+        assert "Условия интересующего лота" in subscriptions.text
+        assert calendar.status_code == 200
+        assert "Календарь сроков и выездов" in calendar.text
+        assert plans.status_code == 200
+        assert "Подписка" in plans.text
+        assert legacy_plans.headers["location"] == "/cabinet/auctions-v2/plans"
+        assert (
+            legacy_subscriptions.headers["location"]
+            == "/cabinet/auctions-v2/subscriptions"
+        )
+
+
+def test_auction_v2_pipeline_saves_control_date_from_detail_form() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/pipeline",
+                data={
+                    "stage": "checking",
+                    "reminder_at": "2026-08-15T10:30",
+                },
+                follow_redirects=False,
+            )
+
+        pipeline = session.scalar(
+            select(AuctionUserLotPipeline).where(
+                AuctionUserLotPipeline.account_id == account.id,
+                AuctionUserLotPipeline.lot_id == lot.id,
+            )
+        )
+        assert response.status_code == 303
+        assert pipeline is not None
+        assert pipeline.reminder_at is not None
+        assert pipeline.reminder_at.hour == 5
