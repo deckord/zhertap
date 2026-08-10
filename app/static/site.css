@@ -8409,6 +8409,7 @@ a.source-status-row:focus-visible {
 .auction-v2-detail-shell .auction-v2-form-details { background: #f8faf9; border: 1px solid var(--line); border-radius: 10px; }
 .auction-v2-detail-shell .auction-v2-form-details > summary { min-height: 52px; padding: 14px 16px; }
 .auction-v2-detail-shell .auction-v2-form-details[open] > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.auction-v2-detail-shell .auction-v2-secondary-summary { display: none; }
 
 @media (max-width: 620px) {
   .auction-v2-module-tabs {

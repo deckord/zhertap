@@ -204,7 +204,7 @@
       {% endif %}
     </section>
 
-    {{ economics_panel }}
+    {# Бюджет и лимит редактируются в решении выше: отдельную витрину не дублируем. #}
 
     {% set deal_room_panel %}
     <section class="panel-modern auction-v2-deal-room">
@@ -237,7 +237,7 @@
     {% endset %}
 
     {% if false %}
-    <section class="panel-modern auction-v2-data-quality" id="auction-v2-data-quality">
+    <section class="panel-modern auction-v2-data-quality auction-v2-secondary-summary" id="auction-v2-data-quality">
       <div class="panel-head">
         <div>
           <h2>Что уже подтверждено</h2>
@@ -320,7 +320,7 @@
       </details>
     </details>
 
-    <section class="panel-modern auction-v2-next-actions">
+    <section class="panel-modern auction-v2-next-actions auction-v2-secondary-summary">
       <div class="panel-head">
         <h2>Что сделать сейчас</h2>
         <span>{{ item.next_actions|length }} важных действий</span>
@@ -348,7 +348,7 @@
       </div>
     </section>
 
-    <section class="panel-modern auction-v2-lot-command">
+    <section class="panel-modern auction-v2-lot-command auction-v2-secondary-summary">
       <div class="panel-head">
         <h2>Рабочая карточка лота</h2>
         <span>до перехода на официальный портал</span>
