@@ -8388,6 +8388,28 @@ a.source-status-row:focus-visible {
   color: var(--green);
 }
 
+/* Detail page: keep the decision in focus and move the dossier behind compact disclosures. */
+.auction-v2-detail-shell { max-width: 1440px; margin-inline: auto; }
+.auction-v2-detail-shell .auction-v2-decision-form { max-width: 1120px; }
+.auction-v2-detail-shell details.panel-modern { padding: 0; overflow: hidden; }
+.auction-v2-detail-shell details.panel-modern > summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  min-height: 64px; padding: 16px 20px; cursor: pointer; list-style: none;
+  transition: background .2s ease-in-out;
+}
+.auction-v2-detail-shell details.panel-modern > summary::-webkit-details-marker { display: none; }
+.auction-v2-detail-shell details.panel-modern > summary:hover { background: #f7faf8; }
+.auction-v2-detail-shell details.panel-modern > summary > span { display: grid; gap: 3px; }
+.auction-v2-detail-shell details.panel-modern > summary strong { font-size: 16px; }
+.auction-v2-detail-shell details.panel-modern > summary em { color: var(--muted); font-size: 13px; font-style: normal; font-weight: 650; }
+.auction-v2-detail-shell details.panel-modern > summary b { color: var(--green); font-size: 13px; }
+.auction-v2-detail-shell details.panel-modern[open] > summary { border-bottom: 1px solid var(--line); }
+.auction-v2-detail-shell details.panel-modern[open] > :not(summary) { margin-left: 20px; margin-right: 20px; }
+.auction-v2-detail-shell details.panel-modern[open] > :last-child { margin-bottom: 20px; }
+.auction-v2-detail-shell .auction-v2-form-details { background: #f8faf9; border: 1px solid var(--line); border-radius: 10px; }
+.auction-v2-detail-shell .auction-v2-form-details > summary { min-height: 52px; padding: 14px 16px; }
+.auction-v2-detail-shell .auction-v2-form-details[open] > :not(summary) { margin-left: 16px; margin-right: 16px; }
+
 @media (max-width: 620px) {
   .auction-v2-module-tabs {
     gap: 2px;

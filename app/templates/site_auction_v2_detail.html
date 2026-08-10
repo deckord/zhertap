@@ -3,7 +3,7 @@
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
-  <div class="cabinet-main auction-v2-shell">
+  <div class="cabinet-main auction-v2-shell auction-v2-detail-shell">
     <div class="page-actions">
       <a class="back-link" href="/cabinet/auctions-v2">< К лотам</a>
       <a class="back-link" href="/cabinet/auctions/{{ lot.id }}">Старая карточка</a>
@@ -111,17 +111,19 @@
           <input type="datetime-local" name="reminder_at" value="{{ pipeline_reminder_at }}">
           <small>Когда вернуться к документам, решению или следующему действию.</small>
         </label>
-        <div class="auction-v2-cost-fields wide-field">
-          <div class="auction-v2-form-subhead">Дополнительные расходы, ₸</div>
-          <small>Введите только известные суммы. Пустые поля остаются неопределенными и не маскируются как ноль.</small>
-          {% for cost in item.cost_estimate['items'] %}
-            <label>{{ cost.label }}
-              <input name="{{ cost.code }}{% if cost.code == 'road' %}_cost_kzt{% elif cost.code == 'utilities' %}_cost_kzt{% elif cost.code == 'project' %}_cost_kzt{% elif cost.code == 'registration' %}_cost_kzt{% elif cost.code == 'taxes' %}_cost_kzt{% else %}_cost_kzt{% endif %}" inputmode="decimal" value="{{ '%.0f'|format(cost.value_kzt) if cost.value_kzt is not none else '' }}">
-            </label>
-          {% endfor %}
-        </div>
+        <details class="auction-v2-form-details wide-field">
+          <summary><strong>Расходы после покупки</strong><span>заполните при расчёте</span></summary>
+          <div class="auction-v2-cost-fields">
+            <small>Введите только известные суммы. Пустые поля остаются неопределенными и не маскируются как ноль.</small>
+            {% for cost in item.cost_estimate['items'] %}
+              <label>{{ cost.label }}
+                <input name="{{ cost.code }}{% if cost.code == 'road' %}_cost_kzt{% elif cost.code == 'utilities' %}_cost_kzt{% elif cost.code == 'project' %}_cost_kzt{% elif cost.code == 'registration' %}_cost_kzt{% elif cost.code == 'taxes' %}_cost_kzt{% else %}_cost_kzt{% endif %}" inputmode="decimal" value="{{ '%.0f'|format(cost.value_kzt) if cost.value_kzt is not none else '' }}">
+              </label>
+            {% endfor %}
+          </div>
+        </details>
         {% set investment_inputs = item.investment_case.inputs %}
-        <details class="auction-v2-form-details wide-field" open>
+        <details class="auction-v2-form-details wide-field">
           <summary><strong>Экономика и сценарий выхода</strong><span>прибыль, ROI и капитал</span></summary>
           <div class="auction-v2-investment-form-grid">
             <label>Стратегия
@@ -538,8 +540,9 @@
           </div>
         </details>
 
-        <section id="auction-v2-map-panel" class="panel-modern auction-v2-map-panel">
-          <div class="panel-head"><h2>Карта</h2><span>{{ item.coordinate_label }}</span></div>
+        {% if item.map_embed_url %}
+        <details id="auction-v2-map-panel" class="panel-modern auction-v2-collapsible auction-v2-map-panel">
+          <summary><span><strong>Карта и окружение</strong><em>{{ item.coordinate_label }}</em></span><b>Открыть</b></summary>
           <p class="auction-v2-helper-text">Карта нужна для быстрой проверки окружения. Точные границы и юридический статус участка все равно сверяются в ЕГКН и документах.</p>
           {% if item.map_embed_url %}
             <div class="auction-v2-map-frame">
@@ -558,10 +561,11 @@
               <span>Карта появится после извлечения координат из карточки, кадастра или документов.</span>
             </div>
           {% endif %}
-        </section>
+        </details>
+        {% endif %}
 
-        <section id="auction-v2-official-checklist" class="panel-modern">
-          <div class="panel-head"><h2>Перед переходом на E-Qazyna</h2><span>{{ item.official_readiness|length }}</span></div>
+        <details id="auction-v2-official-checklist" class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Перед переходом на E-Qazyna</strong><em>{{ item.official_readiness|length }} проверок</em></span><b>Открыть</b></summary>
           <p class="auction-v2-helper-text">Это финальный чеклист: что уже можно открыть на официальном портале и что лучше проверить перед юридическим действием.</p>
           <div class="auction-v2-checklist auction-v2-official-checklist">
             {% for check in item.official_readiness %}
@@ -574,10 +578,10 @@
               </div>
             {% endfor %}
           </div>
-        </section>
+        </details>
 
-        <section id="auction-v2-source-checks" class="panel-modern">
-          <div class="panel-head"><h2>Что уже найдено системой</h2><span>до официальной заявки</span></div>
+        <details id="auction-v2-source-checks" class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Что уже найдено системой</strong><em>до официальной заявки</em></span><b>Открыть</b></summary>
           <p class="auction-v2-helper-text">Зеленое — система нашла подтверждение. Желтое — нужно открыть источник и сверить вручную. Серое/синее — есть ссылка или ориентир, но автоматической проверки еще нет.</p>
           <div class="auction-v2-checklist">
             {% for check in item.readiness %}
@@ -633,9 +637,10 @@
               <p class="muted-modern">Проверки появятся после синхронизации v2 по источникам.</p>
             {% endfor %}
           </div>
-        </section>
+        </details>
 
-        <section id="auction-v2-risk-panel" class="panel-modern">
+        <details id="auction-v2-risk-panel" class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Риски</strong><em>{{ item.risk_flags|length }} пунктов</em></span><b>Открыть</b></summary>
           <div class="panel-head"><h2>Риски</h2><span>{{ item.risk_flags|length }}</span></div>
           <div class="auction-v2-risk-list">
             {% for risk in item.risk_flags %}
@@ -650,9 +655,10 @@
               </div>
             {% endfor %}
           </div>
-        </section>
+        </details>
 
-        <section class="panel-modern">
+        <details class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Официальные данные лота</strong><em>{{ item.eqazyna_status_label }}</em></span><b>Открыть</b></summary>
           <div class="panel-head"><h2>Официальные данные лота</h2><span>{{ item.eqazyna_status_label }}</span></div>
           <div class="fact-grid">
             <div><span>Название</span><strong>{{ lot.title }}</strong></div>
@@ -668,9 +674,10 @@
             <div><span>Продавец</span><strong>{{ lot.seller_name or "—" }}</strong></div>
             <div><span>БИН продавца</span><strong>{{ lot.seller_bin or "—" }}</strong></div>
           </div>
-        </section>
+        </details>
 
-        <section id="auction-v2-documents" class="panel-modern">
+        <details id="auction-v2-documents" class="panel-modern auction-v2-collapsible" open>
+          <summary><span><strong>Документы и приложения</strong><em>{{ lot_documents|length }} файлов</em></span><b>Скрыть</b></summary>
           <div class="panel-head"><h2>Документы и приложения</h2><span>{{ lot_documents|length }}</span></div>
           <p class="auction-v2-helper-text">Здесь показаны документы, которые система нашла в официальной карточке или связанных публикациях. Пока Zhertap хранит ссылки на источник: перед заявкой нужно открыть файл, прочитать условия, схему, ограничения и сверить их с кадастром.</p>
           <div class="auction-v2-document-list">
@@ -721,9 +728,10 @@
               </div>
             {% endfor %}
           </div>
-        </section>
+        </details>
 
-        <section class="panel-modern">
+        <details class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>Рыночные аналоги</strong><em>{{ market_comparables|length }} объявлений</em></span><b>Открыть</b></summary>
           <div class="panel-head"><h2>Рыночные аналоги</h2><span>{{ market_comparables|length }}</span></div>
           <p class="auction-v2-helper-text">Krisha, OLX и похожие сайты не являются источниками аукционов. Они нужны только как ручные аналоги, чтобы понять, не завышается ли цена и какой лимит ставить.</p>
           <div class="auction-v2-evidence-list">
@@ -743,9 +751,10 @@
               <p class="muted-modern">Добавьте 1-3 похожих объявления с рынка недвижимости, чтобы v2 уточнил рыночный лимит и риск переоценки. Это сравнение цены, а не поиск аукционов.</p>
             {% endfor %}
           </div>
-        </section>
+        </details>
 
-        <section class="panel-modern">
+        <details class="panel-modern auction-v2-collapsible">
+          <summary><span><strong>История изменений лота</strong><em>{{ history|length }} записей</em></span><b>Открыть</b></summary>
           <div class="panel-head"><h2>История изменений этого лота</h2><span>{{ history|length }}</span></div>
           <div class="table-scroll">
             <table>
@@ -767,7 +776,8 @@
           </div>
         </details>
         {% if parcel_history and parcel_history.publication_count > history|length %}
-          <section class="panel-modern auction-v2-parcel-history">
+          <details class="panel-modern auction-v2-collapsible auction-v2-parcel-history">
+            <summary><span><strong>История участка по кадастру</strong><em>{{ parcel_history.publication_count }} публикаций</em></span><b>Открыть</b></summary>
             <div class="panel-head"><h2>История участка по кадастру</h2><span>{{ parcel_history.publication_count }} публикаций</span></div>
             <p class="auction-v2-helper-text">Это сводка повторных публикаций по кадастровому номеру, а не только изменения текущей карточки. Она помогает увидеть, возвращался ли участок на торги и как менялась стартовая цена.</p>
             <div class="auction-v2-history-summary">
@@ -790,7 +800,7 @@
                 </tbody>
               </table>
             </div>
-          </section>
+          </details>
         {% endif %}
       </div>
 
@@ -823,7 +833,7 @@
             <div><span>Рынок</span><strong>{% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ₸{% else %}нет данных{% endif %}</strong></div>
             <div><span>Агрессивно</span><strong>{% if analysis.max_bid_aggressive_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_aggressive_kzt).replace(",", " ") }} ₸{% else %}нет данных{% endif %}</strong></div>
           </div>
-        </section>
+        </details>
 
         <section class="panel-modern auction-v2-cost-card" id="auction-v2-costs">
           <div class="panel-head"><h2>Бюджет сделки</h2><span>введенные суммы</span></div>
