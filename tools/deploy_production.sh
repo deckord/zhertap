@@ -22,22 +22,25 @@ fi
 git fetch --quiet --prune origin "$BRANCH"
 current_revision="$(git rev-parse HEAD)"
 target_revision="$(git rev-parse "origin/$BRANCH")"
+deployed_revision="$(cat .codex_deployed_sha 2>/dev/null || true)"
 
-if [[ "$current_revision" == "$target_revision" ]]; then
+if [[ "$current_revision" == "$target_revision" && "$deployed_revision" == "$target_revision" ]]; then
   exit 0
 fi
 
-if ! git merge-base --is-ancestor "$current_revision" "$target_revision"; then
-  echo "Production update is not a fast-forward; manual review is required" >&2
-  exit 1
+if [[ "$current_revision" != "$target_revision" ]]; then
+  if ! git merge-base --is-ancestor "$current_revision" "$target_revision"; then
+    echo "Production update is not a fast-forward; manual review is required" >&2
+    exit 1
+  fi
+
+  mkdir -p "$BACKUP_DIR"
+  backup_path="$BACKUP_DIR/land_scout_$(date -u +%Y%m%d_%H%M%S)_${current_revision:0:8}.sql"
+  docker compose exec -T db pg_dump -U land_scout -d land_scout > "$backup_path"
+  chmod 600 "$backup_path"
+
+  git merge --ff-only "origin/$BRANCH"
 fi
-
-mkdir -p "$BACKUP_DIR"
-backup_path="$BACKUP_DIR/land_scout_$(date -u +%Y%m%d_%H%M%S)_${current_revision:0:8}.sql"
-docker compose exec -T db pg_dump -U land_scout -d land_scout > "$backup_path"
-chmod 600 "$backup_path"
-
-git merge --ff-only "origin/$BRANCH"
 
 services=(web worker auction_worker beat monitor bot)
 docker compose build "${services[@]}"

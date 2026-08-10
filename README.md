@@ -50,7 +50,7 @@ PAYMENT_URL=https://pay.kaspi.kz/pay/l31wvjsj
 Production работает на `<production-host>` (`<production-hostname>`) и домене `https://zhertap.kz`. Старые/private `172.*` адреса не использовать как цель боевого деплоя.
 
 Боевые релизы публикуются через отдельную ветку `production`. Сервер проверяет
-её по HTTPS и запускает `tools/deploy_production.sh`: делает резервную копию
+её по HTTPS каждые две минуты и запускает `tools/deploy_production.sh`: делает резервную копию
 PostgreSQL, принимает только fast-forward, применяет Alembic-миграции,
 пересобирает контейнеры приложения и проверяет `/health`. Ветку `production`
 нельзя обновлять через force-push.
