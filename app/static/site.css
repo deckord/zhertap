@@ -8288,3 +8288,130 @@ a.source-status-row:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* Simplified daily auction navigation */
+.auction-v2-module-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 48px;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid rgba(23, 33, 29, .08);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(23, 33, 29, .035);
+}
+
+.auction-v2-module-tabs > a {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.auction-v2-module-tabs > a small {
+  display: none;
+}
+
+.auction-v2-module-tabs > a:hover,
+.auction-v2-module-tabs > a:focus-visible {
+  border: 0;
+  background: #f4f7f5;
+}
+
+.auction-v2-module-tabs > a.is-active {
+  border: 0;
+  background: #eaf6ef;
+  color: var(--green);
+}
+
+.auction-v2-more-menu {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.auction-v2-more-menu summary {
+  min-height: 40px;
+  padding: 11px 14px;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.auction-v2-more-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.auction-v2-more-menu summary::after {
+  margin-left: 6px;
+  content: "⌄";
+}
+
+.auction-v2-more-menu > div {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid rgba(23, 33, 29, .1);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 16px 32px rgba(23, 33, 29, .12);
+}
+
+.auction-v2-more-menu > div a {
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.auction-v2-more-menu > div a:hover,
+.auction-v2-more-menu > div a.is-active {
+  background: #eaf6ef;
+  color: var(--green);
+}
+
+@media (max-width: 620px) {
+  .auction-v2-module-tabs {
+    gap: 2px;
+    padding: 4px;
+  }
+
+  .auction-v2-module-tabs > a {
+    min-height: 38px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+
+  .auction-v2-more-menu {
+    margin-left: 0;
+  }
+
+  .auction-v2-more-menu summary {
+    min-height: 38px;
+    padding: 10px 12px;
+    font-size: 0;
+  }
+
+  .auction-v2-more-menu summary::after {
+    margin: 0;
+    font-size: 16px;
+  }
+}

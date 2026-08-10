@@ -1,62 +1,20 @@
 {% extends "site_base.html" %}
-{% block title %}Тарифы для аукционов — Жертап{% endblock %}
+{% block title %}Тариф и доступ аукционов — Жертап{% endblock %}
 {% block content %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell auction-commercial-shell">
-    <div class="section-kicker"><a class="back-link" href="/cabinet/auctions-v2">← К аукционам</a></div>
     {% include "partials/auction_v2_tabs.html" %}
-    <header class="auction-commercial-hero">
-      <div>
-        <span class="eyebrow">Профессиональная работа с землёй · без AI</span>
-        <h1>Выберите рабочий режим</h1>
-        <p>Платите за инструменты, которые помогают принять решение и провести сделку: экономика лота, контроль сроков, портфель и совместная работа.</p>
-      </div>
-      <span class="auction-plan-current">Сейчас: {{ plan_labels[current_auction_plan] }}</span>
-    </header>
+    <header class="section-title auction-v2-title"><span>Настройки аукционов</span><h1>Тариф и доступ</h1><p>Текущий режим: {{ plan_labels[current_auction_plan] }}. Выберите доступ, который нужен для вашей работы.</p></header>
+    {% if request.query_params.get('required') %}<div class="form-alert neutral">Эта функция входит в платный доступ. Каталог лотов доступен бесплатно.</div>{% endif %}
 
-    {% if request.query_params.get('required') %}
-      <div class="form-alert neutral">Эта функция входит в тариф «Инвестор Pro». Каталог лотов остаётся доступен бесплатно.</div>
-    {% endif %}
-
+    <section class="panel-modern"><div class="panel-head"><div><h2>Ваш тариф</h2><p>Доступные рабочие инструменты аукционов.</p></div><span class="auction-plan-current">{{ plan_labels[current_auction_plan] }}</span></div></section>
     <section class="auction-plan-grid">
-      <article class="auction-plan-card {{ 'is-current' if current_auction_plan == 'observer' else '' }}">
-        <span class="auction-plan-tag">Старт</span>
-        <h2>Наблюдатель</h2>
-        <div class="auction-plan-price"><strong>0 ₸</strong><span>без срока</span></div>
-        <p>Для знакомства с рынком и просмотра новых земельных лотов.</p>
-        <ul><li>Каталог и поиск лотов</li><li>Базовые параметры и сроки</li><li>Переход на официальный источник</li></ul>
-        <a class="secondary-action" href="/cabinet/auctions-v2">Открыть каталог</a>
-      </article>
-
-      <article class="auction-plan-card is-featured {{ 'is-current' if current_auction_plan == 'investor' else '' }}">
-        <span class="auction-plan-tag">Для сделок</span>
-        <h2>Инвестор Pro</h2>
-        <div class="auction-plan-price"><strong>{{ investor_price_kzt }} ₸</strong><span>в месяц</span></div>
-        <p>Полный рабочий стол для самостоятельного инвестора и предпринимателя.</p>
-        <ul><li>Карта, риски и документы</li><li>Личный максимум ставки и полная себестоимость</li><li>ROI, прибыль, сценарии и портфель</li><li>Мониторинги, сроки и журнал сделки</li></ul>
-        {% if current_auction_plan in ['investor', 'team'] %}
-          <a class="primary-action" href="/cabinet/auctions-v2">Перейти к работе</a>
-        {% else %}
-          <a class="primary-action" href="/cabinet/payment?plan=investor">Подключить Investor Pro</a>
-        {% endif %}
-      </article>
-
-      <article class="auction-plan-card {{ 'is-current' if current_auction_plan == 'team' else '' }}">
-        <span class="auction-plan-tag">До 5 человек</span>
-        <h2>Команда</h2>
-        <div class="auction-plan-price"><strong>{{ team_price_kzt }} ₸</strong><span>в месяц</span></div>
-        <p>Единый портфель для партнёров, аналитиков и сотрудников земельного бизнеса.</p>
-        <ul><li>Всё из Investor Pro</li><li>Общие этапы, экономика и заметки</li><li>Роли: управляющий, аналитик, наблюдатель</li><li>Авторство записей и единая история решений</li></ul>
-        {% if current_auction_plan == 'team' %}
-          <a class="primary-action" href="/cabinet/auctions-v2/team">Открыть команду</a>
-        {% else %}
-          <a class="primary-action" href="/cabinet/payment?plan=team">Подключить Team</a>
-        {% endif %}
-      </article>
+      <article class="auction-plan-card {{ 'is-current' if current_auction_plan == 'observer' else '' }}"><span class="auction-plan-tag">Бесплатно</span><h2>Наблюдатель</h2><div class="auction-plan-price"><strong>0 ₸</strong><span>без срока</span></div><p>Поиск и просмотр новых земельных лотов.</p><ul><li>Каталог и поиск</li><li>Базовые сроки и параметры</li><li>Переход к официальному источнику</li></ul><a class="secondary-action" href="/cabinet/auctions-v2">Открыть лоты</a></article>
+      <article class="auction-plan-card is-featured {{ 'is-current' if current_auction_plan == 'investor' else '' }}"><span class="auction-plan-tag">Для самостоятельной работы</span><h2>Investor Pro</h2><div class="auction-plan-price"><strong>{{ investor_price_kzt }} ₸</strong><span>в месяц</span></div><p>Инструменты для отбора, проверки и ведения сделок.</p><ul><li>Мониторинги и уведомления</li><li>Календарь, карта и рынок</li><li>Экономика, лимит ставки и сделки</li></ul>{% if current_auction_plan in ['investor', 'team'] %}<a class="primary-action" href="/cabinet/auctions-v2">Перейти к работе</a>{% else %}<a class="primary-action" href="/cabinet/payment?plan=investor">Подключить Investor Pro</a>{% endif %}</article>
+      <article class="auction-plan-card {{ 'is-current' if current_auction_plan == 'team' else '' }}"><span class="auction-plan-tag">До 5 человек</span><h2>Команда</h2><div class="auction-plan-price"><strong>{{ team_price_kzt }} ₸</strong><span>в месяц</span></div><p>Общий портфель для партнёров и сотрудников.</p><ul><li>Всё из Investor Pro</li><li>Общие этапы и финансы</li><li>Роли и журнал изменений</li></ul>{% if current_auction_plan == 'team' %}<a class="primary-action" href="/cabinet/auctions-v2/team">Настроить команду</a>{% else %}<a class="primary-action" href="/cabinet/payment?plan=team">Подключить Team</a>{% endif %}</article>
     </section>
-
-    <p class="auction-commercial-note">ZHERTAP не подаёт заявку и не участвует в торгах за пользователя. Оплата открывает аналитические и организационные инструменты сервиса.</p>
+    <p class="auction-commercial-note">Жертап не подаёт заявку и не участвует в торгах за пользователя. Доступ открывает организационные и аналитические инструменты сервиса.</p>
   </div>
 </section>
 {% endblock %}

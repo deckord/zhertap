@@ -595,27 +595,15 @@ def test_auction_v2_admin_list_renders_prepared_analysis_sources_and_evidence() 
 
         analysis = session.scalar(select(AuctionLotV2Analysis))
         assert response.status_code == 200
-        assert "Рабочий стол земельных аукционов" in response.text
-        assert "Работа до официальной заявки" in response.text
+        assert "<h1>Лоты</h1>" in response.text
+        assert "Найдите участок, оцените срок" in response.text
         assert "Земельный участок под ИЖС" in response.text
         assert "Риск:" in response.text
-        assert "Данные:" in response.text
-        assert "Сейчас:" in response.text
-        assert "Открыть в карточке" in response.text
-        assert "Процесс до участия" in response.text
-        assert "3/7 закрыто" in response.text
-        assert "Проверить руками" in response.text
+        assert "Следующее действие:" in response.text
+        assert "Открыть лот" in response.text
+        assert "Показать лоты" in response.text
         assert "Рынок</span>" in response.text
-        assert "только для цены" in response.text
-        assert "E-Qazyna: Прием заявок" in response.text
-        assert "Статус E-Qazyna" in response.text
-        assert "Официальный статус" in response.text
-        assert "Все статусы E-Qazyna" in response.text
-        assert "Рынок для оценки цены" in response.text
-        assert "Krisha: рыночные аналоги" in response.text
-        assert "https://krisha.kz/prodazha/uchastkov/kazaxstan/" in response.text
-        assert "OLX: рыночные аналоги" in response.text
-        assert "https://www.olx.kz/nedvizhimost/zemlya/prodazha/" in response.text
+        assert "/cabinet/auctions-v2/map" in response.text
         assert "Регионы</strong> загружаются сразу" in response.text
         eqazyna_source = session.scalar(
             select(AuctionSource).where(AuctionSource.code == "eqazyna_current_lots")
@@ -747,7 +735,7 @@ def test_auction_v2_admin_can_open_map_view() -> None:
         assert "/static/leaflet.js" in response.text
         assert "auction-v2-leaflet-map" in response.text
         assert "Границы ЕГКН" in response.text
-        assert "Свободные" in response.text
+        assert ">Список</a>" in response.text
         assert "auction-v2-map.js" in response.text
         assert "auction-v2-map.js?v=20260803d" in response.text
         assert "auction-v2-map-svg" not in response.text
@@ -883,8 +871,8 @@ def test_auction_v2_admin_can_open_analytics_view() -> None:
             response = client.get("/cabinet/auctions-v2/analytics")
 
     assert response.status_code == 200
-    assert "Районы и аналитика v2" in response.text
-    assert "Районы и населенные пункты" in response.text
+    assert "<h1>Рынок</h1>" in response.text
+    assert "Сравнение территорий" in response.text
     assert "Бородулихинский район" in response.text
     assert "Новая Шульба" in response.text
     assert "Открыть лоты" in response.text
@@ -1112,28 +1100,8 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         assert "Сохранить решение" in detail_response.text
         assert "Моя работа" in detail_response.text
         assert "Изменить решение" in detail_response.text
-        assert "Покрытие ручного процесса" in detail_response.text
-        assert "сайты являются только вспомогательными" in detail_response.text
-        assert "Krisha / OLX / рыночные объявления" in detail_response.text
-        assert "Это не источник аукционов" in detail_response.text
-        assert "Рабочая карточка лота" in detail_response.text
-        assert "Что сделать сейчас" in detail_response.text
-        assert "важных действий" in detail_response.text
-        assert "Что проверить перед участием" in detail_response.text
-        assert "Что уже есть в Zhertap" in detail_response.text
-        assert "Что открыть руками" in detail_response.text
-        assert "Почему важно" in detail_response.text
-        assert "Объявление акимата и ранние публикации" in detail_response.text
-        assert "Генплан, ПДП, красные линии" in detail_response.text
-        assert "Можно ли идти на официальный портал" in detail_response.text
-        assert "Рабочий процесс до участия" in detail_response.text
-        assert "Найти официальный лот" in detail_response.text
-        assert "Сравнить рынок и цену за сотку" in detail_response.text
-        assert "Перейти к юридически значимому действию" in detail_response.text
-        assert "Перед переходом на E-Qazyna" in detail_response.text
-        assert "Что уже найдено системой" in detail_response.text
-        assert "Что система уже сверила" in detail_response.text
-        assert "Документы и приложения" in detail_response.text
+        assert "Экономика" in detail_response.text
+        assert "Документы" in detail_response.text
         assert "Извещение о проведении торгов" in detail_response.text
         assert "Ссылка найдена" in detail_response.text
         assert "Пока только ссылка" in detail_response.text
@@ -1145,7 +1113,7 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         assert "E-Qazyna" in detail_response.text
         assert update_response.status_code == 303
         assert portfolio_response.status_code == 200
-        assert "Портфель земельных сделок" in portfolio_response.text
+        assert "<h1>Сделки</h1>" in portfolio_response.text
         assert "Ожидаемая прибыль" in portfolio_response.text
         assert activity_response.status_code == 303
         assert "Комната сделки" in activity_detail_response.text
@@ -2674,7 +2642,7 @@ def test_auction_v2_empty_search_explains_cadastre_and_scope_links() -> None:
     assert "lot_scope=all" in response.text
     assert "Проверить архив" in response.text
     assert "lot_scope=archive" in response.text
-    assert "Служебно: проверить работу источников" in response.text
+    assert "Служебное обновление каталога" in response.text
 
 
 def test_auction_v2_empty_list_shows_eqazyna_empty_reason() -> None:
@@ -3077,11 +3045,11 @@ def test_auction_v2_internal_navigation_subscriptions_and_calendar() -> None:
         assert "Лента важных событий" not in catalog.text
         assert "Все аукционы" not in catalog.text
         assert subscriptions.status_code == 200
-        assert "Условия интересующего лота" in subscriptions.text
+        assert "Создать условия поиска" in subscriptions.text
         assert calendar.status_code == 200
-        assert "Календарь сроков и выездов" in calendar.text
+        assert "Просрочено и сегодня" in calendar.text
         assert plans.status_code == 200
-        assert "Подписка" in plans.text
+        assert "Тариф и доступ" in plans.text
         assert legacy_plans.headers["location"] == "/cabinet/auctions-v2/plans"
         assert (
             legacy_subscriptions.headers["location"]

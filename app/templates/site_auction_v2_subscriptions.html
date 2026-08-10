@@ -4,50 +4,38 @@
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell auction-v2-subscriptions-shell">
-    <div class="page-actions"><a class="back-link" href="/cabinet/auctions-v2">← К лотам</a><span class="auction-plan-current">{{ auction_access.label }}</span></div>
     <div class="section-title auction-v2-title">
-      <span>Аукционы · Мониторинги и изменения</span>
-      <h1>Следить только за важными лотами</h1>
-      <p>Сохраните условия покупки один раз. Здесь появятся новые совпадения, изменения цены и даты, документы и критические сроки.</p>
+      <span>Аукционы · Мониторинги</span>
+      <h1>Новые лоты и важные изменения</h1>
+      <p>Сначала — то, что требует решения. Затем — сохранённые условия поиска и найденные по ним лоты.</p>
     </div>
     {% include "partials/auction_v2_tabs.html" %}
 
-    {% if request.query_params.get('watchlist') == 'saved' %}<div class="form-alert neutral">Подписка сохранена и уже работает.</div>
+    {% if request.query_params.get('watchlist') == 'saved' %}<div class="form-alert neutral">Мониторинг сохранён и уже работает.</div>
     {% elif request.query_params.get('watchlist') == 'invalid' %}<div class="form-alert">Проверьте числовые значения условий.</div>
-    {% elif request.query_params.get('watchlist') == 'enabled' %}<div class="form-alert neutral">Подписка включена.</div>
-    {% elif request.query_params.get('watchlist') == 'disabled' %}<div class="form-alert neutral">Подписка поставлена на паузу.</div>{% endif %}
+    {% elif request.query_params.get('watchlist') == 'enabled' %}<div class="form-alert neutral">Мониторинг включён.</div>
+    {% elif request.query_params.get('watchlist') == 'disabled' %}<div class="form-alert neutral">Мониторинг поставлен на паузу.</div>{% endif %}
 
     {% if not auction_access.can_monitor %}
       <section class="panel-modern auction-locked-module">
-        <div><span class="eyebrow">Investor Pro</span><h2>Подписки на новые лоты и изменения</h2><p>Каталог доступен бесплатно. Автоматическое слежение за районами, ценами, сроками и документами входит в рабочий тариф.</p></div>
+        <div><span class="eyebrow">Investor Pro</span><h2>Мониторинги новых лотов и изменений</h2><p>Каталог доступен бесплатно. Автоматическое отслеживание районов, цен, сроков и документов входит в рабочий тариф.</p></div>
         <a class="primary-action" href="/cabinet/auctions-v2/plans?required=monitoring">Смотреть тарифы</a>
       </section>
     {% else %}
-      <section class="auction-subscription-layout">
-        <form class="panel-modern auction-v2-watchlist-form auction-subscription-builder" method="post" action="/cabinet/auctions-v2/watchlists">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-          <div class="panel-head"><div><span class="eyebrow">Новая подписка</span><h2>Условия интересующего лота</h2></div></div>
-          <div class="auction-subscription-form-grid">
-            <label class="wide-field">Название<input name="name" value="Мои лоты" maxlength="160" required></label>
-            <label>Регион<input name="region" placeholder="Например, Алматинская область"></label>
-            <label>Район<input name="district" placeholder="Например, Карасайский район"></label>
-            <label>Населённый пункт<input name="locality"></label>
-            <label>Назначение<input name="purpose" placeholder="ИЖС, коммерция, сельхоз..."></label>
-            <label>Цена от, ₸<input name="min_price_kzt" inputmode="decimal"></label>
-            <label>Цена до, ₸<input name="max_price_kzt" inputmode="decimal"></label>
-            <label>Площадь от, га<input name="min_area_ha" inputmode="decimal"></label>
-            <label>Площадь до, га<input name="max_area_ha" inputmode="decimal"></label>
-            <label>Минимальный индекс<input name="min_score" value="70" inputmode="numeric"></label>
-            <label>Риск<select name="risk_level"><option value="">Любой</option>{% for value, label in risk_labels.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
-            <label>Срок<select name="deadline_status"><option value="">Любой</option>{% for value, label in deadline_labels.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
-          </div>
-          <input type="hidden" name="lot_scope" value="active">
-          <button class="primary-action" type="submit">Создать подписку</button>
-          <small>Уведомления показываются только внутри Жертап. Подача заявки и участие остаются на официальном портале.</small>
-        </form>
+      <section class="panel-modern auction-v2-watchlist-panel auction-subscription-events">
+        <div class="panel-head"><div><span class="eyebrow">Требует внимания</span><h2>Важные события</h2></div><span>{{ watchlist_notifications|length }} новых</span>{% if watchlist_notifications %}<form method="post" action="/cabinet/auctions-v2/notifications/seen"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="secondary-action compact" type="submit">Отметить прочитанными</button></form>{% endif %}</div>
+        <p class="auction-v2-panel-copy">Изменения по вашим условиям: новый подходящий лот, цена, срок, документы или риск.</p>
+        <div class="auction-subscription-event-grid">
+          {% for notification in watchlist_notifications %}{% set item = notification.item %}{% set lot = item.lot %}
+            <a class="auction-v2-watchlist-match auction-v2-notification risk-{{ item.analysis.risk_level }}" href="/cabinet/auctions-v2/{{ lot.id }}"><div class="auction-v2-watchlist-title"><span class="auction-v2-new-dot">Новое</span><strong>{{ notification.notification.title or lot.title }}</strong></div><span>{{ notification.notification.detail or notification.watchlist.name }}</span><em>{{ lot.region or 'Регион не указан' }} · {{ notification.notification.created_at.strftime('%d.%m %H:%M') }}</em></a>
+          {% else %}<div class="empty-state compact"><strong>Важных изменений нет</strong><span>Когда по подходящему лоту изменится цена, дата, документ или риск — событие появится здесь.</span></div>{% endfor %}
+        </div>
+      </section>
 
-        <aside class="panel-modern auction-subscription-saved">
-          <div class="panel-head"><div><span class="eyebrow">Активные условия</span><h2>Мои подписки</h2></div><span>{{ watchlists|length }}</span></div>
+      <section class="auction-subscription-layout">
+        <div class="panel-modern auction-subscription-saved">
+          <div class="panel-head"><div><span class="eyebrow">Мои условия</span><h2>Активные мониторинги</h2></div><span>{{ watchlists|length }}</span></div>
+          <p class="auction-v2-panel-copy">Каждый мониторинг ищет лоты по заданным условиям и сообщает только о новых совпадениях.</p>
           <div class="auction-v2-watchlists">
             {% for row in watchlists %}{% set watchlist = row.watchlist %}
               <div class="{{ '' if watchlist.active else 'is-disabled' }}">
@@ -59,24 +47,40 @@
                   <button class="secondary-action compact" type="submit">{{ 'Пауза' if watchlist.active else 'Включить' }}</button>
                 </form>
               </div>
-            {% else %}<div class="empty-state compact"><strong>Подписок пока нет</strong><span>Задайте первый рабочий фильтр слева.</span></div>{% endfor %}
+            {% else %}<div class="empty-state compact"><strong>Мониторингов пока нет</strong><span>Создайте первый рабочий фильтр — система начнёт собирать подходящие лоты.</span></div>{% endfor %}
           </div>
-        </aside>
-      </section>
-
-      <section class="panel-modern auction-v2-watchlist-panel auction-subscription-events">
-        <div class="panel-head"><div><span class="eyebrow">Очередь проверки</span><h2>Важные события</h2></div><span>{{ watchlist_notifications|length }} новых</span>{% if watchlist_notifications %}<form method="post" action="/cabinet/auctions-v2/notifications/seen"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="secondary-action compact" type="submit">Прочитано</button></form>{% endif %}</div>
-        <div class="auction-subscription-event-grid">
-          {% for notification in watchlist_notifications %}{% set item = notification.item %}{% set lot = item.lot %}
-            <a class="auction-v2-watchlist-match auction-v2-notification risk-{{ item.analysis.risk_level }}" href="/cabinet/auctions-v2/{{ lot.id }}"><div class="auction-v2-watchlist-title"><span class="auction-v2-new-dot">Событие</span><strong>{{ notification.notification.title or lot.title }}</strong></div><span>{{ notification.notification.detail or notification.watchlist.name }}</span><em>{{ lot.region or 'Регион не указан' }} · {{ notification.notification.created_at.strftime('%d.%m %H:%M') }}</em></a>
-          {% else %}<div class="empty-state compact"><strong>Новых событий нет</strong><span>Когда данные по подходящему лоту изменятся, событие появится здесь.</span></div>{% endfor %}
         </div>
+
+        <details class="panel-modern auction-v2-watchlist-form auction-subscription-builder">
+          <summary><span><span class="eyebrow">Новый мониторинг</span><strong>Создать условия поиска</strong></span><span class="secondary-action compact">Открыть форму</span></summary>
+          <form method="post" action="/cabinet/auctions-v2/watchlists">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <p class="auction-v2-panel-copy">Достаточно указать район, назначение и бюджет. Остальные условия можно добавить при необходимости.</p>
+            <div class="auction-subscription-form-grid">
+              <label class="wide-field">Название<input name="name" value="Мои лоты" maxlength="160" required></label>
+              <label>Регион<input name="region" placeholder="Например, Алматинская область"></label>
+              <label>Район<input name="district" placeholder="Например, Карасайский район"></label>
+              <label>Населённый пункт<input name="locality"></label>
+              <label>Назначение<input name="purpose" placeholder="ИЖС, коммерция, сельхоз..."></label>
+              <label>Цена от, ₸<input name="min_price_kzt" inputmode="decimal"></label>
+              <label>Цена до, ₸<input name="max_price_kzt" inputmode="decimal"></label>
+              <label>Площадь от, га<input name="min_area_ha" inputmode="decimal"></label>
+              <label>Площадь до, га<input name="max_area_ha" inputmode="decimal"></label>
+              <label>Минимальный индекс<input name="min_score" value="70" inputmode="numeric"></label>
+              <label>Риск<select name="risk_level"><option value="">Любой</option>{% for value, label in risk_labels.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+              <label>Срок<select name="deadline_status"><option value="">Любой</option>{% for value, label in deadline_labels.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+            </div>
+            <input type="hidden" name="lot_scope" value="active">
+            <button class="primary-action" type="submit">Создать мониторинг</button>
+            <small>Уведомления показываются внутри Жертап. Участие в торгах проходит на официальном портале.</small>
+          </form>
+        </details>
       </section>
 
       <section class="panel-modern auction-subscription-matches">
         <div class="panel-head"><div><span class="eyebrow">По вашим условиям</span><h2>Подходящие лоты</h2></div><span>{{ watchlist_matches|length }}</span></div>
         <div class="auction-subscription-event-grid">
-          {% for item in watchlist_matches %}{% set lot = item.lot %}<a class="auction-v2-watchlist-match risk-{{ item.analysis.risk_level }}" href="/cabinet/auctions-v2/{{ lot.id }}"><div class="auction-v2-watchlist-title"><span class="auction-v2-new-dot">{{ item.analysis.score }}</span><strong>{{ lot.title }}</strong></div><span>{{ lot.region or 'Регион не указан' }}{% if lot.district %} · {{ lot.district }}{% endif %}</span><em>{{ item.action_label }}</em></a>{% else %}<div class="empty-state compact"><strong>Совпадений пока нет</strong><span>Расширьте условия или дождитесь обновления каталога.</span></div>{% endfor %}
+          {% for item in watchlist_matches %}{% set lot = item.lot %}<a class="auction-v2-watchlist-match risk-{{ item.analysis.risk_level }}" href="/cabinet/auctions-v2/{{ lot.id }}"><div class="auction-v2-watchlist-title"><span class="auction-v2-new-dot">{{ item.analysis.score }}</span><strong>{{ lot.title }}</strong></div><span>{{ lot.region or 'Регион не указан' }}{% if lot.district %} · {{ lot.district }}{% endif %}</span><em>{{ item.action_label }}</em></a>{% else %}<div class="empty-state compact"><strong>Совпадений пока нет</strong><span>Расширьте условия мониторинга или дождитесь следующего обновления каталога.</span></div>{% endfor %}
         </div>
       </section>
     {% endif %}

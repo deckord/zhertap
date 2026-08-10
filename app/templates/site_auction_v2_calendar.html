@@ -4,29 +4,59 @@
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell auction-calendar-shell">
-    <div class="page-actions"><a class="back-link" href="/cabinet/auctions-v2">← К лотам</a><a class="secondary-action compact" href="/cabinet/auctions-v2/portfolio">Открыть портфель</a></div>
-    <div class="section-title auction-v2-title"><span>Аукционы · Контроль сделок</span><h1>Календарь сроков и выездов</h1><p>Единая очередь по лотам в работе: личные контрольные даты, выезды на участок и начало торгов.</p></div>
+    <div class="section-title auction-v2-title"><span>Аукционы · Контроль сделок</span><h1>Календарь действий</h1><p>Сначала сроки, которые нельзя пропустить. Затем — ближайшие шаги по сделкам и выездам.</p></div>
     {% include "partials/auction_v2_tabs.html" %}
 
     <section class="auction-v2-kpis auction-calendar-kpis">
-      <article><span>Лотов в работе</span><strong>{{ calendar.totals.tracked_lots }}</strong><small>в вашем или командном портфеле</small></article>
-      <article class="{{ 'has-danger' if calendar.totals.overdue else '' }}"><span>Просрочено</span><strong>{{ calendar.totals.overdue }}</strong><small>требуют решения сейчас</small></article>
-      <article><span>Сегодня</span><strong>{{ calendar.totals.today }}</strong><small>контрольных событий</small></article>
-      <article><span>Ближайшие 7 дней</span><strong>{{ calendar.totals.next_7_days }}</strong><small>событий впереди</small></article>
+      <article class="{{ 'has-danger' if calendar.totals.overdue else '' }}"><span>Просрочено</span><strong>{{ calendar.totals.overdue }}</strong><small>нужно разобрать</small></article>
+      <article><span>Сегодня</span><strong>{{ calendar.totals.today }}</strong><small>контрольных действий</small></article>
+      <article><span>7 дней</span><strong>{{ calendar.totals.next_7_days }}</strong><small>ближайший горизонт</small></article>
     </section>
 
     <section class="auction-calendar-layout">
-      <div class="panel-modern auction-calendar-stream">
-        <div class="panel-head"><div><span class="eyebrow">По времени</span><h2>Очередь действий</h2></div><span>{{ calendar.events|length }} событий</span></div>
-        {% for event in calendar.events %}
-          <a class="auction-calendar-event status-{{ event.status }} kind-{{ event.kind }}" href="{{ event.url }}">
-            <time><strong>{{ event.local_at.strftime('%d') }}</strong><span>{{ event.local_at.strftime('%m.%Y') }}</span><small>{{ event.local_at.strftime('%H:%M') }}</small></time>
-            <div><span>{{ event.stage_label }} · {% if event.status == 'overdue' %}просрочено{% elif event.status == 'today' %}сегодня{% elif event.status == 'soon' %}в ближайшие 7 дней{% else %}запланировано{% endif %}</span><h3>{{ event.title }}</h3><p>{{ event.detail }}</p><small>Лот №{{ event.lot.auction_number or event.lot.source_lot_id }} · {{ event.lot.region or 'Регион не указан' }}{% if event.lot.district %} · {{ event.lot.district }}{% endif %}</small></div>
-            <b>Открыть →</b>
-          </a>
-        {% else %}<div class="empty-state"><strong>Календарь пока пуст</strong><span>Добавьте лот в работу и укажите контрольную дату или запланируйте выезд.</span><a class="primary-action compact" href="/cabinet/auctions-v2">Выбрать лоты</a></div>{% endfor %}
+      <div class="auction-calendar-stream">
+        <section class="panel-modern">
+          <div class="panel-head"><div><span class="eyebrow">Срочно</span><h2>Просрочено и сегодня</h2></div><span>{{ calendar.totals.overdue + calendar.totals.today }}</span></div>
+          <p class="auction-v2-panel-copy">Откройте лот и зафиксируйте следующее действие, чтобы срок не потерялся.</p>
+          {% set urgent_events = calendar.events|selectattr('status', 'in', ['overdue', 'today'])|list %}
+          <div class="auction-calendar-event-list">
+          {% for event in urgent_events %}
+            <a class="auction-calendar-event status-{{ event.status }} kind-{{ event.kind }}" href="{{ event.url }}">
+              <time><strong>{{ event.local_at.strftime('%d') }}</strong><span>{{ event.local_at.strftime('%m.%Y') }}</span><small>{{ event.local_at.strftime('%H:%M') }}</small></time>
+              <div><span>{{ event.stage_label }} · {{ 'просрочено' if event.status == 'overdue' else 'сегодня' }}</span><h3>{{ event.title }}</h3><p>{{ event.detail }}</p><small>Лот №{{ event.lot.auction_number or event.lot.source_lot_id }} · {{ event.lot.region or 'Регион не указан' }}{% if event.lot.district %} · {{ event.lot.district }}{% endif %}</small></div>
+              <b>Открыть →</b>
+            </a>
+          {% else %}<div class="empty-state compact"><strong>На сегодня критичных сроков нет</strong><span>Проверьте ближайшие семь дней и назначьте личную контрольную дату для лотов в работе.</span></div>{% endfor %}
+          </div>
+        </section>
+
+        <section class="panel-modern auction-calendar-upcoming">
+          <div class="panel-head"><div><span class="eyebrow">Ближайшие шаги</span><h2>Следующие 7 дней</h2></div><span>{{ calendar.totals.next_7_days }}</span></div>
+          <div class="auction-calendar-event-list">
+          {% for event in calendar.events if event.status == 'soon' %}
+            <a class="auction-calendar-event status-{{ event.status }} kind-{{ event.kind }}" href="{{ event.url }}">
+              <time><strong>{{ event.local_at.strftime('%d') }}</strong><span>{{ event.local_at.strftime('%m.%Y') }}</span><small>{{ event.local_at.strftime('%H:%M') }}</small></time>
+              <div><span>{{ event.stage_label }} · в ближайшие 7 дней</span><h3>{{ event.title }}</h3><p>{{ event.detail }}</p><small>Лот №{{ event.lot.auction_number or event.lot.source_lot_id }} · {{ event.lot.region or 'Регион не указан' }}</small></div>
+              <b>Открыть →</b>
+            </a>
+          {% else %}<div class="empty-state compact"><strong>На ближайшие семь дней сроков нет</strong><span>Не забудьте поставить контрольную дату, если у сделки есть следующий шаг.</span></div>{% endfor %}
+          </div>
+        </section>
+
+        <section class="panel-modern auction-calendar-upcoming">
+          <div class="panel-head"><div><span class="eyebrow">Дальше</span><h2>Запланированные события</h2></div><span>{{ calendar.events|length }} всего</span></div>
+          <div class="auction-calendar-event-list">
+          {% for event in calendar.events if event.status == 'upcoming' %}
+            <a class="auction-calendar-event status-{{ event.status }} kind-{{ event.kind }}" href="{{ event.url }}">
+              <time><strong>{{ event.local_at.strftime('%d') }}</strong><span>{{ event.local_at.strftime('%m.%Y') }}</span><small>{{ event.local_at.strftime('%H:%M') }}</small></time>
+              <div><span>{{ event.stage_label }} · запланировано</span><h3>{{ event.title }}</h3><p>{{ event.detail }}</p><small>Лот №{{ event.lot.auction_number or event.lot.source_lot_id }} · {{ event.lot.region or 'Регион не указан' }}</small></div>
+              <b>Открыть →</b>
+            </a>
+          {% else %}<div class="empty-state compact"><strong>Дальнейших событий нет</strong><span>Рабочие даты появятся после планирования выезда или следующего действия в карточке лота.</span></div>{% endfor %}
+          </div>
+        </section>
       </div>
-      <aside class="panel-modern auction-calendar-guide"><span class="eyebrow">Практика сделки</span><h2>Что ставить в контроль</h2><ol><li><strong>До заявки</strong><span>Документы, ограничения, выезд и решение по лимиту.</span></li><li><strong>До торгов</strong><span>Допуск, гарантийный взнос и финальный максимум ставки.</span></li><li><strong>После победы</strong><span>Договор, оплата, регистрация прав и запуск проекта.</span></li></ol><p>Контрольную дату можно изменить прямо в карточке лота.</p></aside>
+      <aside class="panel-modern auction-calendar-guide"><span class="eyebrow">Ничего не потерять</span><h2>Лоты без контрольной даты</h2><p>У лота в работе должна быть хотя бы одна следующая дата: выезд, проверка документов, подача заявки или личное решение.</p><a class="secondary-action compact" href="/cabinet/auctions-v2/portfolio">Открыть сделки</a><hr><span class="eyebrow">Практика сделки</span><ol><li><strong>До заявки</strong><span>Документы, ограничения, выезд и лимит ставки.</span></li><li><strong>До торгов</strong><span>Допуск, гарантийный взнос и итоговый максимум ставки.</span></li><li><strong>После победы</strong><span>Договор, оплата и регистрация права.</span></li></ol></aside>
     </section>
   </div>
 </section>

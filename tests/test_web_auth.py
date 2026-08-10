@@ -925,8 +925,8 @@ def test_admin_phone_can_open_hidden_auctions_v2() -> None:
         assert "/cabinet/auctions-v2" in cabinet_response.text
         assert "/cabinet/auctions-v2/analytics" not in cabinet_response.text
         assert response.status_code == 200
-        assert "Рабочий стол земельных аукционов" in response.text
-        assert "Рабочий режим" in response.text
+        assert "<h1>Лоты</h1>" in response.text
+        assert "Мониторинги" in response.text
         assert "/cabinet/auctions-v2/analytics" in response.text
 
 

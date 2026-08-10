@@ -4,41 +4,13 @@
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main auction-v2-shell auction-v2-catalog-shell">
-    <div class="page-actions">
-      <a class="back-link" href="/cabinet">В кабинет</a>
-      {% if is_web_admin %}
-        <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
-          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
-          <button class="primary-action compact" type="submit">Обновить данные</button>
-        </form>
-      {% else %}
-        <span class="auction-plan-current">{{ auction_access.label }}</span>
-      {% endif %}
-    </div>
-
     <div class="section-title auction-v2-title">
-      <span>Аукционы · Рабочий режим подбора лотов</span>
-      <h1>Рабочий стол земельных аукционов</h1>
-      <p>Найдите подходящие лоты по сроку, цене и региону. Подробные проверки и документы откроются внутри карточки.</p>
+      <span>Аукционы</span>
+      <h1>Лоты</h1>
+      <p>Найдите участок, оцените срок и добавьте подходящий лот в работу.</p>
     </div>
 
     {% include "partials/auction_v2_tabs.html" %}
-
-    {% if not auction_access.can_open_detail %}
-      <section class="auction-upgrade-banner">
-        <div><span class="eyebrow">Режим «Наблюдатель»</span><h2>Каталог открыт, рабочие расчёты — в Investor Pro</h2><p>Смотрите новые лоты бесплатно. Тариф Pro добавляет документы, карту, полную себестоимость, лимит ставки, ROI, портфель и мониторинг сроков.</p></div>
-        <a class="primary-action" href="/cabinet/auctions-v2/plans">Сравнить тарифы</a>
-      </section>
-    {% elif auction_workspace %}
-      <a class="auction-workspace-strip" href="/cabinet/auctions-v2/team"><span>Общее пространство</span><strong>{{ auction_workspace.name }}</strong><small>Все изменения сохраняются в командный портфель</small></a>
-    {% endif %}
-
-    <section class="auction-v2-product-modules" aria-label="Профессиональные модули">
-      <a href="/cabinet/search"><span>Радар земли</span><strong>Искать участки до аукциона</strong><small>Свободные зоны, кадастр и ограничения</small></a>
-      <a href="/cabinet/auctions-v2/subscriptions"><span>Мониторинги</span><strong>Следить за нужными лотами</strong><small>Новые совпадения, сроки и изменения</small></a>
-      <a href="{{ '/cabinet/auctions-v2/calendar' if auction_access.can_use_portfolio else '/cabinet/auctions-v2/plans?required=calendar' }}"><span>Календарь</span><strong>Не пропускать контрольные даты</strong><small>Торги, выезды и личные сроки</small></a>
-      <a href="{{ '/cabinet/auctions-v2/portfolio' if auction_access.can_use_portfolio else '/cabinet/auctions-v2/plans?required=portfolio' }}"><span>Портфель</span><strong>Управлять капиталом и сделками</strong><small>Бюджет, прибыль, ROI и этапы</small></a>
-    </section>
 
     {% if filter_error %}
       <div class="form-alert">{{ filter_error }}</div>
@@ -47,64 +19,24 @@
       <div class="form-alert neutral">Статус лота обновлен.</div>
     {% endif %}
 
-    {% if request.query_params.get("sync") == "queued" %}
-      <div class="form-alert neutral">Синхронизация v2 поставлена в очередь.</div>
-    {% elif request.query_params.get("sync") == "done" %}
-      <div class="form-alert neutral">Синхронизация v2 выполнена: E-Qazyna {{ request.query_params.get("lots_fetched") or 0 }} лотов, новых {{ request.query_params.get("lots_created") or 0 }}, обновлено {{ request.query_params.get("lots_updated") or 0 }}; v2 {{ request.query_params.get("lots_checked") or 0 }} лотов, {{ request.query_params.get("sources_checked") or 0 }} источников, документы {{ request.query_params.get("documents_downloaded") or 0 }}/{{ request.query_params.get("documents_checked") or 0 }}, web {{ request.query_params.get("web_notifications") or 0 }}, Telegram {{ request.query_params.get("telegram_notifications") or 0 }}.</div>
-    {% endif %}
-    {% if request.query_params.get("watchlist") == "saved" %}
-      <div class="form-alert neutral">Мониторинг сохранен.</div>
-    {% elif request.query_params.get("watchlist") == "invalid" %}
-      <div class="form-alert">Проверьте числа в фильтре мониторинга.</div>
-    {% elif request.query_params.get("watchlist") == "enabled" %}
-      <div class="form-alert neutral">Мониторинг включен.</div>
-    {% elif request.query_params.get("watchlist") == "disabled" %}
-      <div class="form-alert neutral">Мониторинг поставлен на паузу.</div>
-    {% endif %}
-    {% if request.query_params.get("notifications") == "seen" %}
-      <div class="form-alert neutral">Новые web-уведомления отмечены просмотренными: {{ request.query_params.get("count") or 0 }}.</div>
+    {% if not auction_access.can_open_detail %}
+      <section class="auction-upgrade-banner">
+        <div><span class="eyebrow">Режим «Наблюдатель»</span><h2>Просматривайте каталог бесплатно</h2><p>Полная карточка, расчёты и работа со сделкой доступны в Investor Pro.</p></div>
+        <a class="primary-action" href="/cabinet/auctions-v2/plans">Выбрать тариф</a>
+      </section>
     {% endif %}
 
-    <section class="auction-v2-kpis">
-      <article>
-        <span>Всего в каталоге</span>
-        <strong>{{ dashboard.lots_total }}</strong>
-        <small>{{ dashboard.active_lots }} активных сейчас</small>
-      </article>
-      <article>
-        <span>Активные лоты</span>
-        <strong>{{ dashboard.active_lots }}</strong>
-        <small>прием заявок и ближайшие торги</small>
-      </article>
-      <article>
-        <span>Высокий индекс</span>
-        <strong>{{ dashboard.high_score_lots }}</strong>
-        <small>смотреть в первую очередь</small>
-      </article>
-      <article>
-        <span>Нужна осторожность</span>
-        <strong>{{ dashboard.high_risk_lots }}</strong>
-        <small>перед участием нужна ручная проверка</small>
-      </article>
-      <article class="auction-v2-kpi-meta">
-        <span>Данные обновлены</span>
-        <strong>{% if dashboard.last_v2_sync %}{{ dashboard.last_v2_sync.strftime("%d.%m %H:%M") }}{% else %}—{% endif %}</strong>
-        <small>{{ dashboard.sources_live }} источника в работе</small>
-      </article>
-      <article class="auction-v2-kpi-hidden">
-        <span>Источники</span>
-        <strong>{{ dashboard.sources_total }}</strong>
-        <small>{{ dashboard.sources_live }} в работе · {{ dashboard.sources_planned }} в очереди</small>
-      </article>
-    </section>
+    {% if is_web_admin %}
+      <details class="auction-v2-technical-note">
+        <summary>Служебное обновление каталога</summary>
+        <form class="auction-v2-sync-form" method="post" action="/cabinet/auctions-v2/sync">
+          <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+          <button class="secondary-action compact" type="submit">Обновить данные</button>
+        </form>
+      </details>
+    {% endif %}
 
-    <details class="auction-v2-sync-note auction-v2-technical-note">
-      <summary>Данные обновлены: <strong>{% if dashboard.last_v2_sync %}{{ dashboard.last_v2_sync.strftime("%d.%m.%Y %H:%M") }}{% else %}еще не запускалась{% endif %}</strong></summary>
-      <span>Каталог обновляется автоматически</span>
-      <strong>{% if dashboard.last_v2_sync %}{{ dashboard.last_v2_sync.strftime("%d.%m.%Y %H:%M") }}{% else %}еще не запускалась{% endif %}</strong>
-      <em>{{ dashboard.crawl_runs }} запусков · источники и документы проверяются отдельно</em>
-    </details>
-
+    {% if false %}
     <details class="panel-modern auction-v2-collapsible auction-v2-process-overview">
       <summary>
         <span>
@@ -141,6 +73,8 @@
         </article>
       </div>
     </details>
+
+    {% endif %}
 
     {# Управление подписками вынесено в отдельную внутреннюю вкладку. #}
     {% if false %}
@@ -267,6 +201,7 @@
     {% endif %}
     {% endif %}
 
+    {% if false %}
     <details class="panel-modern auction-v2-source-overview">
       <summary>
         <span>
@@ -311,6 +246,7 @@
       </section>
       {% if is_web_admin %}<a class="auction-v2-admin-link" href="/cabinet/auctions-v2/sources">Служебно: проверить работу источников</a>{% endif %}
     </details>
+    {% endif %}
 
     <form id="auction-v2-filter-form" class="auction-web-form auction-v2-filter" method="get" action="/cabinet/auctions-v2" data-catalog-form="auctions">
       <div class="auction-v2-filter-intro">
@@ -346,6 +282,7 @@
         </select>
       </label>
       <button class="primary-action auction-v2-filter-submit" type="submit">Показать лоты</button>
+      <a class="secondary-action compact" href="/cabinet/auctions-v2/map{% if filter_query %}?{{ filter_query }}{% endif %}">Карта</a>
 
       <details class="auction-v2-filter-advanced">
         <summary><span>Расширенный отбор</span><small>регион, цена, площадь, риск и готовность проверки</small></summary>
@@ -406,11 +343,6 @@
         <h2>Лоты: {{ total }}</h2>
         <span>страница {{ page }} · показано {{ lots|length }} из {{ total }}</span>
       </div>
-      <div class="auction-v2-list-hint">
-        <span><b>Как читать карточку:</b> статус и срок — можно ли успеть подать заявку; цена — с чего начинаются торги; индекс — что проверить первым.</span>
-        <span><b>Процесс до участия</b>, источники, документы и полная оценка находятся внутри лота.</span>
-        <span>Рынок</span><span>только для цены: Krisha и OLX — рыночные аналоги, не источники аукционов.</span>
-      </div>
       <div class="auction-v2-list">
         {% for item in lots %}
           {% set lot = item.lot %}
@@ -430,25 +362,13 @@
               </div>
               <h3><a href="{{ '/cabinet/auctions-v2/' ~ lot.id if auction_access.can_open_detail else '/cabinet/auctions-v2/plans?required=detail' }}">{{ lot.title }}</a></h3>
               <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
-              <span class="auction-v2-card-data">Данные: {{ item.confidence_label|lower }} полнота · {{ item.manual_process_counts.required_done }}/{{ item.manual_process_counts.required }} закрыто · Проверить руками: {{ item.manual_process_counts.required_open }} · Статус E-Qazyna: {{ item.eqazyna_status_label }}</span>
               {% if next_action %}
-                <div class="auction-v2-card-next next-{{ next_action.status }}">
-                  <span>Следующий шаг</span>
-                  <strong>Сейчас: {{ next_action.title }}</strong>
-                  <p>{{ next_action.detail }}</p>
-                  <div>
-                    {% if next_action.url %}
-                      <a href="{{ next_action.url }}" target="_blank" rel="noopener">{{ next_action.url_label }}</a>
-                    {% endif %}
-                    <a href="{% if auction_access.can_open_detail %}/cabinet/auctions-v2/{{ lot.id }}{% if next_action.anchor %}{{ next_action.anchor }}{% endif %}{% else %}/cabinet/auctions-v2/plans?required=detail{% endif %}">Открыть в карточке</a>
-                  </div>
-                </div>
+                <span class="auction-v2-card-data">Следующее действие: {{ next_action.title }}</span>
               {% endif %}
             </div>
             <div class="auction-v2-card-side">
               <div><span>Стартовая цена</span><strong>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong></div>
               <div><span>Площадь</span><strong>{% if lot.area_ha is not none %}{{ "{:g}".format(lot.area_ha) }} га{% else %}—{% endif %}</strong></div>
-              <div><span>Индекс</span><strong class="auction-v2-side-score">{{ analysis.score }}<small>/100</small></strong></div>
               <a class="primary-action compact" href="{{ '/cabinet/auctions-v2/' ~ lot.id if auction_access.can_open_detail else '/cabinet/auctions-v2/plans?required=detail' }}">{{ 'Открыть лот' if auction_access.can_open_detail else 'Открыть в Pro' }}</a>
             </div>
           </article>

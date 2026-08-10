@@ -42,6 +42,7 @@
 
     {% include "partials/auction_v2_tabs.html" %}
 
+    {% set economics_panel %}
     <section class="auction-metric-grid auction-v2-metrics auction-v2-investment-metrics">
       <article><span>Полный бюджет</span><strong>{% if item.investment_case.all_in_cost_kzt %}{{ "{:,.0f}".format(item.investment_case.all_in_cost_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>Покупка, известные расходы, финансирование и резерв</small></article>
       <article><span>Потенциальная прибыль</span><strong>{% if item.investment_case.expected_profit_kzt is not none %}{{ "{:,.0f}".format(item.investment_case.expected_profit_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong><small>До налогов на доход и непредвиденных расходов</small></article>
@@ -52,6 +53,7 @@
       <article><span>Срок</span><strong>{{ item.deadline_label }}</strong><small>{{ item.eqazyna_status_label }}</small></article>
       <article><span>Полевой осмотр</span><strong>{{ item.field_inspection.status_label }}</strong><small>{{ item.field_inspection.checked_count }} из {{ item.field_inspection.total_checks }} фактов отмечено</small></article>
     </section>
+    {% endset %}
 
     <section class="panel-modern auction-v2-decision-summary decision-{{ item.decision_summary.status }}">
       <div class="auction-v2-decision-main">
@@ -200,6 +202,9 @@
       {% endif %}
     </section>
 
+    {{ economics_panel }}
+
+    {% set deal_room_panel %}
     <section class="panel-modern auction-v2-deal-room">
       <div class="panel-head">
         <div><span class="eyebrow">Без AI · приватно</span><h2>Комната сделки</h2></div>
@@ -227,7 +232,9 @@
         {% endfor %}
       </div>
     </section>
+    {% endset %}
 
+    {% if false %}
     <section class="panel-modern auction-v2-data-quality" id="auction-v2-data-quality">
       <div class="panel-head">
         <div>
@@ -398,6 +405,8 @@
         </article>
       </div>
     </section>
+
+    {% endif %}
 
     <section id="auction-v2-review-board" class="panel-modern auction-v2-review-board">
       <div class="panel-head">
@@ -884,6 +893,8 @@
         </section>
       </aside>
     </div>
+
+    {{ deal_room_panel }}
   </div>
 </section>
 {% endblock %}
