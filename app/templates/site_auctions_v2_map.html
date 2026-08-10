@@ -151,8 +151,12 @@
     </form>
 
     <section class="panel-modern auction-v2-map-board">
-      <div class="panel-head"><h2>Лоты на карте</h2><span>{{ map_data.mapped }} маркеров</span></div>
+      <div class="panel-head"><div><h2>Карта районов</h2><p class="auction-v2-helper-text">Сначала районы, затем конкретные лоты в боковой панели.</p></div><span>{{ map_data.district_groups|length }} районов</span></div>
       <div class="auction-v2-map-toolbar" aria-label="Слои карты">
+        <div class="auction-v2-map-mode" role="group" aria-label="Режим карты">
+          <button class="is-active" type="button" data-auction-v2-map-mode="district">Районы</button>
+          <button type="button" data-auction-v2-map-mode="lot">Лоты</button>
+        </div>
         <label><input type="checkbox" value="active" data-auction-v2-layer checked> Активные <strong>{{ map_data.scope_counts.active }}</strong></label>
         <label><input type="checkbox" value="future" data-auction-v2-layer checked> Будущие <strong>{{ map_data.scope_counts.future }}</strong></label>
         <label><input type="checkbox" value="archive" data-auction-v2-layer checked> Архив <strong>{{ map_data.scope_counts.archive }}</strong></label>
@@ -173,6 +177,7 @@
     </section>
 
     <script id="auction-v2-map-data" type="application/json">{{ map_data.markers | tojson }}</script>
+    <script id="auction-v2-map-district-data" type="application/json">{{ map_data.district_groups | tojson }}</script>
     <script id="auction-v2-egkn-layer-data" type="application/json">{{ map_data.egkn_layers | tojson }}</script>
   </div>
 </section>
@@ -180,6 +185,6 @@
 {% block scripts %}
 <script src="/static/site-catalogs.js?v=20260804b" defer></script>
 <script src="/static/leaflet.js?v=20260807a" defer></script>
-<script src="/static/auction-v2-map.js?v=20260803d" defer></script>
+<script src="/static/auction-v2-map.js?v=20260810-districts" defer></script>
 {% endblock %}
 

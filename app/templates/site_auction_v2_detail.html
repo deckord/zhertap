@@ -835,7 +835,7 @@
           </div>
         </details>
 
-        <section class="panel-modern auction-v2-cost-card" id="auction-v2-costs">
+        <section class="panel-modern auction-v2-legacy-tool auction-v2-cost-card" id="auction-v2-costs">
           <div class="panel-head"><h2>Бюджет сделки</h2><span>введенные суммы</span></div>
           <p class="auction-v2-helper-text">Гарантийный взнос — временно заблокированный капитал для допуска к торгам, а не дополнительная стоимость земли.</p>
           <div class="auction-v2-cost-summary">
@@ -850,7 +850,7 @@
           <a class="secondary-action compact" href="#auction-v2-decision-form">Заполнить расходы</a>
         </section>
 
-        <section class="panel-modern">
+        <section class="panel-modern auction-v2-legacy-tool">
           <div class="panel-head"><h2>Добавить рыночный аналог</h2><span>не аукцион</span></div>
           <p class="auction-v2-helper-text">Сюда добавляются похожие объявления только для сравнения цены. Лоты аукционов берутся из официальных источников.</p>
           {% if auction_access.can_edit %}<form class="auction-v2-pipeline-form" method="post" action="/cabinet/auctions-v2/{{ lot.id }}/market-comparables">
@@ -881,7 +881,7 @@
           </form>{% else %}<p class="muted-modern">Добавление аналогов недоступно для роли наблюдателя.</p>{% endif %}
         </section>
 
-        <section class="panel-modern">
+        <section class="panel-modern auction-v2-legacy-tool">
           <div class="panel-head"><h2>Гео</h2><span>{{ item.coordinate_label }}</span></div>
           <div class="fact-grid auction-v2-side-facts">
             <div><span>Широта</span><strong>{{ "%.6f"|format(geo_check.latitude) if geo_check.latitude is not none else "—" }}</strong></div>
@@ -904,7 +904,8 @@
       </aside>
     </div>
 
-    {{ deal_room_panel }}
+    {# Инструменты бюджета, ручных аналогов, гео и комнаты сделки перенесены
+       из основной карточки: решение опирается на проверку, историю и рынок. #}
   </div>
 </section>
 {% endblock %}

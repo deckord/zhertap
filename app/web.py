@@ -3198,6 +3198,7 @@ def web_auctions_v2_map(
                     "limit": settings.auction_v2_map_limit,
                     "risk_counts": {"low": 0, "medium": 0, "high": 0, "unknown": 0},
                     "scope_counts": {"active": 0, "future": 0, "archive": 0},
+                    "district_groups": [],
                 },
                 filters=filter_values,
                 filter_query=filter_query,

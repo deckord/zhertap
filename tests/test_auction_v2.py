@@ -708,6 +708,10 @@ def test_auction_v2_map_markers_use_filtered_lots_and_geo_status() -> None:
         assert map_data["total"] == 2
         assert map_data["mapped"] == 1
         assert map_data["without_coordinates"] == 1
+        assert map_data["district_groups"][0]["count"] == 2
+        assert map_data["district_groups"][0]["mapped"] == 1
+        assert map_data["district_groups"][0]["without_coordinates"] == 1
+        assert mapped_lot.id in map_data["district_groups"][0]["lot_ids"]
         assert isinstance(markers, list)
         assert markers[0]["id"] == mapped_lot.id
         assert markers[0]["latitude"] == pytest.approx(51.1282)
@@ -737,7 +741,9 @@ def test_auction_v2_admin_can_open_map_view() -> None:
         assert "Границы ЕГКН" in response.text
         assert ">Список</a>" in response.text
         assert "auction-v2-map.js" in response.text
-        assert "auction-v2-map.js?v=20260803d" in response.text
+        assert "auction-v2-map.js?v=20260810-districts" in response.text
+        assert "auction-v2-map-district-data" in response.text
+        assert "Карта районов" in response.text
         assert "auction-v2-map-svg" not in response.text
         assert lot.id in response.text
         assert "51.1282" in response.text
@@ -1116,8 +1122,8 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         assert "<h1>Сделки</h1>" in portfolio_response.text
         assert "Ожидаемая прибыль" in portfolio_response.text
         assert activity_response.status_code == 303
-        assert "Комната сделки" in activity_detail_response.text
-        assert "Проверить технические условия по электричеству" in activity_detail_response.text
+        assert "Комната сделки" not in activity_detail_response.text
+        assert "Проверить технические условия по электричеству" not in activity_detail_response.text
         assert update_response.headers["location"] == (
             f"/cabinet/auctions-v2/{lot.id}?pipeline=saved"
         )
@@ -1462,7 +1468,7 @@ def test_team_member_uses_owner_portfolio_and_authored_deal_room() -> None:
         assert stored is not None
         assert stored.stage == "decided_to_participate"
         assert member.phone in detail_response.text
-        assert "Участвуем до лимита" in detail_response.text
+        assert "Участвуем до лимита" not in detail_response.text
 
 
 def test_team_viewer_cannot_change_shared_pipeline() -> None:

@@ -2538,6 +2538,7 @@ def list_auction_v2_map_markers(
         limit=marker_limit,
     )
     markers: list[dict[str, object]] = []
+    district_groups: dict[tuple[str, str, str], dict[str, object]] = {}
     without_coordinates = 0
     with_boundaries = 0
     risk_counts = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
@@ -2556,10 +2557,36 @@ def list_auction_v2_map_markers(
         geo_check = item.geo_check
         latitude = geo_check.latitude
         longitude = geo_check.longitude
+        marker_scope = _map_marker_scope(lot, item.deadline_status)
+        district_key = (
+            (lot.region or "").strip(),
+            (lot.district or "").strip(),
+            (lot.locality or "").strip(),
+        )
+        district_label = district_key[1] or district_key[2] or district_key[0] or "Район не указан"
+        group = district_groups.setdefault(
+            district_key,
+            {
+                "id": "district:" + "|".join(district_key),
+                "label": district_label,
+                "region": district_key[0],
+                "district": district_key[1],
+                "locality": district_key[2],
+                "count": 0,
+                "mapped": 0,
+                "lot_ids": [],
+                "latitude_sum": 0.0,
+                "longitude_sum": 0.0,
+            },
+        )
+        group["count"] = int(group["count"]) + 1
+        group["lot_ids"].append(lot.id)
         if latitude is None or longitude is None:
             without_coordinates += 1
             continue
-        marker_scope = _map_marker_scope(lot, item.deadline_status)
+        group["mapped"] = int(group["mapped"]) + 1
+        group["latitude_sum"] = float(group["latitude_sum"]) + float(latitude)
+        group["longitude_sum"] = float(group["longitude_sum"]) + float(longitude)
         if marker_scope in scope_counts:
             scope_counts[marker_scope] += 1
         risk_key = analysis.risk_level if analysis.risk_level in risk_counts else "unknown"
@@ -2601,6 +2628,16 @@ def list_auction_v2_map_markers(
                 "boundary": boundary,
             }
         )
+    serialized_district_groups: list[dict[str, object]] = []
+    for group in district_groups.values():
+        mapped = int(group["mapped"])
+        latitude_sum = float(group.pop("latitude_sum"))
+        longitude_sum = float(group.pop("longitude_sum"))
+        group["without_coordinates"] = int(group["count"]) - mapped
+        group["latitude"] = round(latitude_sum / mapped, 7) if mapped else None
+        group["longitude"] = round(longitude_sum / mapped, 7) if mapped else None
+        serialized_district_groups.append(group)
+    serialized_district_groups.sort(key=lambda row: (-int(row["count"]), str(row["label"])))
     return {
         "markers": markers,
         "total": int(total),
@@ -2614,6 +2651,7 @@ def list_auction_v2_map_markers(
         "limit": marker_limit,
         "risk_counts": risk_counts,
         "scope_counts": scope_counts,
+        "district_groups": serialized_district_groups,
     }
 
 

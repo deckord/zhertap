@@ -17,12 +17,5 @@
   <a class="{{ 'is-active' if path == '/cabinet/auctions-v2/analytics' else '' }}" href="{{ '/cabinet/auctions-v2/analytics' if auction_access.can_use_analytics else '/cabinet/auctions-v2/plans?required=analytics' }}{% if auction_access.can_use_analytics and filter_query is defined and filter_query %}?{{ filter_query }}{% endif %}">
     <span>Рынок</span>
   </a>
-  <details class="auction-v2-more-menu">
-    <summary>Настройки</summary>
-    <div>
-      {% if auction_access.plan == 'team' %}<a class="{{ 'is-active' if path.startswith('/cabinet/auctions-v2/team') else '' }}" href="/cabinet/auctions-v2/team">Команда</a>{% endif %}
-      <a class="{{ 'is-active' if path == '/cabinet/auctions-v2/plans' else '' }}" href="/cabinet/auctions-v2/plans">Тариф и доступ</a>
-    </div>
-  </details>
 </nav>
 

@@ -8390,6 +8390,12 @@ a.source-status-row:focus-visible {
 
 /* Detail page: keep the decision in focus and move the dossier behind compact disclosures. */
 .auction-v2-detail-shell { max-width: 1440px; margin-inline: auto; }
+.cabinet-main.auction-v2-detail-shell,
+.cabinet-main.auction-v2-map-page,
+.cabinet-main.auction-v2-catalog-shell {
+  width: min(100%, 1360px);
+  margin-inline: auto;
+}
 .auction-v2-detail-shell .auction-v2-decision-form { max-width: 1120px; }
 .auction-v2-detail-shell details.panel-modern { padding: 0; overflow: hidden; }
 .auction-v2-detail-shell details.panel-modern > summary {
@@ -8410,6 +8416,17 @@ a.source-status-row:focus-visible {
 .auction-v2-detail-shell .auction-v2-form-details > summary { min-height: 52px; padding: 14px 16px; }
 .auction-v2-detail-shell .auction-v2-form-details[open] > :not(summary) { margin-left: 16px; margin-right: 16px; }
 .auction-v2-detail-shell .auction-v2-secondary-summary { display: none; }
+.auction-v2-detail-shell .auction-v2-legacy-tool { display: none; }
+.auction-v2-map-mode { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: #f7faf8; }
+.auction-v2-map-mode button { min-height: 32px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-weight: 750; padding: 4px 10px; cursor: pointer; transition: all .2s ease-in-out; }
+.auction-v2-map-mode button:hover, .auction-v2-map-mode button:focus-visible { color: var(--green); background: #eef8f2; outline: none; }
+.auction-v2-map-mode button.is-active { background: #fff; color: var(--green); box-shadow: 0 1px 3px rgba(17, 114, 73, .12); }
+.auction-v2-district-marker span { background: var(--green); color: #fff; border: 3px solid #fff; box-shadow: 0 4px 14px rgba(17, 114, 73, .28); }
+.auction-v2-map-lot-list { display: grid; gap: 8px; margin-top: 14px; max-height: 430px; overflow: auto; }
+.auction-v2-map-lot-list a { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; color: inherit; text-decoration: none; transition: all .2s ease-in-out; }
+.auction-v2-map-lot-list a:hover, .auction-v2-map-lot-list a:focus-visible { border-color: var(--green); background: #f4fbf7; outline: none; }
+.auction-v2-map-lot-list strong { font-size: 13px; line-height: 1.35; }
+.auction-v2-map-lot-list span { color: var(--muted); font-size: 12px; }
 
 @media (max-width: 620px) {
   .auction-v2-module-tabs {

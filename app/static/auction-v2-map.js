@@ -1,5 +1,6 @@
 (function () {
   const dataEl = document.getElementById("auction-v2-map-data");
+  const districtDataEl = document.getElementById("auction-v2-map-district-data");
   const egknLayerDataEl = document.getElementById("auction-v2-egkn-layer-data");
   const mapEl = document.querySelector("[data-auction-v2-map]");
   const emptyEl = document.querySelector("[data-auction-v2-empty]");
@@ -10,6 +11,7 @@
   );
   const boundaryInput = document.querySelector("[data-auction-v2-boundary-toggle]");
   const fitButton = document.querySelector("[data-auction-v2-fit]");
+  const modeButtons = Array.from(document.querySelectorAll("[data-auction-v2-map-mode]"));
 
   if (!dataEl || !mapEl || !cardEl) {
     return;
@@ -29,6 +31,8 @@
     return Number.isFinite(lat) && Number.isFinite(lon);
   });
   const egknLayers = parseJson(egknLayerDataEl, []);
+  const districts = parseJson(districtDataEl, []);
+  let mapMode = "district";
   let selectedId = markers[0] ? markers[0].id : "";
   let markerLayer = null;
   let boundaryLayer = null;
@@ -165,6 +169,34 @@
     window.requestAnimationFrame(() => cardEl.classList.remove("is-updating"));
   };
 
+  const renderDistrictCard = (district) => {
+    cardEl.classList.add("is-updating");
+    cardEl.replaceChildren();
+    if (!district) {
+      renderCard(null);
+      return;
+    }
+    const lots = markers.filter((item) => district.lot_ids.includes(item.id));
+    cardEl.append(
+      textNode("span", district.region || "Район"),
+      textNode("strong", `${district.label}: ${district.count} лотов`),
+      textNode("p", district.mapped ? `На карте ${district.mapped}; без координат ${district.without_coordinates}.` : "В этом районе пока нет подтвержденных координат.")
+    );
+    const list = document.createElement("div");
+    list.className = "auction-v2-map-lot-list";
+    lots.forEach((item) => {
+      const link = document.createElement("a");
+      link.href = safeUrl(item.url);
+      link.innerHTML = `<strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.price_text)} · ${escapeHtml(item.deadline_label)}</span>`;
+      list.append(link);
+    });
+    if (!lots.length) {
+      list.append(textNode("p", "Лоты есть в выборке, но их координаты еще не подтверждены."));
+    }
+    cardEl.append(list);
+    window.requestAnimationFrame(() => cardEl.classList.remove("is-updating"));
+  };
+
   const geometryStyle = (item, selected) => {
     const risk = item.risk || "low";
     const palette = {
@@ -294,6 +326,32 @@
       });
   };
 
+  const renderDistricts = (items) => {
+    markerLayer.clearLayers();
+    boundaryLayer.clearLayers();
+    contextLayer.clearLayers();
+    const visibleIds = new Set(items.map((item) => item.id));
+    districts
+      .map((district) => ({
+        ...district,
+        lot_ids: district.lot_ids.filter((id) => visibleIds.has(id)),
+      }))
+      .filter((district) => district.lot_ids.length && Number.isFinite(Number(district.latitude)) && Number.isFinite(Number(district.longitude)))
+      .forEach((district) => {
+        const visibleCount = district.lot_ids.length;
+        const icon = window.L.divIcon({
+          className: "auction-v2-leaflet-marker auction-v2-district-marker",
+          html: `<span>${visibleCount}</span>`,
+          iconSize: [44, 44],
+          iconAnchor: [22, 22],
+        });
+        const marker = window.L.marker([Number(district.latitude), Number(district.longitude)], { icon, keyboard: true, title: district.label });
+        marker.bindTooltip(`<strong>${escapeHtml(district.label)}</strong>: ${visibleCount} лотов`, { direction: "top", opacity: 0.95 });
+        marker.on("click", () => renderDistrictCard(district));
+        marker.addTo(markerLayer);
+      });
+  };
+
   const fitToItems = (items) => {
     if (!map) {
       return;
@@ -334,8 +392,13 @@
     if (emptyEl) {
       emptyEl.hidden = items.length > 0;
     }
-    renderLots(items);
-    renderCard(items.find((item) => item.id === selectedId));
+    if (mapMode === "district") {
+      renderDistricts(items);
+      renderDistrictCard(null);
+    } else {
+      renderLots(items);
+      renderCard(items.find((item) => item.id === selectedId));
+    }
   };
 
   const bootLeaflet = () => {
@@ -405,6 +468,12 @@
       fitToItems(visibleMarkers());
     });
   }
+  modeButtons.forEach((button) => button.addEventListener("click", () => {
+    mapMode = button.dataset.auctionV2MapMode || "district";
+    modeButtons.forEach((item) => item.classList.toggle("is-active", item === button));
+    renderAll();
+    fitToItems(visibleMarkers());
+  }));
 
   bootLeaflet();
 })();
