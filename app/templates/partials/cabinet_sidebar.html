@@ -13,12 +13,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
       Обзор
     </a>
-    {% if is_web_admin %}
-    <a class="{{ 'is-active' if request.url.path == '/admin/land-guide' else '' }}" href="/admin/land-guide" title="Только для администратора">
+    <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/land-guide') else '' }}" href="/cabinet/land-guide">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7v5c0 5 3.4 8.1 8 9 4.6-.9 8-4 8-9V7z"/><path d="m9 12 2 2 4-4"/></svg>
       Как получить землю
     </a>
-    {% endif %}
     <a class="{{ 'is-active' if request.url.path == '/cabinet/search' else '' }}" href="/cabinet/search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/><circle cx="12" cy="12" r="9"/></svg>
       Новый анализ

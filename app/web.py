@@ -1900,6 +1900,19 @@ def cabinet_help(
     )
 
 
+@router.get("/cabinet/land-guide", response_class=HTMLResponse)
+def cabinet_land_guide(
+    request: Request,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="site_land_guide.html",
+        context=_cabinet_context(session, account),
+    )
+
+
 @router.post("/cabinet/onboarding/dismiss")
 def dismiss_cabinet_onboarding(
     account: Account = Depends(require_web_account),

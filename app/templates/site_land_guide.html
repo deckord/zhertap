@@ -1,0 +1,25 @@
+{% extends "site_base.html" %}
+{% block title %}Как получить землю — Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <main class="cabinet-main public-land-guide">
+    <div class="page-actions"><a class="back-link" href="/cabinet">← В кабинет</a><a class="back-link" href="/cabinet/search">Новый анализ</a></div>
+    <section class="land-guide-hero">
+      <div><span class="eyebrow">Понятная инструкция</span><h1>Как получить землю для ЛПХ или садоводства</h1><p>Разберём путь от поиска подходящего места до обращения в акимат и оформления права.</p></div>
+      <div class="land-guide-hero-mark">🌱<small>5 шагов<br>до заявки</small></div>
+    </section>
+    <div class="land-guide-note"><span>💡</span><p><strong>Важно:</strong> место на карте — это только кандидат. Окончательное решение принимает акимат после проверки документов, ограничений и градостроительной документации.</p></div>
+    <section class="land-guide-grid">
+      <article class="land-guide-card"><span class="land-guide-number">01</span><div><h2>Определите цель</h2><p>Выберите ЛПХ (приусадебный или полевой надел) либо садоводство. Укажите район, населённый пункт и желаемую площадь.</p><div class="land-guide-tags"><span>🏠 ЛПХ</span><span>🌿 Садоводство</span></div></div></article>
+      <article class="land-guide-card"><span class="land-guide-number">02</span><div><h2>Найдите кандидата</h2><p>Запустите новый анализ территории. Система покажет расчётные свободные промежутки и ближайшие кадастровые ориентиры.</p><div class="land-guide-tags"><span>🗺️ Карта</span><span>📍 Координаты</span></div></div></article>
+      <article class="land-guide-card"><span class="land-guide-number">03</span><div><h2>Проверьте ограничения</h2><p>Посмотрите ЕГКН, генплан или ПДП, красные линии, охранные зоны, подъезд и коммуникации. Не доверяйте только пустому месту на карте.</p><ul class="land-guide-list"><li>ЕГКН и кадастровый ориентир</li><li>Генплан, ПДП и красные линии</li><li>Дороги, вода и охранные зоны</li></ul></div></article>
+      <article class="land-guide-card"><span class="land-guide-number">04</span><div><h2>Подайте заявление</h2><p>Обратитесь в местный акимат или отдел земельных отношений. Если услуга доступна онлайн — подайте через eGov.kz и подпишите ЭЦП.</p><div class="land-guide-action">✅ Сохраните номер обращения и дату подачи</div></div></article>
+      <article class="land-guide-card"><span class="land-guide-number">05</span><div><h2>Дождитесь решения и оформите право</h2><p>Отслеживайте статус. После положительного решения уточните вид права, срок освоения, границы, кадастровый план и договор.</p><div class="land-guide-warning">⚠️ Решение о предоставлении — не то же самое, что оформленное право на участок.</div></div></article>
+    </section>
+    <section class="land-guide-check"><div><span class="eyebrow">Проверьте себя</span><h2>Мини-тест перед подачей</h2><p>Ответьте на три вопроса — результат появится сразу.</p></div><div class="land-quiz" id="land-quiz"><fieldset><legend>1. Можно ли сразу оформлять место, которое выглядит пустым?</legend><label><input type="radio" name="land-q1" value="0"> Да, оно свободно</label><label><input type="radio" name="land-q1" value="1"> Нет, сначала нужна проверка</label></fieldset><fieldset><legend>2. Куда подают обращение по госземле?</legend><label><input type="radio" name="land-q2" value="1"> В акимат или через доступную услугу eGov</label><label><input type="radio" name="land-q2" value="0"> Только в частную кадастровую компанию</label></fieldset><fieldset><legend>3. Что сохранить после подачи?</legend><label><input type="radio" name="land-q3" value="1"> Номер, дату и подтверждение регистрации</label><label><input type="radio" name="land-q3" value="0"> Только скриншот карты</label></fieldset><button class="primary-action" type="button" id="land-quiz-check">Проверить ответы</button><strong class="land-quiz-result" id="land-quiz-result" role="status"></strong></div></section>
+    <section class="land-guide-sources"><strong>Официальные источники</strong><a href="https://egov.kz/cms/ru" target="_blank" rel="noreferrer">eGov.kz ↗</a><a href="https://adilet.zan.kz/rus/docs/K030000442_" target="_blank" rel="noreferrer">Земельный кодекс РК ↗</a></section>
+  </main>
+</section>
+<script src="/static/site-land-guide.js?v=20260811a" defer></script>
+{% endblock %}
