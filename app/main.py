@@ -994,6 +994,18 @@ def dashboard(
     )
 
 
+@app.get("/admin/land-guide", response_class=HTMLResponse)
+def land_guide(
+    request: Request,
+    _: str = Depends(require_admin),
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="land_guide.html",
+        context={"app_name": settings.app_name},
+    )
+
+
 @app.get("/admin/auctions", response_class=HTMLResponse)
 def auctions_dashboard(
     request: Request,
