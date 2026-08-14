@@ -233,8 +233,8 @@ AUCTION_V2_SORT_LABELS = {
 SOURCE_STATUS_LABELS = {
     "ok": "Проверено",
     "warning": "Есть вопросы",
-    "missing": "Не найдено",
-    "manual_required": "Проверить вручную",
+    "missing": "Источник не дал данных",
+    "manual_required": "Нужна сверка",
     "planned": "Будет подключено",
     "query_ready": "Открыть поиск",
     "external_action": "Официальный портал",
@@ -271,11 +271,11 @@ EMPTY_REASON_LABELS = {
 }
 
 WORKFLOW_STATUS_LABELS = {
-    "done": "Закрыто в Zhertap",
-    "manual": "Проверить вручную",
-    "warning": "Есть вопросы",
-    "missing": "Не найдено",
-    "external": "Внешний портал",
+    "done": "Проверено системой",
+    "manual": "Нужно уточнить",
+    "warning": "Найден вопрос",
+    "missing": "Нет данных",
+    "external": "Официальный источник",
 }
 
 EVIDENCE_TYPE_LABELS = {
@@ -7609,42 +7609,43 @@ def _lot_decision_summary(
         item for item in risk_flags if str(item.get("code") or "") in hard_blocker_codes
     ]
 
+    primary_blocker = blockers[0] if blockers else None
     if blockers:
         status = "blocked"
-        title = "Решение заблокировано до проверки"
+        title = "Пока не рекомендуем участвовать"
         detail = (
-            f"Есть критические пробелы: {len(blockers)}. "
-            "Система не считает участок подходящим, пока не подтверждены границы, документы и ключевые условия."
+            f"{primary_blocker.get('label')}: {primary_blocker.get('detail')}"
+            if primary_blocker
+            else "Нужно подтвердить границы, документы и ключевые условия участка."
         )
     elif missing_count:
         status = "blocked"
-        title = "Пока нельзя идти к участию"
+        title = "Данных недостаточно для решения"
         detail = (
-            f"Не найдено обязательных блоков: {missing_count}. "
-            "Сначала откройте карточку лота, документы или кадастр и закройте пробелы."
+            f"По {missing_count} обязательным проверкам официальный источник не дал данных. "
+            "Без них нельзя надёжно оценить участок."
         )
     elif warning_count or analysis.risk_level == "high":
         status = "warning"
-        title = "Сначала закрыть ручную проверку"
+        title = "Участвовать только после уточнения рисков"
         detail = (
-            "Лот может быть интересным, но есть вопросы по рискам, источникам или окружению. "
-            "Идти к заявке без сверки нельзя."
+            "Лот может быть выгодным по цене, но остаются вопросы по документам, границам или окружению."
         )
     elif ready_for_portal and decision_saved and personal_limit_saved:
         status = "ready"
-        title = "Можно готовиться к официальному переходу"
+        title = "Критических препятствий не найдено"
         detail = (
-            "Основные проверки закрыты, решение и личный лимит сохранены. "
-            "Дальше только официальный портал."
+            "Основные сведения совпадают, а личный предел ставки сохранён. "
+            "Вывод остаётся предварительным и основан на доступных источниках."
         )
     elif ready_for_portal:
         status = "checking"
-        title = "Лот близок к официальному переходу"
-        detail = "Осталось зафиксировать решение, личный лимит или одну из ручных проверок."
+        title = "Критических препятствий пока не найдено"
+        detail = "Проверьте оставшиеся вопросы и сохраните личный предел ставки."
     else:
         status = "checking"
-        title = "Лот на проверке"
-        detail = "Система собрала основу, но до заявки нужно закрыть ручные действия ниже."
+        title = "Нужно завершить проверку лота"
+        detail = "Система собрала основные сведения, но части данных пока недостаточно для решения."
 
     next_action = next_actions[0] if next_actions else None
     primary_url = lot.source_url if status == "ready" and lot.source_url else None
@@ -7902,9 +7903,12 @@ def _summary(
     geo_check: AuctionLotGeoCheck,
     market_stats: AuctionV2MarketStats,
 ) -> str:
-    parts = [
-        f"Индекс преимущества {score}/100, риск: {RISK_LABELS.get(risk_level, risk_level).lower()}, уверенность: {CONFIDENCE_LABELS.get(confidence_level, confidence_level).lower()}."
-    ]
+    if risk_level == "high":
+        parts = ["До участия требуется устранить существенные риски."]
+    elif risk_level == "medium":
+        parts = ["Перед участием остаются вопросы, которые нужно уточнить."]
+    else:
+        parts = ["Критические риски по доступным данным не выявлены."]
     if metrics.district_difference_percent is not None:
         parts.append(
             f"Стартовая цена за сотку отличается от истории района на {metrics.district_difference_percent:+.0f}%."

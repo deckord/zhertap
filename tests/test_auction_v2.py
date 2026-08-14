@@ -1097,13 +1097,21 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
 
         pipeline = session.scalar(select(AuctionUserLotPipeline))
         assert detail_response.status_code == 200
-        assert "Решение перед участием" in detail_response.text
-        assert "Главное сейчас" in detail_response.text
-        assert "Что еще мешает идти на официальный портал" in detail_response.text
-        assert "Официальный лот" in detail_response.text
-        assert "Личный лимит" in detail_response.text
-        assert "Зафиксировать решение" in detail_response.text
+        assert "Предварительный вывод" in detail_response.text
+        assert "Что влияет на решение" in detail_response.text
+        assert "Что ещё нужно уточнить" in detail_response.text
+        assert "Цена и предел ставки" in detail_response.text
+        assert "За сотку" in detail_response.text
+        assert "За весь участок" in detail_response.text
+        assert "Предел Жертап сейчас" in detail_response.text
+        assert "Моё решение и лимит" in detail_response.text
+        assert "Мой предел ставки за весь участок" in detail_response.text
         assert "Сохранить решение" in detail_response.text
+        assert "Рабочий процесс до участия" not in detail_response.text
+        assert "Перед переходом на E-Qazyna" not in detail_response.text
+        assert "Подтверждающие данные" not in detail_response.text
+        assert "Решение заблокировано" not in detail_response.text
+        assert "Индекс преимущества" not in detail_response.text
         assert "Моя работа" in detail_response.text
         assert "Изменить решение" in detail_response.text
         assert "Экономика" in detail_response.text

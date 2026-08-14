@@ -46,7 +46,7 @@
       </dl>
       <div class="auction-v2-showcase-actions">
         {% if lot.source_url %}<a class="primary-action" href="{{ lot.source_url }}" target="_blank" rel="noopener">Открыть на E-Qazyna</a>{% endif %}
-        <a class="secondary-action" href="#auction-v2-review-board">Проверить лот</a>
+        <a class="secondary-action" href="#auction-v2-decision">Смотреть вывод</a>
       </div>
     </section>
 
@@ -69,20 +69,20 @@
     </section>
     {% endset %}
 
-    <section class="panel-modern auction-v2-decision-summary decision-{{ item.decision_summary.status }}">
+    <section id="auction-v2-decision" class="panel-modern auction-v2-decision-summary decision-{{ item.decision_summary.status }}">
       <div class="auction-v2-decision-main">
         <div>
-          <span class="eyebrow">Решение перед участием</span>
+          <span class="eyebrow">Предварительный вывод</span>
           <h2>{{ item.decision_summary.title }}</h2>
           <p>{{ item.decision_summary.detail }}</p>
         </div>
         <div class="auction-v2-decision-next">
-          <span>Главное сейчас</span>
+          <span>Что влияет на решение</span>
           <strong>{{ item.decision_summary.next_title }}</strong>
           <small>{{ item.decision_summary.next_detail }}</small>
           <div>
             {% if item.decision_summary.next_anchor %}
-              <a class="secondary-action compact" href="{{ item.decision_summary.next_anchor }}">Показать проверку</a>
+              <a class="secondary-action compact" href="{{ item.decision_summary.next_anchor }}">Открыть подробности</a>
             {% endif %}
             {% if item.decision_summary.primary_url %}
               <a class="primary-action compact" href="{{ item.decision_summary.primary_url }}" target="_blank" rel="noopener">{{ item.decision_summary.primary_url_label }}</a>
@@ -90,25 +90,63 @@
           </div>
         </div>
       </div>
-      <div class="auction-v2-decision-counts">
-        {% for count in item.decision_summary.counts %}
-          <article>
-            <strong>{{ count.value }}</strong>
-            <span>{{ count.label }}</span>
-          </article>
-        {% endfor %}
-      </div>
-      <div class="auction-v2-decision-facts">
-        {% for fact in item.decision_summary.facts %}
-          <span class="fact-{{ fact.status }}"><strong>{{ fact.label }}</strong><small>{{ fact.value }}</small></span>
-        {% endfor %}
-      </div>
+      {% set area_sotka = (lot.area_ha * 100) if lot.area_ha is not none and lot.area_ha > 0 else none %}
+      {% set district_total_kzt = (analysis.district_average_price_per_sotka * area_sotka) if analysis.district_average_price_per_sotka is not none and area_sotka else none %}
+      {% set recommended_per_sotka = (analysis.max_bid_conservative_kzt / area_sotka) if analysis.max_bid_conservative_kzt is not none and area_sotka else none %}
+      {% set market_per_sotka = (analysis.max_bid_market_kzt / area_sotka) if analysis.max_bid_market_kzt is not none and area_sotka else none %}
+      <section class="auction-v2-price-decision" aria-labelledby="auction-v2-price-title">
+        <div class="auction-v2-price-decision-head">
+          <div>
+            <span class="eyebrow">Цена и предел ставки</span>
+            <h3 id="auction-v2-price-title">Сравнение для участка {{ ("%.2f"|format(area_sotka)).rstrip("0").rstrip(".") if area_sotka else "—" }} соток</h3>
+          </div>
+          <div class="auction-v2-price-ceiling">
+            <span>Рекомендуемый предел сейчас</span>
+            <strong>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}не рассчитан{% endif %}</strong>
+            <small>{% if analysis.risk_level == "high" %}Не повышать до устранения существенных рисков{% else %}Осторожный предел с учётом доступных данных{% endif %}</small>
+          </div>
+        </div>
+        <div class="auction-v2-price-table-wrap">
+          <table class="auction-v2-price-table">
+            <thead>
+              <tr><th>Ориентир</th><th>За сотку</th><th>За весь участок</th><th>Пояснение</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Старт лота</strong></td>
+                <td>{% if analysis.price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.price_per_sotka).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>{% if analysis.district_difference_percent is not none %}{% if analysis.district_difference_percent < 0 %}На {{ "%.0f"|format(-analysis.district_difference_percent) }}% ниже средней цены района{% else %}На {{ "%.0f"|format(analysis.district_difference_percent) }}% выше средней цены района{% endif %}{% else %}Недостаточно районных данных для сравнения{% endif %}</td>
+              </tr>
+              <tr>
+                <td><strong>Средняя по району</strong></td>
+                <td>{% if analysis.district_average_price_per_sotka is not none %}{{ "{:,.0f}".format(analysis.district_average_price_per_sotka).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>{% if district_total_kzt is not none %}{{ "{:,.0f}".format(district_total_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>История лотов E-Qazyna в этом районе, не гарантия рыночной цены</td>
+              </tr>
+              <tr>
+                <td><strong>Рыночный ориентир</strong></td>
+                <td>{% if market_per_sotka is not none %}{{ "{:,.0f}".format(market_per_sotka).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>{% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>Оценка по районной истории и добавленным аналогам</td>
+              </tr>
+              <tr class="is-ceiling">
+                <td><strong>Предел Жертап сейчас</strong></td>
+                <td>{% if recommended_per_sotka is not none %}{{ "{:,.0f}".format(recommended_per_sotka).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>{% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</td>
+                <td>{% if analysis.risk_level == "high" %}Предел снижен из-за существенных непроверенных рисков{% else %}Выше этой суммы сделка становится менее безопасной по текущему расчёту{% endif %}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="auction-v2-price-note">Предел относится ко всей площади лота и пересчитывается, когда меняются документы, риски или рыночные данные.</p>
+      </section>
       {% if auction_access.can_edit %}
       <form id="auction-v2-decision-form" class="auction-v2-decision-form" method="post" action="/cabinet/auctions-v2/{{ lot.id }}/pipeline">
         <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <div class="auction-v2-decision-form-head">
-          <strong>Зафиксировать решение</strong>
-          <span>Это только рабочая отметка внутри Zhertap. Заявка, ЭЦП, гарантийный взнос и торги выполняются на официальном портале.</span>
+          <strong>Моё решение и лимит</strong>
+          <span>Сохраните свой предел ставки, чтобы не превысить его во время торгов.</span>
         </div>
         <label>Рабочий статус
           <select name="stage">
@@ -117,9 +155,9 @@
             {% endfor %}
           </select>
         </label>
-        <label>Мой максимум ставки, ₸
+        <label>Мой предел ставки за весь участок, ₸
           <input name="max_bid_kzt" inputmode="decimal" value="{{ '%.0f'|format(pipeline.max_bid_kzt) if pipeline and pipeline.max_bid_kzt is not none else '' }}">
-          <small>Осторожно: {% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}—{% endif %} · рынок: {% if analysis.max_bid_market_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_market_kzt).replace(",", " ") }} ₸{% else %}недостаточно аналогов{% endif %}</small>
+          <small>Расчёт Жертап сейчас: {% if analysis.max_bid_conservative_kzt is not none %}{{ "{:,.0f}".format(analysis.max_bid_conservative_kzt).replace(",", " ") }} ₸{% else %}не рассчитан{% endif %} за весь участок.</small>
         </label>
         <label>Контрольная дата
           <input type="datetime-local" name="reminder_at" value="{{ pipeline_reminder_at }}">
@@ -207,7 +245,7 @@
       {% endif %}
       {% if item.decision_summary.remaining %}
         <div class="auction-v2-decision-remaining">
-          <strong>Что еще мешает идти на официальный портал</strong>
+          <strong>Что ещё нужно уточнить</strong>
           {% for step in item.decision_summary.remaining %}
             <a href="{{ step.anchor or '#auction-v2-review-board' }}">
               <span>{{ step.status_label }}</span>
@@ -479,25 +517,6 @@
 
     <div class="auction-v2-detail-grid">
       <div class="auction-v2-detail-main">
-        <section class="panel-modern">
-          <div class="panel-head"><h2>Краткий вывод</h2><span>{{ analysis.checked_at.strftime("%d.%m.%Y %H:%M") }}</span></div>
-          <p class="auction-v2-summary-large">{{ analysis.summary }}</p>
-          <div class="auction-v2-action-row">
-            {% if lot.source_url %}
-              <a class="primary-action" href="{{ lot.source_url }}" target="_blank" rel="noopener">Перейти на E-Qazyna для заявки/торгов</a>
-            {% else %}
-              <span class="secondary-action is-disabled">Ссылка E-Qazyna пока не найдена</span>
-            {% endif %}
-            {% if geo_check.egkn_url %}
-              <a class="secondary-action" href="{{ geo_check.egkn_url }}" target="_blank" rel="noopener">ЕГКН</a>
-            {% endif %}
-            {% if geo_check.google_maps_url %}
-              <a class="secondary-action" href="{{ geo_check.google_maps_url }}" target="_blank" rel="noopener">Карта</a>
-            {% endif %}
-          </div>
-          <p class="auction-v2-helper-text">Zhertap не подает заявку, не платит гарантийный взнос и не участвует в торгах. Здесь только подготовка решения; юридическое действие выполняется на официальном портале.</p>
-        </section>
-
         <section id="auction-v2-district-context" class="panel-modern auction-v2-district-context">
           <div class="panel-head">
             <h2>Цена и история района</h2>
@@ -528,32 +547,6 @@
           </div>
         </section>
 
-        <details class="panel-modern auction-v2-collapsible auction-v2-collapsible-list auction-v2-workflow-panel">
-          <summary>
-            <span>
-              <strong>Рабочий процесс до участия · {{ item.buyer_workflow|length }} шагов</strong>
-              <em>Маршрут между E-Qazyna, gov.kz, ЕГКН, генпланами, картами и рынком — та же проверка, что выше, но в виде маршрута</em>
-            </span>
-            <b>Показать маршрут</b>
-          </summary>
-          <div class="auction-v2-workflow">
-            {% for step in item.buyer_workflow %}
-              <article class="workflow-{{ step.status }}">
-                <div>
-                  <span>{{ step.status_label }}</span>
-                  <strong>{{ step.title }}</strong>
-                </div>
-                <em>{{ step.source }}</em>
-                <p><b>Zhertap:</b> {{ step.system_result }}</p>
-                <p><b>Проверить:</b> {{ step.manual_action }}</p>
-                {% if step.url %}
-                  <a href="{{ step.url }}" target="_blank" rel="noopener">{{ step.url_label }}</a>
-                {% endif %}
-              </article>
-            {% endfor %}
-          </div>
-        </details>
-
         {% if item.map_embed_url %}
         <details id="auction-v2-map-panel" class="panel-modern auction-v2-collapsible auction-v2-map-panel">
           <summary><span><strong>Карта и окружение</strong><em>{{ item.coordinate_label }}</em></span><b>Открыть</b></summary>
@@ -577,22 +570,6 @@
           {% endif %}
         </details>
         {% endif %}
-
-        <details id="auction-v2-official-checklist" class="panel-modern auction-v2-collapsible">
-          <summary><span><strong>Перед переходом на E-Qazyna</strong><em>{{ item.official_readiness|length }} проверок</em></span><b>Открыть</b></summary>
-          <p class="auction-v2-helper-text">Это финальный чеклист: что уже можно открыть на официальном портале и что лучше проверить перед юридическим действием.</p>
-          <div class="auction-v2-checklist auction-v2-official-checklist">
-            {% for check in item.official_readiness %}
-              <div class="check-{{ check.status }}">
-                <strong>{{ check.label }}</strong>
-                <span>{{ check.detail }}</span>
-                {% if check.url %}
-                  <a href="{{ check.url }}" target="_blank" rel="noopener">Открыть</a>
-                {% endif %}
-              </div>
-            {% endfor %}
-          </div>
-        </details>
 
         <details id="auction-v2-source-checks" class="panel-modern auction-v2-collapsible">
           <summary><span><strong>Что уже найдено системой</strong><em>до официальной заявки</em></span><b>Открыть</b></summary>
@@ -631,24 +608,6 @@
                   <small>{{ source.detail }}</small>
                 </div>
               {% endif %}
-            {% endfor %}
-          </div>
-        </details>
-
-        <details class="panel-modern auction-v2-collapsible">
-          <summary><span><strong>Подтверждающие данные</strong><em>{{ evidence|length }} технических записей</em></span><b>Показать</b></summary>
-          <div class="panel-head"><h2>Что система уже сверила</h2><span>{{ evidence|length }}</span></div>
-          <div class="auction-v2-evidence-list">
-            {% for row in evidence %}
-              <a class="auction-v2-evidence-row status-{{ row.status }}" href="{{ row.source_url or '#' }}" {% if row.source_url %}target="_blank" rel="noopener"{% endif %}>
-                <span>{{ evidence_type_labels.get(row.evidence_type, row.evidence_type) }} · {{ evidence_status_labels.get(row.status, row.status) }}</span>
-                <strong>{{ row.title }}</strong>
-                {% if row.value_text %}
-                  <small>{{ row.value_text }}</small>
-                {% endif %}
-              </a>
-            {% else %}
-              <p class="muted-modern">Проверки появятся после синхронизации v2 по источникам.</p>
             {% endfor %}
           </div>
         </details>
