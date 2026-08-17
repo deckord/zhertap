@@ -7,6 +7,11 @@ Last checked: 2026-08-04
 > candidate points were reviewed (`queued = 0`). The later final resolution of
 > the 336-row shadow backlog produced 111 active strict rows in 37 scopes, 99
 > `SUPERSEDED` rows and 216 `REVIEWED_HOLD` rows; see the canonical status file.
+>
+> **Do not use the old counts or the old completion plan below as a current
+> work queue.** The former 306/336 shadow rows have already been processed.
+> No operator action remains for them. The body is retained only to explain the
+> state and decisions that existed on 2026-08-04.
 
 Historical correction after the 2026-08-04 production verification:
 
@@ -324,7 +329,12 @@ Show exactly one of these statuses in web and Telegram:
 This prevents users from thinking that a geoportal link or Adilet text is the
 same as a checked genplan.
 
-### Phase 2 - Promote Existing Shadow Layers
+### Phase 2 - Promote Existing Shadow Layers (completed 2026-08-17)
+
+This was the historical plan for the then-current 306 `WARNING` rows. It has
+been completed by the final 336-row resolution pass: 21 rows were activated,
+99 became `SUPERSEDED`, and 216 became `REVIEWED_HOLD` with explicit reasons.
+The instructions below are archival and must not be rerun as an open queue.
 
 Work through the 306 `WARNING` rows:
 

@@ -345,6 +345,11 @@ Still required before enabling search:
 
 Production shadow imports on 2026-07-31:
 
+> Historical table only. These rows are no longer an open `WARNING` queue.
+> The final 2026-08-17 resolution processed all former 336 shadow rows: 21 were
+> activated, 99 marked `SUPERSEDED`, and 216 marked `REVIEWED_HOLD` with a
+> reason. See `GENPLAN_STATUS_2026_08_17.md` for the current state.
+
 | Source | Region | Purpose | Release | Allowed | Prohibited | Red line | Status |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
 | Smart GeoHub | Акмолинская область | `ЛПХ:household` | `akmola-smart-geohub-lph-household-v1` | 18057 | 2150 | 8454 | `WARNING/shadow` |
@@ -404,6 +409,11 @@ Production strict AIS GGK city imports on 2026-07-31:
 | AIS GGK | г. Шахтинск | `ЛПХ:household` | `ggk-gp-3493-lph-household-8e14ad70638d` | 618 | 191 | 277 | `VERIFIED_STRICT/search` |
 
 Production totals after the 2026-07-31 GGK/Smart GeoHub/WFS/Geonomix pass:
+
+> The totals in this subsection are a historical deployment snapshot, not the
+> current production counters. Current counters are 426 total, 111 active
+> strict, 99 `SUPERSEDED`, and 216 `REVIEWED_HOLD`, with no unresolved
+> `WARNING` rows.
 
 - 378 rows in `urban_plan_layers`.
 - 72 active `VERIFIED_STRICT/search` rows used by client search.
