@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from math import ceil, sqrt
 from typing import Any
+from urllib.parse import urlencode
 
 from pyproj import CRS, Transformer
 from shapely import make_valid
@@ -13,7 +14,8 @@ from shapely.strtree import STRtree
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import UrbanPlanLayer
+from app.map_links import google_maps_place_url
+from app.models import PlanningCandidateReview, PlanningCandidateStatus, UrbanPlanLayer
 from app.planning_service import (
     PLANNING_REQUEST_TO_PURPOSE,
     PlanningScope,
@@ -31,6 +33,15 @@ from app.purposes import GARDENING, LPH, parcel_matches_purpose
 
 GOOD_ORIENTATION_DISTANCE_M = 300
 MAX_ORIENTATION_DISTANCE_M = 800
+REVIEW_EXCLUSION_RADIUS_M = 70
+REVIEW_EMPTY_REUSE_RADIUS_M = 45
+BAD_REVIEW_STATUSES = {
+    PlanningCandidateStatus.built.value,
+    PlanningCandidateStatus.road.value,
+    PlanningCandidateStatus.garden.value,
+    PlanningCandidateStatus.unclear.value,
+}
+GOOD_REVIEW_STATUSES = {PlanningCandidateStatus.empty.value}
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +52,7 @@ class PlanningCandidatePoint:
     google_maps_url: str
     distance_to_restriction_m: float | None
     trust_level: str
+    genplan_check_url: str = ""
     nearby_cadastre: str | None = None
     nearby_distance_m: float | None = None
     nearby_land_use: str | None = None
@@ -55,6 +67,16 @@ class EgknPlanningContext:
     anchor_parcels: list[ParcelRecord]
     anchor_geometries_m: list[BaseGeometry]
     message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningReviewFeedback:
+    reviewed_points: int
+    confirmed_empty_points: int
+    excluded_bad_points: int
+    positive_points_m: list[tuple[PlanningCandidateReview, Point]]
+    bad_points_m: list[Point]
+    blocked_area_m: BaseGeometry
 
 
 def find_planning_candidate_points(
@@ -130,16 +152,37 @@ def find_planning_candidate_points(
             message="В разрешенной зоне ЕГКН не оставил свободного пятна нужного размера.",
         )
 
+    review_feedback = _load_review_feedback(session, scope=scope, to_meters=to_meters)
+    if not review_feedback.blocked_area_m.is_empty:
+        vacancy_area_m = make_valid(vacancy_area_m.difference(review_feedback.blocked_area_m))
+    if vacancy_area_m.is_empty:
+        return _empty_result(
+            layers=layers,
+            allowed_layers=allowed_layers,
+            restriction_layers=restriction_layers,
+            message="После учета ручной проверки Google подходящих пустых мест не осталось.",
+            review_feedback=review_feedback,
+        )
+
+    review_seed_rows, reserved_review_points = _review_seed_points(
+        review_feedback,
+        vacancy_area_m=vacancy_area_m,
+        restriction_m=restriction_m,
+        to_wgs84=to_wgs84,
+        limit=limit,
+    )
     raw_points = _ranked_vacancy_points(
         vacancy_area_m,
         restriction_m=restriction_m,
         egkn_context=egkn_context,
         search_area_m=search_area_m,
         to_wgs84=to_wgs84,
-        limit=limit,
+        limit=max(0, limit - len(review_seed_rows)),
         grid_step_m=grid_step_m,
         target_area_ha=target_area_ha,
+        reserved_points_m=reserved_review_points,
     )
+    raw_points = [*review_seed_rows, *raw_points][:limit]
     trust_level = "SEARCH" if all(_is_search_layer(row) for row in allowed_layers) else "SHADOW"
     points = [
         PlanningCandidatePoint(
@@ -147,6 +190,12 @@ def find_planning_candidate_points(
             latitude=row["latitude"],
             longitude=row["longitude"],
             google_maps_url=_google_maps_url(row["latitude"], row["longitude"]),
+            genplan_check_url=_genplan_check_url(
+                scope,
+                latitude=row["latitude"],
+                longitude=row["longitude"],
+                include_shadow=include_shadow,
+            ),
             distance_to_restriction_m=row["distance_to_restriction_m"],
             trust_level=trust_level,
             nearby_cadastre=row["nearby_cadastre"],
@@ -174,6 +223,10 @@ def find_planning_candidate_points(
         "egkn_parcel_count": len(egkn_context.parcels),
         "egkn_anchor_count": len(egkn_context.anchor_parcels),
         "egkn_message": egkn_context.message,
+        "review_feedback": _review_feedback_payload(
+            review_feedback,
+            reused_empty_points=len(review_seed_rows),
+        ),
         "requested_use": scope.requested_use,
     }
 
@@ -184,6 +237,7 @@ def _empty_result(
     allowed_layers: list[UrbanPlanLayer],
     restriction_layers: list[UrbanPlanLayer],
     message: str,
+    review_feedback: PlanningReviewFeedback | None = None,
 ) -> dict[str, Any]:
     return {
         "points": [],
@@ -195,6 +249,7 @@ def _empty_result(
         "shadow_layer_count": sum(1 for row in layers if not _is_search_layer(row)),
         "allowed_area_ha": 0.0,
         "candidate_area_ha": 0.0,
+        "review_feedback": _review_feedback_payload(review_feedback, reused_empty_points=0),
     }
 
 
@@ -226,6 +281,114 @@ def _candidate_layers(
         if _matches_planning_scope(row, scope)
         and (include_shadow or _is_search_layer(row))
     ]
+
+
+def _load_review_feedback(
+    session: Session,
+    *,
+    scope: PlanningScope,
+    to_meters: Transformer,
+) -> PlanningReviewFeedback:
+    statement = select(PlanningCandidateReview).where(
+        PlanningCandidateReview.region == (scope.region or ""),
+        PlanningCandidateReview.district == (scope.district or ""),
+        PlanningCandidateReview.locality == (scope.locality or ""),
+        PlanningCandidateReview.requested_use == (scope.requested_use or ""),
+    )
+    reviews = session.scalars(statement).all()
+    positive_points_m: list[tuple[PlanningCandidateReview, Point]] = []
+    bad_points_m: list[Point] = []
+    for review in reviews:
+        point_m = transform(
+            to_meters.transform,
+            Point(review.longitude, review.latitude),
+        )
+        if review.status in GOOD_REVIEW_STATUSES:
+            positive_points_m.append((review, point_m))
+        elif review.status in BAD_REVIEW_STATUSES:
+            bad_points_m.append(point_m)
+    blocked_area_m = (
+        make_valid(unary_union([point.buffer(REVIEW_EXCLUSION_RADIUS_M) for point in bad_points_m]))
+        if bad_points_m
+        else Point().buffer(0)
+    )
+    return PlanningReviewFeedback(
+        reviewed_points=sum(
+            1
+            for review in reviews
+            if review.status != PlanningCandidateStatus.queued.value
+        ),
+        confirmed_empty_points=len(positive_points_m),
+        excluded_bad_points=len(bad_points_m),
+        positive_points_m=positive_points_m,
+        bad_points_m=bad_points_m,
+        blocked_area_m=blocked_area_m,
+    )
+
+
+def _review_seed_points(
+    feedback: PlanningReviewFeedback,
+    *,
+    vacancy_area_m: BaseGeometry,
+    restriction_m: BaseGeometry,
+    to_wgs84: Transformer,
+    limit: int,
+) -> tuple[list[dict[str, Any]], list[Point]]:
+    selected: list[tuple[PlanningCandidateReview, Point]] = []
+    for review, point_m in feedback.positive_points_m:
+        if not vacancy_area_m.covers(point_m):
+            continue
+        if any(
+            point_m.distance(existing_point) < REVIEW_EMPTY_REUSE_RADIUS_M
+            for _, existing_point in selected
+        ):
+            continue
+        selected.append((review, point_m))
+        if len(selected) >= limit:
+            break
+
+    rows: list[dict[str, Any]] = []
+    for review, point_m in selected:
+        lon, lat = to_wgs84.transform(point_m.x, point_m.y)
+        restriction_distance = None
+        if not restriction_m.is_empty:
+            restriction_distance = round(max(0.0, point_m.distance(restriction_m)), 1)
+        reason = "Уже проверено по Google: пусто."
+        if review.selection_reason:
+            reason = f"{reason} {review.selection_reason}"
+        rows.append(
+            {
+                "latitude": round(lat, 6),
+                "longitude": round(lon, 6),
+                "distance_to_restriction_m": restriction_distance,
+                "nearby_cadastre": review.nearby_cadastre,
+                "nearby_distance_m": review.nearby_distance_m,
+                "nearby_land_use": review.nearby_land_use,
+                "candidate_area_ha": review.candidate_area_ha,
+                "selection_reason": reason,
+            }
+        )
+    return rows, [point_m for _, point_m in selected]
+
+
+def _review_feedback_payload(
+    feedback: PlanningReviewFeedback | None,
+    *,
+    reused_empty_points: int,
+) -> dict[str, int]:
+    if feedback is None:
+        return {
+            "reviewed_points": 0,
+            "confirmed_empty_points": 0,
+            "excluded_bad_points": 0,
+            "reused_empty_points": 0,
+        }
+    return {
+        "reviewed_points": feedback.reviewed_points,
+        "confirmed_empty_points": feedback.confirmed_empty_points,
+        "excluded_bad_points": feedback.excluded_bad_points,
+        "reused_empty_points": reused_empty_points,
+    }
 
 
 def _safe_union(layers: list[UrbanPlanLayer]):
@@ -261,7 +424,10 @@ def _ranked_vacancy_points(
     limit: int,
     grid_step_m: int,
     target_area_ha: float,
+    reserved_points_m: list[Point] | None = None,
 ) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
     parcel_geometries = egkn_context.anchor_geometries_m or egkn_context.parcel_geometries_m
     parcel_records = egkn_context.anchor_parcels or egkn_context.parcels
     parcel_tree = STRtree(parcel_geometries) if parcel_geometries else None
@@ -310,12 +476,16 @@ def _ranked_vacancy_points(
             limit=limit,
             grid_step_m=grid_step_m,
             message=egkn_context.message,
+            reserved_points_m=reserved_points_m,
         )
 
     candidates.sort(key=lambda row: row[0], reverse=True)
     selected: list[tuple[Point, Polygon, ParcelRecord | None, float | None]] = []
+    reserved_points = reserved_points_m or []
     min_spacing = max(side_m * 1.8, grid_step_m * 0.75, 50)
     for _, point, part, nearest, nearest_distance in candidates:
+        if any(point.distance(existing_point) < min_spacing for existing_point in reserved_points):
+            continue
         if any(point.distance(existing_point) < min_spacing for existing_point, *_ in selected):
             continue
         selected.append((point, part, nearest, nearest_distance))
@@ -361,12 +531,14 @@ def _plain_grid_points(
     limit: int,
     grid_step_m: int,
     message: str | None,
+    reserved_points_m: list[Point] | None = None,
 ) -> list[dict[str, Any]]:
     min_x, min_y, max_x, max_y = search_area_m.bounds
     prepared_area = prep(search_area_m)
     rows = max(1, ceil((max_y - min_y) / grid_step_m))
     cols = max(1, ceil((max_x - min_x) / grid_step_m))
     selected: list[Point] = []
+    reserved_points = reserved_points_m or []
     min_spacing = max(30, grid_step_m * 0.75)
     for row in range(rows):
         y = min_y + (row + 0.5) * grid_step_m
@@ -375,6 +547,8 @@ def _plain_grid_points(
             x = min_x + (col + 0.5) * grid_step_m
             point = Point(x, y)
             if not prepared_area.covers(point):
+                continue
+            if any(point.distance(existing) < min_spacing for existing in reserved_points):
                 continue
             if any(point.distance(existing) < min_spacing for existing in selected):
                 continue
@@ -580,4 +754,24 @@ def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
 
 
 def _google_maps_url(latitude: float, longitude: float) -> str:
-    return f"https://www.google.com/maps/@{latitude:.6f},{longitude:.6f},281m/data=!3m1!1e3"
+    return google_maps_place_url(latitude, longitude)
+
+
+def _genplan_check_url(
+    scope: PlanningScope,
+    *,
+    latitude: float,
+    longitude: float,
+    include_shadow: bool,
+) -> str:
+    params = {
+        "planning_probe": "1",
+        "planning_region": scope.region or "",
+        "planning_district": scope.district or "",
+        "planning_locality": scope.locality or "",
+        "planning_use": scope.requested_use or "",
+        "planning_lat": f"{latitude:.6f}",
+        "planning_lon": f"{longitude:.6f}",
+        "planning_shadow": "1" if include_shadow else "0",
+    }
+    return f"/admin/urban-plans?{urlencode(params)}#planning-check"

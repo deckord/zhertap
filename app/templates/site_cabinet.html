@@ -10,7 +10,7 @@
         <p>Анализируйте территории, отслеживайте аукционы и возвращайтесь к сохранённым результатам.</p>
       </div>
       <div class="cabinet-page-actions">
-        <a class="secondary-action" href="/cabinet/auctions">
+        <a class="secondary-action" href="/cabinet/auctions-v2">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
           Найти аукцион
         </a>
@@ -56,7 +56,7 @@
           <span class="map-pin"></span>
         </div>
       </a>
-      <a class="auction-focus-card" href="/cabinet/auctions">
+      <a class="auction-focus-card" href="/cabinet/auctions-v2">
         <div class="focus-card-copy">
           <div class="card-title-row">
             <h2>Аукционы</h2>
@@ -188,7 +188,7 @@
               <small>{{ item.region_label or item.region }}</small>
             </a>
           {% endfor %}
-          <a href="/cabinet/auctions">
+          <a href="/cabinet/auctions-v2">
             <span class="kpi-icon warning"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6"/><path d="m4 14 6 6"/><path d="m7 17 10-10"/><path d="m3 21 6-6"/><path d="m15 9 6-6"/></svg></span>
             <strong>{{ total_lots }} лотов в каталоге</strong>
             <small>Фильтры, избранное и сравнение</small>

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import app.web as web
+from app.admin_urban_plans import build_urban_plans_admin_context
 from app.analytics import excluded_analytics_user_ids
 from app.apipay import verify_webhook_signature
 from app.auction_documents import unique_auction_documents
@@ -62,11 +63,12 @@ from app.feedback import (
     send_feedback_broadcast,
 )
 from app.genplan_pipeline import (
+    auto_classify_legend_entries,
     build_document_legend_export,
+    enrich_pdf_legend_entry_labels,
     extract_next_document_legend_draft,
     legend_entry_stats,
     list_document_legend_entries,
-    list_pipeline_documents,
     pipeline_document_stats,
     set_legend_entry_classification,
     sync_manual_genplans_into_pipeline,
@@ -77,6 +79,7 @@ from app.genplan_sources import (
     sync_ggk_urban_plan_sources,
     sync_smart_geohub_urban_plan_sources,
 )
+from app.ggk_shadow_import import import_next_ggk_shadow_sources
 from app.manual_genplans import manual_genplan_by_asset_id, resolve_manual_genplan_file
 from app.models import (
     Account,
@@ -94,22 +97,23 @@ from app.models import (
     SearchRequest,
     UrbanPlanCoverage,
     UrbanPlanLayer,
-    UrbanPlanSource,
 )
 from app.planning_candidate_reviews import (
     PLANNING_CANDIDATE_STATUS_LABELS,
     get_next_queued_planning_candidate,
-    list_planning_candidate_reviews,
-    planning_candidate_review_lookup,
     upsert_planning_candidate_review,
 )
 from app.planning_completion import (
-    build_planning_completion_report,
     queue_planning_candidates_for_all_scopes,
     queue_planning_candidates_for_next_scope_with_egkn,
 )
-from app.planning_free_space import find_planning_candidate_points
-from app.planning_service import PlanningScope, planning_check, planning_coverage
+from app.planning_service import (
+    PlanningScope,
+    _is_search_layer,
+    _matches_planning_scope,
+    planning_check,
+    planning_coverage,
+)
 from app.providers.egkn import EgknProvider, EgknProviderError, normalize_name
 from app.providers.urban_plan import LAYER_KINDS, UrbanPlanError, normalize_geojson
 from app.purposes import (
@@ -785,6 +789,102 @@ def api_genplan_layers_geojson(
                     "identity_status": layer.identity_status,
                     "qa_status": layer.qa_status,
                     "approved_for_search": layer.approved_for_search,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/admin/urban-plans/map/geojson", dependencies=[Depends(require_admin)])
+def admin_urban_plan_map_geojson(
+    region: str | None = None,
+    district: str | None = None,
+    locality: str | None = None,
+    requested_use: str | None = None,
+    include_shadow: bool = True,
+    limit: int = 300,
+    session: Session = Depends(get_db),
+) -> dict:
+    limit = max(1, min(limit, 700))
+    scope = PlanningScope(
+        region=region,
+        district=district,
+        locality=locality,
+        requested_use=requested_use,
+    )
+    rows = session.scalars(
+        select(UrbanPlanLayer)
+        .where(UrbanPlanLayer.layer_kind.in_(("allowed", "prohibited", "red_line")))
+        .order_by(UrbanPlanLayer.active.desc(), UrbanPlanLayer.id.asc())
+    ).all()
+    layers = [
+        row
+        for row in rows
+        if _matches_planning_scope(row, scope) and (include_shadow or _is_search_layer(row))
+    ][:limit]
+    return _urban_plan_layers_feature_collection(layers)
+
+
+@app.get("/admin/urban-plans/coverage.json", dependencies=[Depends(require_admin)])
+def admin_urban_plan_coverage_json(
+    lat: float,
+    lon: float,
+    requested_use: str | None = None,
+    region: str | None = None,
+    district: str | None = None,
+    locality: str | None = None,
+    include_shadow: bool = True,
+    session: Session = Depends(get_db),
+) -> dict:
+    try:
+        return planning_coverage(
+            session,
+            latitude=lat,
+            longitude=lon,
+            include_shadow=include_shadow,
+            scope=PlanningScope(
+                region=region,
+                district=district,
+                locality=locality,
+                requested_use=requested_use,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _urban_plan_layers_feature_collection(layers: list[UrbanPlanLayer]) -> dict:
+    features = []
+    for layer in layers:
+        try:
+            geometry = json.loads(layer.geometry_geojson)
+        except json.JSONDecodeError:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "id": layer.id,
+                    "region": layer.region,
+                    "district": layer.district,
+                    "locality": layer.locality,
+                    "purpose": layer.purpose,
+                    "layer_kind": layer.layer_kind,
+                    "zone_name": layer.zone_name,
+                    "title": layer.title,
+                    "approval_document": layer.approval_document,
+                    "approval_date": layer.approval_date.isoformat()
+                    if layer.approval_date
+                    else None,
+                    "source_authority": layer.source_authority,
+                    "source_url": layer.source_url,
+                    "provenance_status": layer.provenance_status,
+                    "identity_status": layer.identity_status,
+                    "qa_status": layer.qa_status,
+                    "approved_for_search": layer.approved_for_search,
+                    "active": layer.active,
+                    "trust_level": "SEARCH" if _is_search_layer(layer) else "SHADOW",
                 },
             }
         )
@@ -1490,119 +1590,10 @@ def urban_plan_layers(
     session: Session = Depends(get_db),
     _: str = Depends(require_admin),
 ):
-    planning_probe_defaults = {
-        "region": request.query_params.get("planning_region", "Акмолинская область"),
-        "district": request.query_params.get("planning_district", "г.Акколь"),
-        "locality": request.query_params.get("planning_locality", "г.Акколь"),
-        "requested_use": request.query_params.get("planning_use", "LPH_HOMESTEAD"),
-        "latitude": request.query_params.get("planning_lat", "51.992950"),
-        "longitude": request.query_params.get("planning_lon", "70.930765"),
-        "include_shadow": request.query_params.get("planning_shadow", "1") == "1",
-    }
-    planning_probe_result = None
-    planning_probe_error = None
-    candidate_defaults = {
-        "region": request.query_params.get("candidate_region", "Акмолинская область"),
-        "district": request.query_params.get("candidate_district", "г.Акколь"),
-        "locality": request.query_params.get("candidate_locality", "г.Акколь"),
-        "requested_use": request.query_params.get("candidate_use", "LPH_HOMESTEAD"),
-        "limit": request.query_params.get("candidate_limit", "25"),
-        "grid_step_m": request.query_params.get("candidate_step", "90"),
-        "restriction_buffer_m": request.query_params.get("candidate_buffer", "20"),
-        "include_shadow": request.query_params.get("candidate_shadow", "1") == "1",
-        "use_egkn_context": request.query_params.get("candidate_egkn", "1") == "1",
-    }
-    candidate_result = None
-    candidate_error = None
-    candidate_scope = PlanningScope(
-        region=candidate_defaults["region"].strip() or None,
-        district=candidate_defaults["district"].strip() or None,
-        locality=candidate_defaults["locality"].strip() or None,
-        requested_use=candidate_defaults["requested_use"],
-    )
-    if request.query_params.get("planning_probe"):
-        try:
-            planning_probe_result = planning_coverage(
-                session,
-                latitude=float(planning_probe_defaults["latitude"]),
-                longitude=float(planning_probe_defaults["longitude"]),
-                scope=PlanningScope(
-                    region=planning_probe_defaults["region"].strip() or None,
-                    district=planning_probe_defaults["district"].strip() or None,
-                    locality=planning_probe_defaults["locality"].strip() or None,
-                    requested_use=planning_probe_defaults["requested_use"],
-                ),
-                include_shadow=planning_probe_defaults["include_shadow"],
-            )
-        except (TypeError, ValueError) as exc:
-            planning_probe_error = str(exc)
-    if request.query_params.get("candidate_find"):
-        try:
-            candidate_result = find_planning_candidate_points(
-                session,
-                scope=candidate_scope,
-                include_shadow=candidate_defaults["include_shadow"],
-                limit=int(candidate_defaults["limit"]),
-                grid_step_m=int(candidate_defaults["grid_step_m"]),
-                restriction_buffer_m=int(candidate_defaults["restriction_buffer_m"]),
-                use_egkn_context=candidate_defaults["use_egkn_context"],
-            )
-        except (TypeError, ValueError) as exc:
-            candidate_error = str(exc)
-    candidate_reviews = list_planning_candidate_reviews(
-        session,
-        scope=candidate_scope,
-        limit=200,
-    )
-    candidate_review_lookup = planning_candidate_review_lookup(candidate_reviews)
-    planning_completion = build_planning_completion_report(session)
-    layers = session.scalars(
-        select(UrbanPlanLayer).order_by(
-            UrbanPlanLayer.active.desc(), UrbanPlanLayer.created_at.desc()
-        )
-    ).all()
-    sources = session.scalars(
-        select(UrbanPlanSource)
-        .order_by(
-            UrbanPlanSource.coverage_status.desc(),
-            UrbanPlanSource.locality.asc(),
-            UrbanPlanSource.updated_at.desc(),
-        )
-        .limit(700)
-    ).all()
-    source_stats = session.execute(
-        select(
-            UrbanPlanSource.platform,
-            UrbanPlanSource.coverage_status,
-            func.count(UrbanPlanSource.id),
-        ).group_by(UrbanPlanSource.platform, UrbanPlanSource.coverage_status)
-    ).all()
-    pipeline_documents = list_pipeline_documents(session, limit=120)
-    pipeline_stats = pipeline_document_stats(session)
-    legend_stats = legend_entry_stats(session)
     return templates.TemplateResponse(
         request=request,
         name="urban_plans.html",
-        context={
-            "layers": layers,
-            "sources": sources,
-            "source_stats": source_stats,
-            "pipeline_documents": pipeline_documents,
-            "pipeline_stats": pipeline_stats,
-            "legend_stats": legend_stats,
-            "app_name": settings.app_name,
-            "strict_mode": settings.urban_plan_check_mode.lower() == "strict",
-            "planning_probe_defaults": planning_probe_defaults,
-            "planning_probe_result": planning_probe_result,
-            "planning_probe_error": planning_probe_error,
-            "candidate_defaults": candidate_defaults,
-            "candidate_result": candidate_result,
-            "candidate_error": candidate_error,
-            "candidate_reviews": candidate_reviews,
-            "candidate_review_lookup": candidate_review_lookup,
-            "candidate_status_labels": PLANNING_CANDIDATE_STATUS_LABELS,
-            "planning_completion": planning_completion,
-        },
+        context=build_urban_plans_admin_context(request, session),
     )
 
 
@@ -1825,6 +1816,58 @@ def extract_next_genplan_legend(
     )
 
 
+@app.post("/admin/genplan-pipeline/auto-classify-legend")
+def auto_classify_genplan_legend(
+    limit: int = Form(2000),
+    session: Session = Depends(get_db),
+    _: str = Depends(require_admin),
+):
+    stats = auto_classify_legend_entries(session, limit=limit)
+    params = urlencode(
+        {
+            "auto_scanned": stats["scanned"],
+            "auto_changed": stats["changed"],
+            "auto_approved": stats["approved"],
+            "auto_rejected": stats["rejected"],
+            "auto_candidates": stats["candidates"],
+            "auto_unchanged": stats["unchanged"],
+        }
+    )
+    return RedirectResponse(
+        f"/admin/urban-plans?{params}#genplan-pipeline",
+        status_code=303,
+    )
+
+
+@app.post("/admin/genplan-pipeline/enrich-pdf-labels")
+def enrich_genplan_pdf_labels(
+    limit_docs: int = Form(50),
+    session: Session = Depends(get_db),
+    _: str = Depends(require_admin),
+):
+    label_stats = enrich_pdf_legend_entry_labels(session, limit_docs=limit_docs)
+    auto_stats = auto_classify_legend_entries(session, limit=5000)
+    params = urlencode(
+        {
+            "pdf_label_docs": label_stats["documents_scanned"],
+            "pdf_label_hits": label_stats["documents_with_labels"],
+            "pdf_labels": label_stats["labels_found"],
+            "pdf_label_updated": label_stats["entries_updated"],
+            "pdf_label_created": label_stats["entries_created"],
+            "auto_scanned": auto_stats["scanned"],
+            "auto_changed": auto_stats["changed"],
+            "auto_approved": auto_stats["approved"],
+            "auto_rejected": auto_stats["rejected"],
+            "auto_candidates": auto_stats["candidates"],
+            "auto_unchanged": auto_stats["unchanged"],
+        }
+    )
+    return RedirectResponse(
+        f"/admin/urban-plans?{params}#genplan-pipeline",
+        status_code=303,
+    )
+
+
 @app.get("/admin/genplan-pipeline/documents/{document_id}/legend", response_class=HTMLResponse)
 def genplan_document_legend_view(
     request: Request,
@@ -1921,6 +1964,26 @@ def sync_ggk_urban_plan_catalog(
         "/admin/urban-plans"
         f"?ggk_seen={stats['seen']}&ggk_created={stats['created']}"
         f"&ggk_updated={stats['updated']}#sources",
+        status_code=303,
+    )
+
+
+@app.post("/admin/urban-plan-sources/import-ggk-shadow")
+def import_ggk_shadow_urban_plan_layers(
+    limit_sources: int = Form(2),
+    session: Session = Depends(get_db),
+    _: str = Depends(require_admin),
+):
+    stats = import_next_ggk_shadow_sources(session, limit_sources=limit_sources)
+    return RedirectResponse(
+        "/admin/urban-plans"
+        f"?ggk_import_sources={stats['sources_checked']}"
+        f"&ggk_import_profiles={stats['profiles_tried']}"
+        f"&ggk_import_releases={stats['releases_imported']}"
+        f"&ggk_import_layers={stats['layers_created']}"
+        f"&ggk_import_existing={stats['layers_existing']}"
+        f"&ggk_import_blocked={stats['blocked']}"
+        f"&ggk_import_failed={stats['failed']}#sources",
         status_code=303,
     )
 

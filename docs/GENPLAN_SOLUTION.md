@@ -7,7 +7,7 @@ Planning Data Service is now tracked in `docs/PLANNING_DATA_SERVICE.md`. That
 document is the roadmap for moving PDF/WFS/CAD-derived planning data into a
 PostGIS-backed API, starting with the Akkol pilot.
 
-Update 2026-08-06: full session summary, see `docs/GENPLAN_STATUS_2026_08_04.md`
+Update 2026-08-06: historical session summary, see `docs/GENPLAN_STATUS_2026_08_04.md`
 ("Update 2026-08-06" section) for the detailed log. Short version:
 
 - `tools.genplan_vectorize` was rebuilt around the real `GenplanLegendEntry`
@@ -655,9 +655,11 @@ finally:
 
 ## Product Status Text
 
-Latest production status is tracked in `docs/GENPLAN_STATUS_2026_08_04.md`.
-As of the 2026-08-04 verification, production has `396` `urban_plan_layers`
-rows, `90` active `VERIFIED_STRICT/search` rows and `306` inactive/shadow rows.
+Latest production status is tracked in `docs/GENPLAN_STATUS_2026_08_17.md`.
+Production has `426` `urban_plan_layers` rows, `90` active
+`VERIFIED_STRICT/search` rows in 30 scopes and `336` inactive QA/shadow rows.
+All `641` manually generated candidate points have been reviewed and
+`queued = 0`; the source and legend queues below are future coverage work.
 The automatic checker now also supports genplan-first prefiltering: when
 approved allowed polygons overlap the requested area, LiveSearch restricts the
 EGKN search area to those polygons before loading parcels. If a broad metadata
@@ -706,7 +708,7 @@ genplan verification.
    needs an operator to place/QA GCPs and sample+approve legend colors per
    document; it cannot be done unattended because independent review
    requires a reviewer role distinct from the operator role (see
-   `docs/GENPLAN_STATUS_2026_08_04.md`).
+   `docs/GENPLAN_STATUS_2026_08_17.md`).
 
 ## Priority Cities
 

@@ -1,15 +1,20 @@
-# Genplan/PDP Completion Audit
+# Genplan/PDP Completion Audit (historical)
 
 Last checked: 2026-08-04
 
-Current correction after the latest production verification:
+> This file preserves the 2026-08-04 gap analysis. The canonical current
+> status is `docs/GENPLAN_STATUS_2026_08_17.md`. On 2026-08-17 all 641 manual
+> candidate points were reviewed (`queued = 0`); production had 426 layer rows,
+> including 90 active strict rows in 30 scopes.
+
+Historical correction after the 2026-08-04 production verification:
 
 - Production has `396` rows in `urban_plan_layers`.
 - `90` rows are active `VERIFIED_STRICT/search` rows that affect customer search.
 - `306` rows are inactive/shadow/QA and must not affect customer search.
 - Active rows are split as `LPH` 3 rows, `LPH:household` 69 rows and
   `Gardening` 18 rows.
-- The latest operational status is in `docs/GENPLAN_STATUS_2026_08_04.md`.
+- The latest operational status is in `docs/GENPLAN_STATUS_2026_08_17.md`.
 - Genplan-first search is implemented: approved allowed polygons can restrict
   the EGKN search area before parcel loading.
 - Broad metadata layers that do not spatially cover the selected candidate
@@ -18,8 +23,11 @@ Current correction after the latest production verification:
 
 ## Коротко по-русски
 
-Тревога по генпланам справедливая: автоматическая проверка генплана не закрыта
-по всему Казахстану.
+Этот раздел описывает исторический снимок на 04.08.2026. Он не является
+текущим отчетом о ручной очереди. На 17.08.2026 операторская работа закрыта:
+641 из 641 точек проверена, `queued = 0`. При этом 100% автоматического
+покрытия всех населенных пунктов Казахстана по-прежнему нет; это отдельная
+задача расширения источников.
 
 Что реально готово:
 
@@ -123,8 +131,8 @@ Production database snapshot from 2026-08-04 after gardening strict import:
 - Built strict/search copies of six previously stored official Smart GeoHub
   gardening releases.
 - Dry-run passed for all six releases.
-- Imported 18 active `VERIFIED_STRICT/search` rows for `�����������`.
-- Deleted 13 stale `urban_plan_coverage` cache rows for `�����������` so new
+- Imported 18 active `VERIFIED_STRICT/search` rows for `Садоводство`.
+- Deleted 13 stale `urban_plan_coverage` cache rows for `Садоводство` so new
   searches recompute coverage against the active gardening layers.
 - Taldykorgan GGK gardening remains shadow because its review still records
   `legal_act_verified=false`, `random_visual_samples_verified=false` and
@@ -134,12 +142,12 @@ Active strict gardening groups:
 
 | Scope | Purpose |
 | --- | --- |
-| ����������� �������, all districts/localities | `�����������` |
-| ����������� �������, all districts/localities | `�����������` |
-| ���������� �������, all districts/localities | `�����������` |
-| �������-������������� �������, all districts/localities | `�����������` |
-| ������������� �������, all districts/localities | `�����������` |
-| ���������� �������, all districts/localities | `�����������` |
+| Акмолинская область, all districts/localities | `Садоводство` |
+| Алматинская область, all districts/localities | `Садоводство` |
+| Жетысуская область, all districts/localities | `Садоводство` |
+| Западно-Казахстанская область, all districts/localities | `Садоводство` |
+| Туркестанская область, all districts/localities | `Садоводство` |
+| Улытауская область, all districts/localities | `Садоводство` |
 
 Source status in production:
 

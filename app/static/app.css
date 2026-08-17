@@ -128,6 +128,166 @@ a:hover { color: var(--accent-dark); }
   margin: 32px auto 88px;
 }
 
+.urban-plans-admin .page {
+  width: min(1680px, calc(100% - 48px));
+}
+
+.urban-plan-quick-nav {
+  position: sticky;
+  top: 84px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -4px 0 24px;
+  padding: 10px 12px;
+  border: 1px solid #cfe0d7;
+  border-radius: 12px;
+  background: rgba(247, 251, 249, .94);
+  box-shadow: 0 10px 26px rgba(16, 26, 24, .08);
+  backdrop-filter: blur(14px);
+}
+
+.urban-plan-quick-nav > span {
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.urban-plan-quick-nav a {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+  transition: all .2s ease-in-out;
+}
+
+.urban-plan-quick-nav a:hover,
+.urban-plan-quick-nav a:focus-visible {
+  border-color: #9fc9b3;
+  color: var(--accent-dark);
+  transform: translateY(-1px);
+}
+
+.urban-plan-quick-nav a.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(19, 122, 77, .18);
+}
+
+.urban-plans-admin #planning-completion,
+.urban-plans-admin #planning-candidates,
+.urban-plans-admin #planning-map,
+.urban-plans-admin #planning-check {
+  scroll-margin-top: 142px;
+}
+
+.urban-plan-map-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.urban-plan-map-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.urban-plan-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.urban-plan-map-legend i {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 2px solid currentColor;
+}
+
+.urban-plan-map-legend .allowed {
+  color: var(--accent);
+  background: rgba(48, 179, 107, .22);
+}
+
+.urban-plan-map-legend .prohibited {
+  color: var(--amber);
+  background: rgba(242, 185, 75, .22);
+}
+
+.urban-plan-map-legend .red-line {
+  color: var(--red);
+  background: rgba(210, 56, 47, .14);
+}
+
+.urban-plan-leaflet-map {
+  width: 100%;
+  height: min(640px, 66vh);
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.urban-plan-leaflet-map .leaflet-control-layers,
+.urban-plan-leaflet-map .leaflet-bar {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(16, 26, 24, .12);
+}
+
+.urban-plan-map-result {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.urban-plan-map-result p {
+  margin: 8px 0 0;
+}
+
+.urban-plan-map-result ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.urban-plans-admin #planning-candidates .table-wrap {
+  max-height: 720px;
+  overflow: auto;
+}
+
+.urban-plans-admin #planning-candidates table {
+  min-width: 1180px;
+}
+
+.urban-plans-admin #planning-candidates th:last-child,
+.urban-plans-admin #planning-candidates td:last-child {
+  min-width: 280px;
+}
+
 .section-head {
   display: flex;
   align-items: flex-start;

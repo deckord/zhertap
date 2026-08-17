@@ -433,7 +433,7 @@
                 <a class="secondary-action compact" href="/cabinet/auctions-v2{% if active_lots_filter_query %}?{{ active_lots_filter_query }}{% endif %}">Искать в активных</a>
               {% endif %}
               <a class="secondary-action compact" href="/cabinet/auctions-v2{% if all_lots_filter_query %}?{{ all_lots_filter_query }}{% endif %}">{% if filters.q %}Искать этот номер во всех лотах{% else %}Показать все v2{% endif %}</a>
-              <a class="secondary-action compact" href="/cabinet/auctions-v2{% if archive_filter_query %}?{{ archive_filter_query }}{% endif %}">Проверить архив</a>
+              <a class="secondary-action compact" href="/cabinet/auctions-v2{% if archive_filter_query %}?{{ archive_filter_query }}{% endif %}">Архивные лоты v2 — Проверить архив</a>
               {% if is_web_admin %}<a class="secondary-action compact" href="/cabinet/auctions-v2/sources">Проверить источники</a>{% endif %}
               <button form="auction-v2-filter-form" class="primary-action compact" type="submit">Проверить снова</button>
             </div>

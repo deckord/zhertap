@@ -81,6 +81,11 @@
     const coordinateText = locked
       ? "координаты скрыты до оплаты"
       : `${formatNumber(candidate.latitude, 6)}, ${formatNumber(candidate.longitude, 6)}`;
+    const genplanUrl = `/cabinet/searches/${encodeURIComponent(searchId)}/genplan-map?lat=${encodeURIComponent(
+      formatNumber(candidate.latitude, 6),
+    )}&lon=${encodeURIComponent(formatNumber(candidate.longitude, 6))}&rank=${encodeURIComponent(
+      candidate.rank || "",
+    )}`;
     const actionHtml = locked
       ? `
         <button class="locked-action" type="button" disabled>Карта после оплаты</button>
@@ -88,6 +93,7 @@
       `
       : `
         <a href="${escapeHtml(candidate.google_maps_url || "#")}" target="_blank" rel="noopener">Открыть карту</a>
+        <a href="${escapeHtml(genplanUrl)}">Генплан</a>
         <a href="${escapeHtml(candidate.egkn_url || "#")}" target="_blank" rel="noopener">Проверить ЕГКН</a>
       `;
     const urbanStatus = genplanBadgeHtml(candidate.urban_plan_badge);
@@ -186,8 +192,8 @@
         : payload.urban_plan_status;
     }
     if (genplanReference && payload.urban_plan_reference) {
-      genplanReference.href = payload.urban_plan_reference.url || genplanReference.href;
-      genplanReference.textContent = payload.urban_plan_reference.action_text || "Открыть официальный источник";
+      genplanReference.href = payload.genplan_map_url || genplanReference.href;
+      genplanReference.textContent = "Открыть карту генплана";
       if (payload.urban_plan_reference.title) {
         genplanReference.title = payload.urban_plan_reference.title;
       }

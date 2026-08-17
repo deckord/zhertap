@@ -227,14 +227,12 @@ sudo docker compose run --rm -T \
   --manifest /exports/smart-geohub/releases/almaty-region-lph-household-v1/release-manifest.json
 ```
 
-На 31.07.2026 в production есть 378 строк `urban_plan_layers`: 72 активных
-`VERIFIED_STRICT/search` и 306 неактивных `WARNING/shadow`. Автопроверка
-генплана активна по 24 группам: регионально для Акмолинской, Алматинской,
-Жетісу, ЗКО, Карагандинской, Костанайской, Кызылординской, Мангистауской,
-Туркестанской и Улытауской областей; точечно для Астаны, Шымкента, Актобе,
-Атырау, Тараза, Павлодара, Петропавловска, Шахтинска, Аркалыка, Костаная,
-Лисаковска, Рудного, Тобыла и Житикары. Новые региональные релизы включены только для
-`ЛПХ:household` через узкие Smart GeoHub/Geonomix-слои по `usl_i32=11010000`.
+На 17.08.2026 в production есть 426 строк `urban_plan_layers`: 90 активных
+`VERIFIED_STRICT/search` в 30 областях применения и 336 неактивных QA/shadow.
+Ручная очередь рассчитанных точек завершена: 641 из 641 проверена,
+`queued = 0`. Неактивные слои, 1313 элементов легенд `needs_review` и 344
+источника `not_imported` относятся к будущему расширению покрытия и не
+означают, что оператор не закончил ручную разметку.
 
 Критично: оставшиеся shadow-слои нельзя включать в автоматический поиск
 ручным изменением флагов в БД. Для продвижения в боевой режим нужен новый
@@ -929,7 +927,7 @@ Run conservative autoreg over the current workbench manifest only to create diag
   --resume
 ```
 
-The 2026-08-04 local v2 recheck completed all 175 current records with 0 failed assets, 0 pipeline-error assets, `registration_counts.needs_manual=175`, and `qa_or_strict_automatic=false`. Two very large JPEG plans (`�.����.jpg`, `�����������.jpg`) are decoded through a safe downsample path instead of failing the source-pixel guard. This is still not customer-search approval; it is preparation for A1/A2 operator QA.
+The 2026-08-04 local v2 recheck completed all 175 current records with 0 failed assets, 0 pipeline-error assets, `registration_counts.needs_manual=175`, and `qa_or_strict_automatic=false`. Two very large JPEG plans (`г.Есик.jpg`, `Туздыбастау.jpg`) are decoded through a safe downsample path instead of failing the source-pixel guard. This is still not customer-search approval; it is preparation for A1/A2 operator QA.
 
 Build the autoreg diagnostics CSV/JSON reports:
 
@@ -1152,6 +1150,6 @@ Operational notes:
 - `app/live_search.py` contains genplan-first prefiltering: active allowed
   genplan polygons restrict the EGKN search area when they overlap the selected
   district/locality.
-- Detailed genplan status is in `docs/GENPLAN_STATUS_2026_08_04.md`.
+- Detailed genplan status is in `docs/GENPLAN_STATUS_2026_08_17.md`.
 
 

@@ -1,6 +1,6 @@
 # Planning Data Service
 
-Last updated: 2026-08-04
+Last updated: 2026-08-17
 
 ## Purpose
 
@@ -19,6 +19,19 @@ granted to a user. The correct product wording is:
 Not:
 
 > The plot is suitable.
+
+## Current Production Status
+
+The manual candidate-review stage is complete: all `641` saved candidates have
+been classified and `queued = 0`. Production contains `426` rows in
+`urban_plan_layers`; `90` active and search-approved `VERIFIED_STRICT` rows are
+used in `30` territorial/purpose scopes. The other `336` rows are inactive QA
+or shadow material and do not affect client search.
+
+The remaining legend and source queues are a backlog for expanding coverage,
+not unfinished work on the 641 manually marked points. See
+`GENPLAN_STATUS_2026_08_17.md` for exact counters, territory breakdown and
+control queries.
 
 ## Search Order
 
@@ -210,6 +223,28 @@ Implemented second pipeline step on 2026-08-04:
   - `GET /api/genplans/layers/geojson` returns active approved urban-planning
     layers as GeoJSON. Draft PDF-derived colors are intentionally excluded from
     this endpoint until they pass review, georeferencing and QA.
+- Automatic legend pre-classification reduces manual work:
+  - text-label matches for LPH/gardening/red lines/restricted zones can be
+    approved automatically;
+  - color-only guesses are conservative and remain `needs_review` unless they
+    are obvious non-target colors that can be rejected as `ignore`;
+  - LPH/gardening is never approved from color alone.
+- PDF label enrichment reduces manual work for vector/text PDFs:
+  - the service scans PDF drawing objects for small color swatches that look
+    like legend items;
+  - if a text line is immediately to the right or below the swatch, that text
+    is saved as `label_ru`/`label_kz` evidence for the legend color;
+  - the normal auto-classifier then uses the text, not the color itself, to
+    approve obvious LPH/gardening/red-line/restricted classes;
+  - raster JPG/PNG scans still need OCR/vision or operator review because they
+    have no reliable text layer.
+- AIS GGK is now the first operational source for digital layers:
+  - `/admin/urban-plans` can refresh the official GGK catalog;
+  - the same page can build and import inactive GGK shadow releases in small
+    batches;
+  - profiles are tried in this order: `lph-household`, `gardening`, `lph-field`;
+  - imported GGK shadow layers are stored for review but are not enabled for
+    strict client search until a verified search release is built.
 
 ## Pilot: Akkol
 

@@ -4,9 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260811c">
+  <link rel="icon" type="image/png" href="/static/zhertap-favicon.png?v=20260817">
+  <link rel="stylesheet" href="/static/app.css?v=20260817-genplan-release">
+  {% block extra_head %}{% endblock %}
 </head>
-<body class="admin-body">
+<body class="admin-body {% block body_class %}{% endblock %}">
   <header class="topbar">
     <a class="brand" href="/admin" aria-label="{{ app_name }}">
       <span class="brand-mark">Ж</span>
@@ -26,6 +28,7 @@
     <a class="site-link" href="/" target="_blank" rel="noreferrer">Открыть сайт</a>
   </header>
   <main class="page">{% block content %}{% endblock %}</main>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
 

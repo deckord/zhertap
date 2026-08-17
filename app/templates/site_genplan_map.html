@@ -1,0 +1,75 @@
+{% extends "site_base.html" %}
+{% block title %}Карта генплана — Жертап{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="/static/leaflet.css?v=20260814-cabinet-genplan-map">
+{% endblock %}
+{% block content %}
+<section
+  class="cabinet-layout"
+  data-cabinet-genplan-map-page
+  data-search-id="{{ search.id }}"
+  data-layers-url="/cabinet/searches/{{ search.id }}/genplan-map.geojson"
+  data-check-url="/cabinet/searches/{{ search.id }}/genplan-coverage.json"
+>
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main">
+    <div class="page-actions">
+      <a class="back-link" href="/cabinet/searches/{{ search.id }}">< Назад к анализу</a>
+      <a class="back-link" href="/cabinet">В кабинет</a>
+    </div>
+    <div class="cabinet-hero search-live-hero">
+      <div>
+        <span class="eyebrow">Оцифрованный генплан</span>
+        <h1>{{ search.region_label or search.region }} · {{ search.district_label or search.district }}</h1>
+        <p>
+          {{ planning_scope.locality or search.locality_label or search.locality or "населенный пункт не указан" }}
+          · {{ planning_scope.requested_use }}
+        </p>
+      </div>
+      <a class="secondary-action" href="{{ genplan_reference.url }}" target="_blank" rel="noopener">Открыть официальный файл</a>
+    </div>
+
+    <section class="panel-modern cabinet-genplan-map-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Карта зон генплана</h2>
+          <span>Нажмите на карту, чтобы проверить точку по оцифрованным слоям</span>
+        </div>
+        <div class="cabinet-genplan-legend">
+          <span><i class="allowed"></i>разрешено</span>
+          <span><i class="prohibited"></i>ограничения</span>
+          <span><i class="red-line"></i>красные линии</span>
+          <span><i class="active-point"></i>проверяемая точка</span>
+        </div>
+      </div>
+      <div class="cabinet-genplan-map-toolbar">
+        <button class="primary-action compact" type="button" data-cabinet-genplan-reload>Обновить слои</button>
+        <span data-cabinet-genplan-status>Загрузка слоев...</span>
+      </div>
+      <div class="cabinet-genplan-map" data-cabinet-genplan-map aria-label="Карта генплана"></div>
+      <div class="cabinet-genplan-result" data-cabinet-genplan-result>
+        Кликните по карте, чтобы проверить координату.
+      </div>
+    </section>
+
+    {% if search_unlocked and candidates %}
+      <div hidden data-cabinet-genplan-candidates>
+        {% for candidate in candidates %}
+          <span
+            data-candidate-point
+            data-rank="{{ candidate.rank }}"
+            data-lat="{{ '%.6f'|format(candidate.latitude) }}"
+            data-lon="{{ '%.6f'|format(candidate.longitude) }}"
+            data-status="{{ candidate.urban_plan_status or '' }}"
+            data-zone="{{ candidate.urban_plan_zone or '' }}"
+          ></span>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/leaflet.js?v=20260814-cabinet-genplan-map" defer></script>
+<script src="/static/site-genplan-map.js?v=20260814-google-style-marker" defer></script>
+{% endblock %}

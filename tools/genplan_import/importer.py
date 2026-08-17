@@ -217,6 +217,42 @@ def _assert_idempotent(
 
 
 def _update_source_registry(session: Session, release: ValidatedRelease) -> None:
+    if _update_ggk_source_registry(session, release):
+        return
+    _update_smart_geohub_source_registry(session, release)
+
+
+def _update_ggk_source_registry(session: Session, release: ValidatedRelease) -> bool:
+    document_id = release.provenance.get("document_id")
+    if document_id in (None, ""):
+        return False
+    source = session.scalar(
+        select(UrbanPlanSource).where(
+            UrbanPlanSource.platform == "ggk_wfs",
+            UrbanPlanSource.external_id == str(document_id),
+        )
+    )
+    if source is None:
+        return False
+    source.import_status = "imported" if release.approved_for_search else "shadow_imported"
+    if release.approved_for_search:
+        source.coverage_status = "imported"
+    elif source.coverage_status == "digital_found":
+        source.coverage_status = "shadow_imported"
+    source.layer_count = sum(
+        int(layer.get("feature_count") or 0)
+        for layer in release.provenance.get("layers", {}).values()
+        if isinstance(layer, dict)
+    )
+    source.last_error = None
+    source.notes = _source_registry_note(release, source.notes)
+    return True
+
+
+def _update_smart_geohub_source_registry(
+    session: Session,
+    release: ValidatedRelease,
+) -> None:
     source_manifest = _load_source_manifest(release)
     if not source_manifest:
         return

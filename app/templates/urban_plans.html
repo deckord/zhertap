@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Генпланы и ПДП · {{ app_name }}{% endblock %}
+{% block body_class %}urban-plans-admin{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="/static/leaflet.css?v=20260814-genplan-map">
+{% endblock %}
 {% block content %}
 <section class="section-head">
   <div>
@@ -8,6 +12,14 @@
   </div>
   <span class="status {% if strict_mode %}status-delivered{% else %}status-failed{% endif %}">{{ 'строгий режим' if strict_mode else 'проверка отключена' }}</span>
 </section>
+
+<nav class="urban-plan-quick-nav" aria-label="Быстрый переход по генпланам">
+  <span>Рабочие действия</span>
+  <a href="#planning-map">Карта генплана</a>
+  <a href="#planning-completion">Очередь проверки</a>
+  <a class="is-primary" href="#planning-candidates">Открыть точки на Google</a>
+  <a href="/admin/planning-candidates/review-next">Проверять по одной точке</a>
+</nav>
 
 <section class="panel form-panel" id="sources">
   <div class="section-head compact-head">
@@ -19,6 +31,11 @@
       <form action="/admin/urban-plan-sources/sync-ggk" method="post">
         <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <button class="primary" type="submit">Синхронизировать ГГК</button>
+      </form>
+      <form action="/admin/urban-plan-sources/import-ggk-shadow" method="post">
+        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+        <input type="hidden" name="limit_sources" value="2">
+        <button type="submit">Импортировать ГГК</button>
       </form>
       <form action="/admin/urban-plan-sources/sync-smart-geohub" method="post">
         <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
@@ -46,6 +63,17 @@
     Каталог ГГК обновлен: найдено {{ request.query_params.get('ggk_seen') }},
     новых {{ request.query_params.get('ggk_created') }},
     обновлено {{ request.query_params.get('ggk_updated') }}.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('ggk_import_sources') %}
+  <div class="notice">
+    Импорт ГГК: проверено источников {{ request.query_params.get('ggk_import_sources') }},
+    профилей {{ request.query_params.get('ggk_import_profiles') }},
+    релизов импортировано {{ request.query_params.get('ggk_import_releases') }},
+    новых слоев {{ request.query_params.get('ggk_import_layers') }},
+    уже были {{ request.query_params.get('ggk_import_existing') }},
+    заблокировано {{ request.query_params.get('ggk_import_blocked') }},
+    ошибок {{ request.query_params.get('ggk_import_failed') }}.
   </div>
   {% endif %}
   {% if request.query_params.get('smart_seen') %}
@@ -130,6 +158,16 @@
       <input type="hidden" name="limit_colors" value="12">
       <button type="submit">Разобрать следующий документ</button>
     </form>
+    <form action="/admin/genplan-pipeline/auto-classify-legend" method="post" class="action-row">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+      <input type="hidden" name="limit" value="2000">
+      <button type="submit">Авторазметить цвета</button>
+    </form>
+    <form action="/admin/genplan-pipeline/enrich-pdf-labels" method="post" class="action-row">
+      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+      <input type="hidden" name="limit_docs" value="50">
+      <button type="submit">Дочитать подписи PDF</button>
+    </form>
   </div>
   {% if request.query_params.get('pipeline_seen') %}
   <div class="notice">
@@ -148,6 +186,25 @@
     Цветов создано: {{ request.query_params.get('legend_colors') }}.
     Статус: {{ request.query_params.get('legend_status') or 'очередь пуста' }}.
     {{ request.query_params.get('legend_message') }}
+  </div>
+  {% endif %}
+  {% if request.query_params.get('pdf_label_docs') %}
+  <div class="notice">
+    Подписи PDF: проверено документов {{ request.query_params.get('pdf_label_docs') }},
+    с найденными подписями {{ request.query_params.get('pdf_label_hits') }},
+    подписей найдено {{ request.query_params.get('pdf_labels') }},
+    цветов обновлено {{ request.query_params.get('pdf_label_updated') }},
+    цветов создано {{ request.query_params.get('pdf_label_created') }}.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('auto_scanned') %}
+  <div class="notice">
+    Авторазметка цветов: проверено {{ request.query_params.get('auto_scanned') }},
+    изменено {{ request.query_params.get('auto_changed') }},
+    утверждено по тексту {{ request.query_params.get('auto_approved') }},
+    отклонено как нецелевое {{ request.query_params.get('auto_rejected') }},
+    оставлено кандидатами {{ request.query_params.get('auto_candidates') }},
+    без изменений {{ request.query_params.get('auto_unchanged') }}.
   </div>
   {% endif %}
   <div class="stats-grid compact-stats">
@@ -180,6 +237,11 @@
       <span>цветов</span>
       <strong>{{ legend_stats.total }}</strong>
       <small>{{ legend_stats.needs_review }} ждут проверки</small>
+    </div>
+    <div class="stat-card">
+      <span>авторазметка</span>
+      <strong>{{ legend_stats.auto_classified }}</strong>
+      <small>{{ legend_stats.rejected }} отклонено</small>
     </div>
     <div class="stat-card">
       <span>проблемные</span>
@@ -345,6 +407,34 @@
   </div>
 </section>
 
+<section class="panel form-panel" id="planning-map">
+  <div class="section-head compact-head">
+    <div>
+      <h2>Карта генплана</h2>
+      <p>Слои берутся из выбранной территории ниже. Нажмите на карту, чтобы проверить точку по оцифрованному генплану.</p>
+    </div>
+    <div class="urban-plan-map-legend" aria-label="Легенда карты генплана">
+      <span><i class="allowed"></i>разрешено</span>
+      <span><i class="prohibited"></i>ограничения</span>
+      <span><i class="red-line"></i>красные линии</span>
+    </div>
+  </div>
+  <div class="urban-plan-map-actions">
+    <button class="primary" type="button" data-urban-plan-map-load>Показать слои на карте</button>
+    <span class="catalog-status" data-urban-plan-map-status>Карта ждет загрузки слоев.</span>
+  </div>
+  <div
+    class="urban-plan-leaflet-map"
+    data-urban-plan-map
+    data-layers-url="/admin/urban-plans/map/geojson"
+    data-check-url="/admin/urban-plans/coverage.json"
+    aria-label="Интерактивная карта генплана"
+  ></div>
+  <div class="urban-plan-map-result" data-urban-plan-map-result>
+    Кликните по карте после загрузки слоев.
+  </div>
+</section>
+
 <section class="panel form-panel" id="planning-check">
   <div class="section-head compact-head">
     <div>
@@ -492,6 +582,13 @@
     {% else %}
     <br>ЕГКН для этого списка не включен: это только точки внутри зоны генплана.
     {% endif %}
+    {% if candidate_result.review_feedback and candidate_result.review_feedback.reviewed_points %}
+    <br>Учтена ручная сверка Google:
+    проверено {{ candidate_result.review_feedback.reviewed_points }},
+    пустых {{ candidate_result.review_feedback.confirmed_empty_points }},
+    исключено неподходящих {{ candidate_result.review_feedback.excluded_bad_points }},
+    показано ранее подтвержденных {{ candidate_result.review_feedback.reused_empty_points }}.
+    {% endif %}
     {% if candidate_result.message %}<br>{{ candidate_result.message }}{% endif %}
   </div>
   {% if candidate_result.points %}
@@ -512,6 +609,7 @@
         {% for point in candidate_result.points %}
         {% set review_key = "%.6f,%.6f"|format(point.latitude, point.longitude) %}
         {% set saved_review = candidate_review_lookup.get(review_key) %}
+        {% if not saved_review or saved_review.status == 'queued' %}
         <tr>
           <td>{{ point.rank }}</td>
           <td>{{ point.latitude }}, {{ point.longitude }}</td>
@@ -539,10 +637,14 @@
             по спутнику
             {% endif %}
           </td>
-          <td><a class="button-link" href="{{ point.google_maps_url }}" target="_blank" rel="noopener">Открыть Google</a></td>
+          <td>
+            <a class="button-link" href="{{ point.google_maps_url }}" target="_blank" rel="noopener">Открыть Google</a>
+            <a class="button-link" href="{{ point.genplan_check_url }}">Проверить генплан</a>
+          </td>
           <td>
             <form action="/admin/planning-candidates/review" method="post" class="planning-review-form">
               <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+              <input type="hidden" name="review_return" value="next">
               <input type="hidden" name="candidate_region" value="{{ candidate_defaults.region }}">
               <input type="hidden" name="candidate_district" value="{{ candidate_defaults.district }}">
               <input type="hidden" name="candidate_locality" value="{{ candidate_defaults.locality }}">
@@ -579,6 +681,7 @@
             </form>
           </td>
         </tr>
+        {% endif %}
         {% endfor %}
       </tbody>
     </table>
@@ -682,8 +785,10 @@
         </td>
         <td>
           {% if item.active or item.approved_for_search %}
-          <form action="/admin/urban-plans/{{ item.id }}/toggle" method="post"><button type="submit">{{ 'Отключить' if item.active else 'Включить' }}</button></form>
+          <form action="/admin/urban-plans/{{ item.id }}/toggle" method="post">
             <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+            <button type="submit">{{ 'Отключить' if item.active else 'Включить' }}</button>
+          </form>
           {% else %}
           <span class="muted">Ожидает независимой приемки</span>
           {% endif %}
@@ -696,5 +801,9 @@
   </table>
 </section>
 <script src="{{ url_for('static', path='/urban-plan-catalog.js') }}"></script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/leaflet.js?v=20260814-genplan-map" defer></script>
+<script src="/static/urban-plan-map.js?v=20260814-genplan-map" defer></script>
 {% endblock %}
 

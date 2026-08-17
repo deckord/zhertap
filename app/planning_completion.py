@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, load_only
 
 from app.models import PlanningCandidateReview, PlanningCandidateStatus, UrbanPlanLayer
 from app.planning_candidate_reviews import (
@@ -46,8 +46,7 @@ def build_planning_completion_report(
     limit: int = 160,
 ) -> dict[str, Any]:
     scopes = _layer_scopes(session)
-    reviews = session.scalars(select(PlanningCandidateReview)).all()
-    review_counts = _review_counts(reviews)
+    review_counts = _review_counts(session)
     rows: list[PlanningScopeProgress] = []
     for scope_key, layers in scopes.items():
         region, district, locality, requested_use = scope_key
@@ -301,6 +300,22 @@ def _layer_scopes(
 ) -> dict[tuple[str, str, str, str], list[UrbanPlanLayer]]:
     rows = session.scalars(
         select(UrbanPlanLayer)
+        .options(
+            load_only(
+                UrbanPlanLayer.region,
+                UrbanPlanLayer.district,
+                UrbanPlanLayer.locality,
+                UrbanPlanLayer.purpose,
+                UrbanPlanLayer.layer_kind,
+                UrbanPlanLayer.active,
+                UrbanPlanLayer.approved_for_search,
+                UrbanPlanLayer.provenance_status,
+                UrbanPlanLayer.identity_status,
+                UrbanPlanLayer.qa_status,
+                UrbanPlanLayer.independent_review,
+                UrbanPlanLayer.source_sha256,
+            )
+        )
         .where(UrbanPlanLayer.layer_kind.in_(("allowed", "prohibited", "red_line")))
         .order_by(
             UrbanPlanLayer.region.asc(),
@@ -322,12 +337,28 @@ def _layer_scopes(
 
 
 def _review_counts(
-    reviews: list[PlanningCandidateReview],
+    session: Session,
 ) -> dict[tuple[str, str, str, str], Counter[str]]:
     counts: dict[tuple[str, str, str, str], Counter[str]] = {}
-    for row in reviews:
-        key = (row.region, row.district, row.locality or "", row.requested_use)
-        counts.setdefault(key, Counter())[row.status] += 1
+    rows = session.execute(
+        select(
+            PlanningCandidateReview.region,
+            PlanningCandidateReview.district,
+            PlanningCandidateReview.locality,
+            PlanningCandidateReview.requested_use,
+            PlanningCandidateReview.status,
+            func.count(PlanningCandidateReview.id),
+        ).group_by(
+            PlanningCandidateReview.region,
+            PlanningCandidateReview.district,
+            PlanningCandidateReview.locality,
+            PlanningCandidateReview.requested_use,
+            PlanningCandidateReview.status,
+        )
+    ).all()
+    for region, district, locality, requested_use, status, count in rows:
+        key = (region, district, locality or "", requested_use)
+        counts.setdefault(key, Counter())[status] += int(count)
     return counts
 
 

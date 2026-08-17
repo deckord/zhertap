@@ -11,6 +11,7 @@ import app.web as web
 from app.config import settings
 from app.db import Base
 from app.genplan_pipeline import (
+    auto_classify_legend_entries,
     build_document_legend_export,
     extract_next_document_legend_draft,
     inspect_genplan_document,
@@ -144,6 +145,51 @@ def test_extract_next_document_legend_draft_from_raster_image(
     assert legend_stats["needs_review"] == len(entries)
 
 
+def test_sync_manual_genplans_preserves_processed_legend_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from PIL import Image, ImageDraw
+
+    image_path = tmp_path / "processed.png"
+    image = Image.new("RGB", (120, 80), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 59, 79), fill=(38, 166, 91))
+    draw.rectangle((60, 0, 119, 79), fill=(245, 176, 65))
+    image.save(image_path)
+    record = ManualGenplanRecord(
+        asset_id="asset-processed",
+        region="Акмолинская область",
+        district="г.Акколь",
+        locality="г.Акколь",
+        title="Генплан: обработан",
+        relative_path="archive/processed.png",
+        filename="processed.png",
+        extension=".png",
+        media_type="image/png",
+        size_bytes=image_path.stat().st_size,
+        confidence="medium",
+    )
+    monkeypatch.setattr("app.genplan_pipeline.manual_genplan_records", lambda: (record,))
+    monkeypatch.setattr("app.genplan_pipeline.resolve_manual_genplan_file", lambda _: image_path)
+
+    with build_session() as session:
+        sync_manual_genplans_into_pipeline(session, ingested_by="admin")
+        extract_next_document_legend_draft(session, limit_colors=4)
+        before = session.scalar(select(GenplanSourceDocument))
+        assert before is not None
+        before.raw_metadata_json = '{"legend_draft_page_numbers":[1]}'
+        session.commit()
+
+        sync_manual_genplans_into_pipeline(session, ingested_by="admin")
+        after = session.scalar(select(GenplanSourceDocument))
+
+    assert after is not None
+    assert after.pipeline_status == GenplanPipelineStatus.legend_draft_ready.value
+    assert after.next_action == "review_legend_colors_and_assign_categories"
+    assert after.raw_metadata_json == '{"legend_draft_page_numbers":[1]}'
+
+
 def test_extract_next_document_legend_draft_from_rendered_pdf(
     tmp_path: Path,
     monkeypatch,
@@ -185,6 +231,55 @@ def test_extract_next_document_legend_draft_from_rendered_pdf(
     assert result is not None
     assert result.pipeline_status == GenplanPipelineStatus.legend_draft_ready.value
     assert all(entry.source.startswith("rendered_pdf_page_") for entry in entries)
+
+
+def test_extract_pdf_legend_labels_from_vector_swatch_text(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import fitz
+
+    pdf_path = tmp_path / "labeled.pdf"
+    document = fitz.open()
+    page = document.new_page(width=360, height=180)
+    page.draw_rect(fitz.Rect(24, 24, 40, 40), color=None, fill=(0.15, 0.65, 0.35))
+    page.insert_text((52, 38), "LPH household zone", fontsize=10)
+    page.draw_rect(fitz.Rect(24, 56, 40, 72), color=None, fill=(0.85, 0.1, 0.1))
+    page.insert_text((52, 70), "Red line", fontsize=10)
+    page.draw_rect(fitz.Rect(120, 120, 330, 170), color=None, fill=(0.15, 0.65, 0.35))
+    document.save(pdf_path)
+    document.close()
+    record = ManualGenplanRecord(
+        asset_id="asset-labeled-pdf",
+        region="Акмолинская область",
+        district="г.Акколь",
+        locality="г.Акколь",
+        title="PDF генплан: Акколь",
+        relative_path="archive/labeled.pdf",
+        filename="labeled.pdf",
+        extension=".pdf",
+        media_type="application/pdf",
+        size_bytes=pdf_path.stat().st_size,
+        confidence="medium",
+    )
+    monkeypatch.setattr("app.genplan_pipeline.manual_genplan_records", lambda: (record,))
+    monkeypatch.setattr("app.genplan_pipeline.resolve_manual_genplan_file", lambda _: pdf_path)
+
+    with build_session() as session:
+        sync_manual_genplans_into_pipeline(session, ingested_by="admin")
+        stats = extract_next_document_legend_draft(session, limit_colors=6)
+        auto_stats = auto_classify_legend_entries(session)
+        entries = session.scalars(select(GenplanLegendEntry)).all()
+
+    assert stats["document_found"] == 1
+    assert auto_stats["approved"] >= 1
+    assert any(entry.label_ru == "LPH household zone" for entry in entries)
+    assert any(
+        entry.label_ru == "LPH household zone"
+        and entry.layer_kind == "allowed"
+        and entry.review_status == "approved"
+        for entry in entries
+    )
 
 
 def test_api_genplan_catalog_returns_pipeline_documents(
@@ -469,3 +564,88 @@ def test_admin_classify_and_export_legend_routes(
     finally:
         main.app.dependency_overrides.clear()
         session.close()
+
+
+def test_auto_classify_legend_entries_is_conservative() -> None:
+    with build_session() as session:
+        document = GenplanSourceDocument(
+            asset_id="asset-auto",
+            region="Акмолинская область",
+            district="г.Акколь",
+            locality="г.Акколь",
+            title="Генплан",
+            filename="auto.png",
+            relative_path="archive/auto.png",
+            media_type="image/png",
+            detected_format="png",
+            file_size_bytes=100,
+            pipeline_status=GenplanPipelineStatus.legend_draft_ready.value,
+        )
+        session.add(document)
+        session.commit()
+        entries = [
+            GenplanLegendEntry(
+                document_id=document.id,
+                color_hex="#f1c85b",
+                red=241,
+                green=200,
+                blue=91,
+                source="dominant_color",
+                target_category="unknown",
+                layer_kind="unknown",
+                confidence_score=0.35,
+                review_status="needs_review",
+            ),
+            GenplanLegendEntry(
+                document_id=document.id,
+                color_hex="#2f7ed8",
+                red=47,
+                green=126,
+                blue=216,
+                source="dominant_color",
+                target_category="unknown",
+                layer_kind="unknown",
+                confidence_score=0.35,
+                review_status="needs_review",
+            ),
+            GenplanLegendEntry(
+                document_id=document.id,
+                color_hex="#d84832",
+                red=216,
+                green=72,
+                blue=50,
+                source="dominant_color",
+                label_ru="Красные линии",
+                target_category="unknown",
+                layer_kind="unknown",
+                confidence_score=0.35,
+                review_status="needs_review",
+            ),
+        ]
+        session.add_all(entries)
+        session.commit()
+
+        stats = auto_classify_legend_entries(session)
+        refreshed = session.scalars(
+            select(GenplanLegendEntry).order_by(GenplanLegendEntry.id.asc())
+        ).all()
+        legend_stats = legend_entry_stats(session)
+
+    assert stats == {
+        "scanned": 3,
+        "changed": 3,
+        "approved": 1,
+        "rejected": 1,
+        "candidates": 1,
+        "unchanged": 0,
+    }
+    assert refreshed[0].target_category == "residential_or_allowed_candidate"
+    assert refreshed[0].layer_kind == "allowed"
+    assert refreshed[0].review_status == "needs_review"
+    assert refreshed[1].layer_kind == "ignore"
+    assert refreshed[1].review_status == "rejected"
+    assert refreshed[2].target_category == "red_line"
+    assert refreshed[2].layer_kind == "red_line"
+    assert refreshed[2].review_status == "approved"
+    assert legend_stats["auto_classified"] == 3
+    assert legend_stats["rejected"] == 1

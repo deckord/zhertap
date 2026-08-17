@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -107,6 +108,7 @@ from app.feedback import (
 )
 from app.genplan_references import genplan_reference_payload
 from app.manual_genplans import manual_genplan_records
+from app.map_links import google_maps_place_url
 from app.models import (
     Account,
     AccountPayment,
@@ -118,8 +120,15 @@ from app.models import (
     PaymentStatus,
     SearchRequest,
     TelegramLinkToken,
+    UrbanPlanLayer,
     WebLoginCode,
     WebSession,
+)
+from app.planning_service import (
+    PlanningScope,
+    _is_search_layer,
+    _matches_planning_scope,
+    planning_coverage,
 )
 from app.providers.egkn import EgknProvider, EgknProviderError, normalize_name
 from app.purposes import LPH_NEW
@@ -515,6 +524,7 @@ def _cabinet_context(
         ),
         "show_onboarding_tour": show_onboarding_tour,
         "urban_plan_badge": urban_plan_badge_payload,
+        "google_maps_place_url": google_maps_place_url,
     }
     context.update(_access_context(session, account))
     context.update(extra)
@@ -616,6 +626,67 @@ def _can_access_search(account: Account, search: SearchRequest) -> bool:
     )
 
 
+def _get_accessible_search(
+    session: Session,
+    account: Account,
+    search_id: str,
+) -> SearchRequest:
+    search = session.get(SearchRequest, search_id)
+    if search is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if not _can_access_search(account, search):
+        raise HTTPException(status_code=403, detail="Нет доступа к заявке")
+    return search
+
+
+def _search_planning_scope(search: SearchRequest) -> PlanningScope:
+    requested_use = "GARDENING" if "сад" in (search.purpose or "").casefold() else "LPH_HOMESTEAD"
+    allotment_type = (search.irrigation_type or "").casefold()
+    if "полев" in allotment_type or allotment_type == "field":
+        requested_use = "LPH_FIELD"
+    return PlanningScope(
+        region=search.region_label or search.region,
+        district=search.district_label or search.district,
+        locality=search.locality_label or search.locality,
+        requested_use=requested_use,
+    )
+
+
+def _search_genplan_map_url(search: SearchRequest) -> str:
+    return f"/cabinet/searches/{search.id}/genplan-map"
+
+
+def _urban_plan_layer_feature_collection(layers: list[UrbanPlanLayer]) -> dict[str, object]:
+    features = []
+    for layer in layers:
+        try:
+            geometry = json.loads(layer.geometry_geojson)
+        except json.JSONDecodeError:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "id": layer.id,
+                    "purpose": layer.purpose,
+                    "layer_kind": layer.layer_kind,
+                    "zone_name": layer.zone_name,
+                    "title": layer.title,
+                    "approval_document": layer.approval_document,
+                    "approval_date": layer.approval_date.isoformat()
+                    if layer.approval_date
+                    else None,
+                    "source_url": layer.source_url,
+                    "qa_status": layer.qa_status,
+                    "approved_for_search": layer.approved_for_search,
+                    "trust_level": "SEARCH" if _is_search_layer(layer) else "SHADOW",
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
 def _search_status_label(status: str) -> str:
     return {
         "queued": "Заявка в очереди",
@@ -683,7 +754,11 @@ def _candidate_payload(candidate: Candidate, *, unlocked: bool) -> dict[str, obj
         "urban_plan_status": candidate.urban_plan_status,
         "urban_plan_badge": urban_plan_badge_payload(candidate.urban_plan_status),
         "urban_plan_zone": candidate.urban_plan_zone,
-        "google_maps_url": candidate.google_maps_url if unlocked else None,
+        "google_maps_url": (
+            google_maps_place_url(candidate.latitude, candidate.longitude)
+            if unlocked
+            else None
+        ),
         "egkn_url": candidate.egkn_url if unlocked else None,
         "risk_notes": candidate.risk_notes,
         "locked": not unlocked,
@@ -905,6 +980,7 @@ def _search_payload(
         ),
         "urban_plan_message": search.urban_plan_message,
         "urban_plan_reference": genplan_reference,
+        "genplan_map_url": _search_genplan_map_url(search),
         "payment_status": search.payment_status,
         "can_request_next_batch": _can_request_next_batch(session, account, search),
         "report_unlocked": unlocked,
@@ -2443,6 +2519,7 @@ def search_detail(
             displayed_candidates=_visible_search_candidates(search),
             search_explanation=_search_explanation_payload(search),
             genplan_reference=genplan_reference,
+            genplan_map_url=_search_genplan_map_url(search),
             search_urban_plan_badge=urban_plan_badge_payload(
                 search.urban_plan_status,
                 language=search.language,
@@ -2454,6 +2531,78 @@ def search_detail(
             next_error=request.query_params.get("next_error"),
         ),
     )
+
+
+@router.get("/cabinet/searches/{search_id}/genplan-map", response_class=HTMLResponse)
+def search_genplan_map(
+    request: Request,
+    search_id: str,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    search = _get_accessible_search(session, account, search_id)
+    genplan_reference = genplan_reference_payload(
+        search,
+        language=search.language,
+        manual_files_root=settings.manual_genplan_files_root,
+    )
+    scope = _search_planning_scope(search)
+    return templates.TemplateResponse(
+        request=request,
+        name="site_genplan_map.html",
+        context=_cabinet_context(
+            session,
+            account,
+            search=search,
+            genplan_reference=genplan_reference,
+            planning_scope=scope,
+            search_unlocked=account_access_kind(session, account) in {"paid", "trial"},
+            candidates=_visible_search_candidates(search),
+        ),
+    )
+
+
+@router.get("/cabinet/searches/{search_id}/genplan-map.geojson")
+def search_genplan_map_geojson(
+    search_id: str,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+) -> dict:
+    search = _get_accessible_search(session, account, search_id)
+    scope = _search_planning_scope(search)
+    rows = session.scalars(
+        select(UrbanPlanLayer)
+        .where(UrbanPlanLayer.layer_kind.in_(("allowed", "prohibited", "red_line")))
+        .order_by(UrbanPlanLayer.active.desc(), UrbanPlanLayer.id.asc())
+    ).all()
+    layers = [
+        row
+        for row in rows
+        if _matches_planning_scope(row, scope) and (_is_search_layer(row) or row.active)
+    ][:700]
+    return _urban_plan_layer_feature_collection(layers)
+
+
+@router.get("/cabinet/searches/{search_id}/genplan-coverage.json")
+def search_genplan_coverage_json(
+    search_id: str,
+    lat: float,
+    lon: float,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+) -> dict:
+    search = _get_accessible_search(session, account, search_id)
+    scope = _search_planning_scope(search)
+    try:
+        return planning_coverage(
+            session,
+            latitude=lat,
+            longitude=lon,
+            include_shadow=True,
+            scope=scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/cabinet/searches/{search_id}/next")

@@ -87,7 +87,7 @@
           <strong id="urban-plan-status-short">{{ current_plan_badge.short }}</strong>
           <p id="urban-plan-status">{{ current_plan_badge.detail }}{% if search.urban_plan_message %} {{ search.urban_plan_message }}{% endif %}</p>
         </div>
-        <a id="genplan-reference-link" class="genplan-action-button" href="{{ genplan_reference.url }}" target="_blank" rel="noopener">{{ genplan_reference.action_text }}</a>
+        <a id="genplan-reference-link" class="genplan-action-button" href="{{ genplan_map_url }}">Открыть карту генплана</a>
       </article>
       <article><h3>Доступ к отчету</h3><p id="payment-status">{{ search.payment_status }}</p></article>
     </div>
@@ -155,7 +155,8 @@
             </div>
             <div class="candidate-live-actions">
               {% if search_unlocked %}
-                <a href="{{ candidate.google_maps_url }}" target="_blank" rel="noopener">Открыть карту</a>
+                <a href="{{ google_maps_place_url(candidate.latitude, candidate.longitude) }}" target="_blank" rel="noopener">Открыть карту</a>
+                <a href="{{ genplan_map_url }}?lat={{ '%.6f'|format(candidate.latitude) }}&lon={{ '%.6f'|format(candidate.longitude) }}&rank={{ candidate.rank }}">Генплан</a>
                 <a href="{{ candidate.egkn_url }}" target="_blank" rel="noopener">Проверить ЕГКН</a>
               {% else %}
                 <button class="locked-action" type="button" disabled>Карта после оплаты</button>
@@ -183,6 +184,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/site-search-status.js?v=20260804a" defer></script>
+<script src="/static/site-search-status.js?v=20260814-candidate-genplan-link" defer></script>
 {% endblock %}
 

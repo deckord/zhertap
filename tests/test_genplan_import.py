@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import UrbanPlanLayer
+from app.models import UrbanPlanLayer, UrbanPlanSource
 from tools.genplan_import import (
     ImportConflictError,
     ReleaseValidationError,
@@ -225,6 +225,41 @@ def test_warning_imports_only_as_inactive_shadow(tmp_path: Path) -> None:
         layers = session.scalars(select(UrbanPlanLayer)).all()
     assert len(layers) == 3
     assert all(not row.active and not row.approved_for_search for row in layers)
+
+
+def test_ggk_shadow_import_updates_source_registry(tmp_path: Path) -> None:
+    manifest = make_release(
+        tmp_path / "release",
+        status="WARNING",
+        release_mode="shadow",
+        allow_shadow=True,
+        mutate_provenance=lambda payload: payload.update({"document_id": 3617}),
+    )
+    engine = build_engine()
+
+    with Session(engine, expire_on_commit=False) as session:
+        session.add(
+            UrbanPlanSource(
+                platform="ggk_wfs",
+                source_type="digital_vector",
+                external_id="3617",
+                locality="г.Акколь",
+                title="Генеральный план г. Акколь",
+                coverage_status="digital_found",
+                import_status="not_imported",
+            )
+        )
+        session.commit()
+
+        result = import_release(session, manifest)
+        source = session.scalar(select(UrbanPlanSource))
+
+    assert result.created_count == 3
+    assert source is not None
+    assert source.import_status == "shadow_imported"
+    assert source.coverage_status == "shadow_imported"
+    assert source.last_error is None
+    assert result.release_id in (source.notes or "")
 
 
 @pytest.mark.parametrize(

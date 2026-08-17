@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.map_links import google_maps_place_url
 from app.models import (
     PlanningCandidateReview,
     PlanningCandidateStatus,
@@ -27,7 +28,7 @@ def planning_candidate_key(latitude: float, longitude: float) -> str:
 
 
 def google_maps_url(latitude: float, longitude: float) -> str:
-    return f"https://www.google.com/maps/@{latitude:.6f},{longitude:.6f},281m/data=!3m1!1e3"
+    return google_maps_place_url(latitude, longitude)
 
 
 def list_planning_candidate_reviews(
@@ -50,6 +51,10 @@ def list_planning_candidate_reviews(
     return list(
         session.scalars(
             statement.order_by(
+                (
+                    PlanningCandidateReview.status
+                    == PlanningCandidateStatus.queued.value
+                ).desc(),
                 PlanningCandidateReview.updated_at.desc(),
                 PlanningCandidateReview.id.desc(),
             ).limit(limit)
@@ -145,5 +150,4 @@ def upsert_planning_candidate_review(
             setattr(review, key, value)
         review.updated_at = now
     session.commit()
-    session.refresh(review)
     return review

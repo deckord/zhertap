@@ -10,11 +10,18 @@ from sqlalchemy.pool import StaticPool
 
 import app.main as main
 from app.db import Base
-from app.models import UrbanPlanLayer
+from app.models import PlanningCandidateReview, PlanningCandidateStatus, UrbanPlanLayer
 from app.planning_free_space import find_planning_candidate_points
 from app.planning_service import PlanningScope
 from app.providers.egkn import DistrictInfo, ParcelRecord, SettlementInfo
 from app.purposes import LPH_HOUSEHOLD_LAYER
+
+TEST_REGION = (
+    "\u0410\u043a\u043c\u043e\u043b\u0438\u043d\u0441\u043a\u0430\u044f "
+    "\u043e\u0431\u043b\u0430\u0441\u0442\u044c"
+)
+TEST_DISTRICT = "\u0433.\u0410\u043a\u043a\u043e\u043b\u044c"
+TEST_LOCALITY = TEST_DISTRICT
 
 
 def build_session() -> Session:
@@ -62,6 +69,42 @@ def add_layer(
             active=active,
         )
     )
+    for review in session.new:
+        if isinstance(review, PlanningCandidateReview):
+            review.region = TEST_REGION
+            review.district = TEST_DISTRICT
+            review.locality = TEST_LOCALITY
+    session.commit()
+
+
+def add_review(
+    session: Session,
+    *,
+    latitude: float,
+    longitude: float,
+    status: PlanningCandidateStatus,
+) -> None:
+    session.add(
+        PlanningCandidateReview(
+            region=TEST_REGION,
+            district=TEST_DISTRICT,
+            locality=TEST_LOCALITY,
+            requested_use="LPH_HOMESTEAD",
+            latitude=latitude,
+            longitude=longitude,
+            google_maps_url=f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}",
+            status=status.value,
+            note=None,
+            trust_level="SHADOW",
+            allowed_area_ha=None,
+            nearby_cadastre=None,
+            nearby_distance_m=None,
+            nearby_land_use=None,
+            candidate_area_ha=1.2,
+            selection_reason="review fixture",
+            reviewed_by="test",
+        )
+    )
     session.commit()
 
 
@@ -95,8 +138,105 @@ def test_find_planning_candidate_points_returns_google_links() -> None:
 
     assert result["trust_level"] == "SHADOW"
     assert len(result["points"]) == 5
-    assert result["points"][0].google_maps_url.startswith("https://www.google.com/maps/@")
+    assert result["points"][0].google_maps_url.startswith(
+        "https://www.google.com/maps/place/"
+    )
+    assert "!3d" in result["points"][0].google_maps_url
+    assert result["points"][0].genplan_check_url.startswith(
+        "/admin/urban-plans?planning_probe=1"
+    )
+    assert "planning_lat=" in result["points"][0].genplan_check_url
+    assert "planning_lon=" in result["points"][0].genplan_check_url
     assert all(point.distance_to_restriction_m is not None for point in result["points"])
+
+
+def test_confirmed_empty_review_is_reused_first() -> None:
+    with build_session() as session:
+        add_layer(
+            session,
+            kind="allowed",
+            geometry=mapping(box(70.93, 51.99, 70.95, 52.01)),
+        )
+        add_review(
+            session,
+            latitude=52.0,
+            longitude=70.94,
+            status=PlanningCandidateStatus.empty,
+        )
+        review = session.query(PlanningCandidateReview).one()
+        layer = session.query(UrbanPlanLayer).one()
+        layer.region = review.region
+        layer.district = review.district
+        layer.locality = review.locality
+        session.commit()
+
+        result = find_planning_candidate_points(
+            session,
+            scope=PlanningScope(
+                region=TEST_REGION,
+                district=TEST_DISTRICT,
+                locality=TEST_LOCALITY,
+                requested_use="LPH_HOMESTEAD",
+            ),
+            include_shadow=True,
+            limit=3,
+            grid_step_m=100,
+        )
+
+    assert result["points"][0].latitude == 52.0
+    assert result["points"][0].longitude == 70.94
+    assert result["review_feedback"]["reused_empty_points"] == 1
+    assert "Google" in (result["points"][0].selection_reason or "")
+
+
+def test_bad_reviewed_place_is_not_suggested_again() -> None:
+    scope = PlanningScope(
+        region=TEST_REGION,
+        district=TEST_DISTRICT,
+        locality=TEST_LOCALITY,
+        requested_use="LPH_HOMESTEAD",
+    )
+    scope = PlanningScope(
+        region=TEST_REGION,
+        district=TEST_DISTRICT,
+        locality=TEST_LOCALITY,
+        requested_use="LPH_HOMESTEAD",
+    )
+    with build_session() as session:
+        add_layer(
+            session,
+            kind="allowed",
+            geometry=mapping(box(70.93, 51.99, 70.95, 52.01)),
+        )
+        baseline = find_planning_candidate_points(
+            session,
+            scope=scope,
+            include_shadow=True,
+            limit=1,
+            grid_step_m=100,
+        )
+        bad_point = baseline["points"][0]
+        add_review(
+            session,
+            latitude=bad_point.latitude,
+            longitude=bad_point.longitude,
+            status=PlanningCandidateStatus.road,
+        )
+
+        result = find_planning_candidate_points(
+            session,
+            scope=scope,
+            include_shadow=True,
+            limit=5,
+            grid_step_m=100,
+        )
+
+    assert result["review_feedback"]["excluded_bad_points"] == 1
+    assert all(
+        abs(point.latitude - bad_point.latitude) > 0.0003
+        or abs(point.longitude - bad_point.longitude) > 0.0003
+        for point in result["points"]
+    )
 
 
 def test_find_planning_candidate_points_uses_egkn_as_orientation(monkeypatch) -> None:
@@ -271,5 +411,10 @@ def test_admin_urban_plans_candidate_finder_renders_points() -> None:
 
     assert response.status_code == 200
     assert "Найти места внутри зоны" in response.text
+    assert "Карта генплана" in response.text
+    assert "/static/leaflet.js" in response.text
+    assert "/static/urban-plan-map.js" in response.text
+    assert "data-urban-plan-map" in response.text
     assert "Открыть Google" in response.text
+    assert "Проверить генплан" in response.text
     assert "Используются черновые слои" in response.text

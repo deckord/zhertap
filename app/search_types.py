@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from app.map_links import google_maps_place_url
+
 
 @dataclass(slots=True)
 class CandidateResult:
@@ -21,7 +23,4 @@ class CandidateResult:
 
     @property
     def google_maps_url(self) -> str:
-        return (
-            f"https://www.google.com/maps/@{self.latitude:.7f},"
-            f"{self.longitude:.7f},19z/data=!3m1!1e3"
-        )
+        return google_maps_place_url(self.latitude, self.longitude)

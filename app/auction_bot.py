@@ -33,11 +33,16 @@ from app.auction_service import (
     get_auction_lot,
     is_favorite,
     list_auction_functional_purposes,
-    list_auction_lots,
     list_auction_regions,
     list_favorites,
     list_subscriptions,
     toggle_favorite,
+)
+from app.auction_v2 import (
+    AuctionV2Filters,
+    format_auction_v2_telegram_card,
+    get_auction_v2_payload,
+    list_auction_v2_lots,
 )
 from app.config import settings
 from app.db import SessionLocal
@@ -373,6 +378,17 @@ def _lot_button(lot: AuctionLot) -> str:
     )
     number = lot.auction_number or lot.source_lot_id
     return f"№{number} · {lot.region or '—'} · {price}"[:64]
+
+
+def _lot_v2_button(payload) -> str:
+    lot = payload.lot
+    number = lot.auction_number or lot.source_lot_id
+    price = (
+        f"{lot.start_price_kzt:,.0f}".replace(",", " ") + " ₸"
+        if lot.start_price_kzt is not None
+        else "—"
+    )
+    return f"{payload.analysis.score}/100 · №{number} · {price}"[:64]
 
 
 async def show_auction_menu(
@@ -849,20 +865,25 @@ async def _show_lot_list(message: Message, state: FSMContext, *, page: int) -> N
     telegram_chat_id = str(data.get("telegram_chat_id") or message.chat.id)
     with SessionLocal() as session:
         paid = has_auction_paid_access(session, telegram_user_id)
-        lots, total = list_auction_lots(
+        v2_filters = AuctionV2Filters(
+            base=filters,
+            lot_scope="active",
+            sort_by="best",
+        )
+        payloads, total = list_auction_v2_lots(
             session,
-            filters,
+            v2_filters,
             offset=page * LOTS_PER_PAGE,
             limit=LOTS_PER_PAGE,
         )
     rows = [
         [
             InlineKeyboardButton(
-                text=_lot_button(lot),
-                callback_data=f"auction:lot:{lot.id}",
+                text=_lot_v2_button(payload),
+                callback_data=f"auction:lot:{payload.lot.id}",
             )
         ]
-        for lot in lots
+        for payload in payloads
     ]
     page_count = max(1, math.ceil(total / LOTS_PER_PAGE))
     navigation = []
@@ -1042,6 +1063,9 @@ async def _show_lot_detail(
         favorite = is_favorite(session, telegram_user_id, lot_id) if lot else False
         metrics = auction_lot_metrics(session, lot) if lot else None
         geo_metrics = auction_lot_geo_metrics(lot) if lot else None
+        v2_payload = (
+            get_auction_v2_payload(session, lot_id, force=True) if lot else None
+        )
     if lot is None:
         await message.edit_text(
             at(language, "lot_missing"),
@@ -1155,10 +1179,15 @@ async def _show_lot_detail(
             ],
         ]
     )
-    await message.edit_text(
-        format_auction_card(lot, language)
+    card_text = (
+        format_auction_v2_telegram_card(v2_payload)
+        if v2_payload is not None
+        else format_auction_card(lot, language)
         + (format_auction_metrics(metrics, language) if metrics else "")
-        + (_format_auction_geo_metrics(geo_metrics, language) if geo_metrics else ""),
+        + (_format_auction_geo_metrics(geo_metrics, language) if geo_metrics else "")
+    )
+    await message.edit_text(
+        card_text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )

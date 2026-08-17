@@ -288,6 +288,38 @@ def test_blocks_legal_act_number_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_allows_amending_legal_act_when_base_matches_wfs_document(tmp_path: Path) -> None:
+    review_path = _review(tmp_path / "review-input.json")
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["legal_act"] = {
+        "number": "№697",
+        "date": "2026-08-04",
+        "url": "https://adilet.zan.kz/rus/docs/P2600000697",
+        "status": "active",
+        "base_legal_act": {
+            "number": "№33",
+            "date": "2024-01-25",
+            "url": "https://adilet.zan.kz/rus/docs/P2400000033",
+            "status": "active",
+        },
+    }
+    review_path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+
+    result = build_ggk_release(
+        3607,
+        "lph-household",
+        tmp_path / "release",
+        review_path,
+        client=FakeClient(),
+    )
+    release = validate_release(result.manifest_path)
+
+    assert release.approval_date.isoformat() == "2026-08-04"
+    assert release.source_url == "https://adilet.zan.kz/rus/docs/P2600000697"
+    assert "№697" in release.approval_document
+    assert "№33" in release.approval_document
+
+
 def test_catalog_reports_document_identity() -> None:
     rows = list_ggk_documents(FakeClient())
 

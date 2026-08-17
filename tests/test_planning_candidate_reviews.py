@@ -12,6 +12,8 @@ import app.main as main
 import app.web as web
 from app.db import Base
 from app.models import PlanningCandidateReview, UrbanPlanLayer
+from app.planning_candidate_reviews import list_planning_candidate_reviews
+from app.planning_service import PlanningScope
 from app.purposes import LPH_HOUSEHOLD_LAYER
 
 
@@ -87,6 +89,8 @@ def test_admin_candidate_finder_renders_review_controls() -> None:
     assert response.status_code == 200
     assert "planning-review-form" in response.text
     assert 'name="candidate_status"' in response.text
+    assert 'name="review_return" value="next"' in response.text
+    assert "/admin/urban-plan-sources/import-ggk-shadow" in response.text
 
 
 def test_admin_planning_candidate_review_saves_marker() -> None:
@@ -129,7 +133,38 @@ def test_admin_planning_candidate_review_saves_marker() -> None:
     assert review.status == "empty"
     assert review.note == "manual satellite check"
     assert review.reviewed_by == "admin"
-    assert review.google_maps_url.startswith("https://www.google.com/maps/@")
+    assert review.google_maps_url.startswith("https://www.google.com/maps/place/")
+    assert "!3d51.992950!4d70.930765" in review.google_maps_url
+
+
+def test_planning_candidate_reviews_put_queued_before_reviewed() -> None:
+    with build_session() as session:
+        for status, latitude in (("empty", 51.992950), ("queued", 51.993950)):
+            session.add(
+                PlanningCandidateReview(
+                    region="Akmola",
+                    district="Akkol",
+                    locality="Akkol",
+                    requested_use="LPH_HOMESTEAD",
+                    latitude=latitude,
+                    longitude=70.930765,
+                    google_maps_url="https://example.test",
+                    status=status,
+                )
+            )
+        session.commit()
+
+        rows = list_planning_candidate_reviews(
+            session,
+            scope=PlanningScope(
+                region="Akmola",
+                district="Akkol",
+                locality="Akkol",
+                requested_use="LPH_HOMESTEAD",
+            ),
+        )
+
+    assert [row.status for row in rows] == ["queued", "empty"]
 
 
 def test_admin_next_candidate_review_flow() -> None:
@@ -182,7 +217,7 @@ def test_admin_next_candidate_review_flow() -> None:
         session.close()
 
     assert page.status_code == 200
-    assert "Открыть Google спутник" in page.text
+    assert "Открыть в Google Maps по координатам" in page.text
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/planning-candidates/review-next"
     assert review.status == "built"

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.manual_genplans import (
@@ -33,6 +33,61 @@ LIGHT_PIXEL_THRESHOLD = 235
 LOW_SATURATION_THRESHOLD = 18
 PDF_RENDER_MAX_SIDE_PX = 900
 PDF_RENDER_MAX_PAGES = 50
+PDF_LABEL_SCAN_MAX_PAGES = 50
+AUTO_NOTE_PREFIX = "auto-classifier:"
+PIPELINE_STATE_PRESERVED_BY_LEGEND = {
+    GenplanPipelineStatus.legend_draft_ready.value,
+    GenplanPipelineStatus.needs_review.value,
+    GenplanPipelineStatus.failed.value,
+}
+LPH_KEYWORDS = (
+    "lph",
+    "household",
+    "private subsidiary",
+    "residential",
+    "лпх",
+    "личное подсоб",
+    "приусад",
+    "усадеб",
+    "индивидуальн",
+    "жил",
+    "ж-1",
+    "ж-2",
+    "ж1",
+    "ж2",
+)
+GARDENING_KEYWORDS = ("garden", "gardening", "dacha", "садовод", "садов", "дач")
+RED_LINE_KEYWORDS = ("красн", "қызыл", "red line")
+PROHIBITED_KEYWORDS = (
+    "industrial",
+    "sanitary",
+    "cemetery",
+    "road",
+    "street",
+    "reserve",
+    "санитар",
+    "охран",
+    "водоохран",
+    "кладбищ",
+    "пром",
+    "производ",
+    "дорог",
+    "улиц",
+    "магистрал",
+    "резерв",
+)
+IGNORE_KEYWORDS = (
+    "background",
+    "boundary",
+    "label",
+    "existing",
+    "projected",
+    "фон",
+    "подпись",
+    "границ",
+    "существующ",
+    "проектируем",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +282,8 @@ def extract_next_document_legend_draft(
             green=color["green"],
             blue=color["blue"],
             source=color["source"],
+            label_ru=color.get("label_ru"),
+            label_kz=color.get("label_kz"),
             target_category="unknown",
             layer_kind="unknown",
             confidence_score=color["confidence_score"],
@@ -291,39 +348,202 @@ def list_pipeline_documents(
 
 
 def pipeline_document_stats(session: Session) -> dict[str, int]:
-    rows = session.scalars(select(GenplanSourceDocument)).all()
-    stats = {
-        "total": len(rows),
-        "ready_vector": 0,
-        "ready_raster": 0,
-        "legend_draft": 0,
-        "needs_page": 0,
-        "needs_review": 0,
-        "missing": 0,
+    status_counts = {
+        str(status): int(count)
+        for status, count in session.execute(
+            select(
+                GenplanSourceDocument.pipeline_status,
+                func.count(GenplanSourceDocument.id),
+            ).group_by(GenplanSourceDocument.pipeline_status)
+        ).all()
     }
-    for row in rows:
-        if row.pipeline_status == GenplanPipelineStatus.ready_for_vector_extraction.value:
-            stats["ready_vector"] += 1
-        elif row.pipeline_status == GenplanPipelineStatus.ready_for_legend_extraction.value:
-            stats["ready_raster"] += 1
-        elif row.pipeline_status == GenplanPipelineStatus.legend_draft_ready.value:
-            stats["legend_draft"] += 1
-        elif row.pipeline_status == GenplanPipelineStatus.needs_pdf_page_selection.value:
-            stats["needs_page"] += 1
-        elif row.pipeline_status == GenplanPipelineStatus.needs_review.value:
-            stats["needs_review"] += 1
-        elif row.pipeline_status == GenplanPipelineStatus.missing_file.value:
-            stats["missing"] += 1
+    stats = {
+        "total": sum(status_counts.values()),
+        "ready_vector": status_counts.get(
+            GenplanPipelineStatus.ready_for_vector_extraction.value, 0
+        ),
+        "ready_raster": status_counts.get(
+            GenplanPipelineStatus.ready_for_legend_extraction.value, 0
+        ),
+        "legend_draft": status_counts.get(
+            GenplanPipelineStatus.legend_draft_ready.value, 0
+        ),
+        "needs_page": status_counts.get(
+            GenplanPipelineStatus.needs_pdf_page_selection.value, 0
+        ),
+        "needs_review": status_counts.get(GenplanPipelineStatus.needs_review.value, 0),
+        "missing": status_counts.get(GenplanPipelineStatus.missing_file.value, 0),
+    }
     return stats
 
 
 def legend_entry_stats(session: Session) -> dict[str, int]:
-    rows = session.scalars(select(GenplanLegendEntry)).all()
-    return {
-        "total": len(rows),
-        "needs_review": sum(1 for row in rows if row.review_status == "needs_review"),
-        "approved": sum(1 for row in rows if row.review_status == "approved"),
+    status_counts = {
+        str(status): int(count)
+        for status, count in session.execute(
+            select(
+                GenplanLegendEntry.review_status,
+                func.count(GenplanLegendEntry.id),
+            ).group_by(GenplanLegendEntry.review_status)
+        ).all()
     }
+    auto_count = session.scalar(
+        select(func.count(GenplanLegendEntry.id)).where(
+            GenplanLegendEntry.notes.contains(AUTO_NOTE_PREFIX)
+        )
+    )
+    return {
+        "total": sum(status_counts.values()),
+        "needs_review": status_counts.get("needs_review", 0),
+        "approved": status_counts.get("approved", 0),
+        "rejected": status_counts.get("rejected", 0),
+        "auto_classified": int(auto_count or 0),
+    }
+
+
+def auto_classify_legend_entries(
+    session: Session,
+    *,
+    limit: int = 2000,
+    override_existing: bool = False,
+) -> dict[str, int]:
+    """Conservatively classify draft legend colors.
+
+    Text matches can be approved because the label carries semantic meaning.
+    Color-only matches are intentionally conservative: they mark likely classes
+    or reject obvious non-target colors, but they do not approve LPH/gardening.
+    """
+    limit = max(1, min(limit, 10000))
+    statement = select(GenplanLegendEntry).order_by(GenplanLegendEntry.id.asc())
+    if not override_existing:
+        statement = statement.where(GenplanLegendEntry.review_status == "needs_review")
+    entries = session.scalars(statement.limit(limit)).all()
+    stats = {
+        "scanned": 0,
+        "changed": 0,
+        "approved": 0,
+        "rejected": 0,
+        "candidates": 0,
+        "unchanged": 0,
+    }
+    for entry in entries:
+        stats["scanned"] += 1
+        if not override_existing and _has_operator_decision(entry):
+            stats["unchanged"] += 1
+            continue
+        decision = _infer_legend_entry_decision(entry)
+        if decision is None:
+            stats["unchanged"] += 1
+            continue
+        target_category, layer_kind, review_status, confidence, reason = decision
+        if not override_existing and _same_legend_decision(
+            entry,
+            target_category=target_category,
+            layer_kind=layer_kind,
+            review_status=review_status,
+        ):
+            stats["unchanged"] += 1
+            continue
+        entry.target_category = target_category
+        entry.layer_kind = layer_kind
+        entry.review_status = review_status
+        entry.confidence_score = max(float(entry.confidence_score or 0), confidence)
+        entry.notes = _append_auto_note(entry.notes, reason)
+        stats["changed"] += 1
+        if review_status == "approved":
+            stats["approved"] += 1
+        elif review_status == "rejected":
+            stats["rejected"] += 1
+        else:
+            stats["candidates"] += 1
+    session.commit()
+    return stats
+
+
+def enrich_pdf_legend_entry_labels(
+    session: Session,
+    *,
+    limit_docs: int = 50,
+) -> dict[str, int]:
+    """Fill legend labels for existing PDF documents when vector text is available."""
+    limit_docs = max(1, min(limit_docs, 500))
+    documents = session.scalars(
+        select(GenplanSourceDocument)
+        .where(GenplanSourceDocument.detected_format == PDF_FORMAT)
+        .where(
+            select(GenplanLegendEntry.id)
+            .where(GenplanLegendEntry.document_id == GenplanSourceDocument.id)
+            .exists()
+        )
+        .order_by(GenplanSourceDocument.updated_at.asc(), GenplanSourceDocument.id.asc())
+        .limit(limit_docs)
+    ).all()
+    stats = {
+        "documents_scanned": 0,
+        "documents_with_labels": 0,
+        "labels_found": 0,
+        "entries_updated": 0,
+        "entries_created": 0,
+        "missing_files": 0,
+        "unchanged": 0,
+    }
+    for document in documents:
+        stats["documents_scanned"] += 1
+        path = resolve_manual_genplan_file(_record_from_document(document))
+        if path is None:
+            stats["missing_files"] += 1
+            continue
+        rows = [
+            row
+            for row in _pdf_fill_colors_from_drawings(path, limit=64)
+            if row.get("label_ru") or row.get("label_kz")
+        ]
+        if not rows:
+            stats["unchanged"] += 1
+            continue
+        stats["documents_with_labels"] += 1
+        stats["labels_found"] += len(rows)
+        existing = list_document_legend_entries(session, document.id)
+        by_color: dict[str, list[GenplanLegendEntry]] = {}
+        for entry in existing:
+            by_color.setdefault(entry.color_hex.casefold(), []).append(entry)
+        for row in rows:
+            color_hex = str(row["color_hex"]).casefold()
+            matches = by_color.get(color_hex) or []
+            if matches:
+                for entry in matches:
+                    if not entry.label_ru and row.get("label_ru"):
+                        entry.label_ru = str(row["label_ru"])
+                    if not entry.label_kz and row.get("label_kz"):
+                        entry.label_kz = str(row["label_kz"])
+                    entry.confidence_score = max(
+                        float(entry.confidence_score or 0),
+                        float(row.get("confidence_score") or 0),
+                    )
+                    if row.get("notes"):
+                        entry.notes = _append_note_once(entry.notes, str(row["notes"]))
+                    stats["entries_updated"] += 1
+                continue
+            entry = GenplanLegendEntry(
+                document_id=document.id,
+                color_hex=row["color_hex"],
+                red=row["red"],
+                green=row["green"],
+                blue=row["blue"],
+                source=row["source"],
+                label_ru=row.get("label_ru"),
+                label_kz=row.get("label_kz"),
+                target_category="unknown",
+                layer_kind="unknown",
+                confidence_score=float(row.get("confidence_score") or 0.45),
+                review_status="needs_review",
+                pixel_count=row.get("pixel_count"),
+                notes=row.get("notes"),
+            )
+            session.add(entry)
+            stats["entries_created"] += 1
+    session.commit()
+    return stats
 
 
 def list_document_legend_entries(
@@ -436,6 +656,166 @@ def build_document_legend_export(
     except ValidationError as exc:
         raise ValueError(f"Legend export failed schema validation: {exc}") from exc
     return payload
+
+
+def _infer_legend_entry_decision(
+    entry: GenplanLegendEntry,
+) -> tuple[str, str, str, float, str] | None:
+    label = " ".join(
+        value.strip().casefold()
+        for value in (entry.label_ru or "", entry.label_kz or "")
+        if value.strip()
+    )
+    if label:
+        if _contains_any(label, LPH_KEYWORDS):
+            return (
+                "lph-household",
+                "allowed",
+                "approved",
+                0.82,
+                "label keywords indicate LPH/residential allowed zone",
+            )
+        if _contains_any(label, GARDENING_KEYWORDS):
+            return (
+                "gardening",
+                "allowed",
+                "approved",
+                0.82,
+                "label keywords indicate gardening allowed zone",
+            )
+        if _contains_any(label, RED_LINE_KEYWORDS):
+            return (
+                "red_line",
+                "red_line",
+                "approved",
+                0.86,
+                "label keywords indicate red line",
+            )
+        if _contains_any(label, PROHIBITED_KEYWORDS):
+            return (
+                "restricted",
+                "prohibited",
+                "approved",
+                0.78,
+                "label keywords indicate restricted/prohibited zone",
+            )
+        if _contains_any(label, IGNORE_KEYWORDS):
+            return (
+                "other",
+                "ignore",
+                "rejected",
+                0.72,
+                "label keywords indicate non-target map element",
+            )
+
+    hue, saturation, value = _rgb_to_hsv(entry.red, entry.green, entry.blue)
+    if saturation < 0.18 or value < 0.18:
+        return (
+            "other",
+            "ignore",
+            "rejected",
+            0.62,
+            "low-saturation or very dark color is likely labels/background",
+        )
+    if 185 <= hue <= 255:
+        return (
+            "water_or_infrastructure",
+            "ignore",
+            "rejected",
+            0.62,
+            "blue/cyan color is normally not an LPH/gardening allowed zone",
+        )
+    if hue <= 12 or hue >= 345:
+        return (
+            "red_line_candidate",
+            "red_line",
+            "needs_review",
+            0.58,
+            "red color is likely a red line or boundary; needs confirmation",
+        )
+    if 18 <= hue <= 65:
+        return (
+            "residential_or_allowed_candidate",
+            "allowed",
+            "needs_review",
+            0.55,
+            "warm yellow/orange color is often residential; needs confirmation",
+        )
+    if 70 <= hue <= 165:
+        return (
+            "green_zone_or_garden_candidate",
+            "unknown",
+            "needs_review",
+            0.5,
+            "green color may be recreation/agriculture/gardening; needs text confirmation",
+        )
+    if 260 <= hue <= 335:
+        return (
+            "public_or_industrial_candidate",
+            "unknown",
+            "needs_review",
+            0.48,
+            "purple/pink color often requires legend confirmation",
+        )
+    return None
+
+
+def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in value for needle in needles)
+
+
+def _rgb_to_hsv(red: int, green: int, blue: int) -> tuple[float, float, float]:
+    r = red / 255
+    g = green / 255
+    b = blue / 255
+    high = max(r, g, b)
+    low = min(r, g, b)
+    delta = high - low
+    if delta == 0:
+        hue = 0.0
+    elif high == r:
+        hue = (60 * ((g - b) / delta) + 360) % 360
+    elif high == g:
+        hue = 60 * ((b - r) / delta) + 120
+    else:
+        hue = 60 * ((r - g) / delta) + 240
+    saturation = 0.0 if high == 0 else delta / high
+    return hue, saturation, high
+
+
+def _has_operator_decision(entry: GenplanLegendEntry) -> bool:
+    notes = entry.notes or ""
+    return (
+        entry.review_status in {"approved", "rejected"}
+        and AUTO_NOTE_PREFIX not in notes
+    )
+
+
+def _same_legend_decision(
+    entry: GenplanLegendEntry,
+    *,
+    target_category: str,
+    layer_kind: str,
+    review_status: str,
+) -> bool:
+    return (
+        entry.target_category == target_category
+        and entry.layer_kind == layer_kind
+        and entry.review_status == review_status
+    )
+
+
+def _append_auto_note(notes: str | None, reason: str) -> str:
+    new_note = f"{AUTO_NOTE_PREFIX} {reason}"
+    return _append_note_once(notes, new_note)
+
+
+def _append_note_once(notes: str | None, new_note: str) -> str:
+    if not notes:
+        return new_note
+    if new_note in notes:
+        return notes
+    return f"{notes}; {new_note}"
 
 
 def _inspect_pdf_payload(
@@ -587,6 +967,10 @@ def _rendered_pdf_colors(path: Path, *, limit: int) -> list[dict[str, Any]]:
 
 
 def _pdf_fill_colors(path: Path, *, limit: int) -> list[dict[str, Any]]:
+    labeled_rows = _pdf_fill_colors_from_drawings(path, limit=limit)
+    if labeled_rows:
+        return labeled_rows
+
     payload = path.read_bytes()
     counts: Counter[tuple[int, int, int]] = Counter()
     for match in PDF_RGB_FILL_RE.finditer(payload):
@@ -612,6 +996,143 @@ def _pdf_fill_colors(path: Path, *, limit: int) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _pdf_fill_colors_from_drawings(path: Path, *, limit: int) -> list[dict[str, Any]]:
+    try:
+        import fitz
+    except ImportError:
+        return []
+
+    try:
+        document = fitz.open(stream=path.read_bytes(), filetype="pdf")
+    except Exception:
+        return []
+    counts: Counter[tuple[int, int, int]] = Counter()
+    labels: dict[tuple[int, int, int], tuple[float, str]] = {}
+    try:
+        for page_index, page in enumerate(document):
+            if page_index >= PDF_LABEL_SCAN_MAX_PAGES:
+                break
+            text_lines = _pdf_page_text_lines(page)
+            page_rect = page.rect
+            for drawing in page.get_drawings():
+                fill = drawing.get("fill")
+                if not fill:
+                    continue
+                red, green, blue = (
+                    max(0, min(255, round(float(fill[index]) * 255)))
+                    for index in (0, 1, 2)
+                )
+                if _skip_palette_color(red, green, blue):
+                    continue
+                color_key = (red, green, blue)
+                counts[color_key] += 1
+                rect = drawing.get("rect")
+                if not rect or not _is_likely_legend_swatch(rect, page_rect):
+                    continue
+                label = _nearest_pdf_legend_label(rect, text_lines)
+                if not label:
+                    continue
+                distance, text = label
+                current = labels.get(color_key)
+                if current is None or distance < current[0]:
+                    labels[color_key] = (distance, text)
+    except Exception:
+        return []
+    finally:
+        document.close()
+
+    rows = []
+    for (red, green, blue), count in counts.most_common(limit):
+        color_key = (red, green, blue)
+        label = labels.get(color_key, (0.0, ""))[1]
+        notes = "auto color draft from PDF drawing objects; requires legend review"
+        if label:
+            notes = f"{notes}; nearby legend text: {label}"
+        rows.append(
+            {
+                "color_hex": _hex_color(red, green, blue),
+                "red": red,
+                "green": green,
+                "blue": blue,
+                "source": "vector_pdf_drawing",
+                "label_ru": label or None,
+                "confidence_score": 0.58 if label else 0.45,
+                "pixel_count": int(count),
+                "notes": notes,
+            }
+        )
+    return rows
+
+
+def _pdf_page_text_lines(page: Any) -> list[dict[str, Any]]:
+    words = page.get_text("words")
+    grouped: dict[tuple[int, int], list[Any]] = {}
+    for word in words:
+        if len(word) < 8:
+            continue
+        text = str(word[4]).strip()
+        if not text:
+            continue
+        grouped.setdefault((int(word[5]), int(word[6])), []).append(word)
+
+    lines = []
+    for items in grouped.values():
+        ordered = sorted(items, key=lambda item: (float(item[0]), float(item[1])))
+        text = " ".join(str(item[4]).strip() for item in ordered if str(item[4]).strip())
+        if not text:
+            continue
+        lines.append(
+            {
+                "x0": min(float(item[0]) for item in ordered),
+                "y0": min(float(item[1]) for item in ordered),
+                "x1": max(float(item[2]) for item in ordered),
+                "y1": max(float(item[3]) for item in ordered),
+                "text": text[:240],
+            }
+        )
+    return lines
+
+
+def _is_likely_legend_swatch(rect: Any, page_rect: Any) -> bool:
+    width = float(rect.width)
+    height = float(rect.height)
+    if width < 3 or height < 3 or width > 120 or height > 120:
+        return False
+    area = width * height
+    page_area = max(1.0, float(page_rect.width) * float(page_rect.height))
+    if area > page_area * 0.015:
+        return False
+    aspect = width / max(height, 1.0)
+    return 0.15 <= aspect <= 6.0
+
+
+def _nearest_pdf_legend_label(
+    rect: Any,
+    text_lines: list[dict[str, Any]],
+) -> tuple[float, str] | None:
+    center_y = (float(rect.y0) + float(rect.y1)) / 2
+    center_x = (float(rect.x0) + float(rect.x1)) / 2
+    best: tuple[float, str] | None = None
+    for line in text_lines:
+        text = str(line["text"]).strip()
+        if not text:
+            continue
+        line_center_y = (float(line["y0"]) + float(line["y1"])) / 2
+        line_center_x = (float(line["x0"]) + float(line["x1"])) / 2
+        right_gap = float(line["x0"]) - float(rect.x1)
+        vertical_gap = float(line["y0"]) - float(rect.y1)
+        same_row = -2 <= right_gap <= 360 and abs(line_center_y - center_y) <= 24
+        below = -8 <= (float(line["x0"]) - float(rect.x0)) <= 80 and 0 <= vertical_gap <= 60
+        if not same_row and not below:
+            continue
+        distance = abs(line_center_y - center_y) + max(0.0, right_gap)
+        if below:
+            distance = abs(line_center_x - center_x) + vertical_gap + 80
+        if best is None or distance < best[0]:
+            best = (distance, text)
+    return best
 
 
 def _skip_palette_color(red: int, green: int, blue: int) -> bool:
@@ -670,6 +1191,13 @@ def _upsert_pipeline_document(
     if document is None:
         document = GenplanSourceDocument(asset_id=record.asset_id)
         session.add(document)
+    preserve_pipeline_state = (
+        not created and _should_preserve_pipeline_document_state(session, document)
+    )
+    preserved_status = document.pipeline_status
+    preserved_next_action = document.next_action
+    preserved_error_message = document.error_message
+    preserved_raw_metadata_json = document.raw_metadata_json
     document.region = record.region
     document.district = record.district
     document.locality = record.locality
@@ -688,14 +1216,33 @@ def _upsert_pipeline_document(
     document.max_image_width = inspection.max_image_width
     document.max_image_height = inspection.max_image_height
     document.confidence_score = inspection.confidence_score
-    document.pipeline_status = inspection.pipeline_status
-    document.next_action = inspection.next_action
-    document.error_message = inspection.error_message
-    document.raw_metadata_json = (
-        json.dumps(inspection.raw_metadata, ensure_ascii=False, sort_keys=True)
-        if inspection.raw_metadata
-        else None
-    )
+    if preserve_pipeline_state:
+        document.pipeline_status = preserved_status
+        document.next_action = preserved_next_action
+        document.error_message = preserved_error_message
+        document.raw_metadata_json = preserved_raw_metadata_json
+    else:
+        document.pipeline_status = inspection.pipeline_status
+        document.next_action = inspection.next_action
+        document.error_message = inspection.error_message
+        document.raw_metadata_json = (
+            json.dumps(inspection.raw_metadata, ensure_ascii=False, sort_keys=True)
+            if inspection.raw_metadata
+            else None
+        )
     document.ingested_by = ingested_by
     session.commit()
     return created
+
+
+def _should_preserve_pipeline_document_state(
+    session: Session,
+    document: GenplanSourceDocument,
+) -> bool:
+    if document.pipeline_status in PIPELINE_STATE_PRESERVED_BY_LEGEND:
+        return True
+    return session.scalar(
+        select(GenplanLegendEntry.id)
+        .where(GenplanLegendEntry.document_id == document.id)
+        .limit(1)
+    ) is not None

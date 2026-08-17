@@ -27,7 +27,8 @@
   <div class="notice">
     <strong>{{ candidate.region }}</strong><br>
     {{ candidate.district }}{% if candidate.locality %} · {{ candidate.locality }}{% endif %}<br>
-    Что ищем: пустое место для {{ candidate.requested_use }} · координаты {{ "%.6f"|format(candidate.latitude) }}, {{ "%.6f"|format(candidate.longitude) }}<br>
+    Что ищем: пустое место для {{ candidate.requested_use }}<br>
+    Координаты: <strong>{{ "%.6f"|format(candidate.latitude) }}, {{ "%.6f"|format(candidate.longitude) }}</strong><br>
     {% if candidate.nearby_cadastre %}
     Ориентир рядом: {{ candidate.nearby_cadastre }}
     {% if candidate.nearby_distance_m is not none %} · примерно {{ "%.0f"|format(candidate.nearby_distance_m) }} м{% endif %}
@@ -37,7 +38,7 @@
   </div>
 
   <div class="action-row">
-    <a class="button-link" href="{{ candidate.google_maps_url }}" target="_blank" rel="noopener">Открыть Google спутник</a>
+    <a class="button-link primary" href="{{ candidate.google_maps_url }}" target="_blank" rel="noopener">Открыть в Google Maps по координатам</a>
     <a class="button-link" href="/admin/planning-candidates/review-next">Пропустить пока</a>
   </div>
 

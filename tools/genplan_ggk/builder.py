@@ -396,14 +396,7 @@ def build_ggk_release(
     doc_number = _text(document_properties.get("doc_number")) or "номер не указан"
     wfs_doc_date = _text(document_properties.get("doc_date"))
     doc_date = legal_act["date"]
-    approval_document = " ".join(
-        part
-        for part in (
-            _text(document_properties.get("approved_by")),
-            doc_number,
-        )
-        if part
-    )
+    approval_document = _approval_document(document_properties, legal_act)
     provenance = {
         "release_id": release_id,
         "source_sha256": source_sha,
@@ -665,9 +658,8 @@ def _validate_review_input(
     legal_status = _text(legal_act.get("status")).lower()
     if not legal_number or not legal_date or not legal_url:
         raise BuildError("legal_act must include number, date and url")
-    wfs_number_digits = "".join(re.findall(r"\d+", _text(document.get("doc_number"))))
-    legal_number_digits = "".join(re.findall(r"\d+", legal_number))
-    if not wfs_number_digits or wfs_number_digits != legal_number_digits:
+    base_legal_act = _validate_base_legal_act(legal_act)
+    if not _legal_act_matches_wfs_document(legal_number, base_legal_act, document):
         raise BuildError("legal_act number does not match the AIS GGK document number")
     try:
         datetime.fromisoformat(legal_date)
@@ -685,7 +677,66 @@ def _validate_review_input(
         "url": legal_url,
         "status": legal_status,
     }
+    if base_legal_act is not None:
+        review["legal_act"]["base_legal_act"] = base_legal_act
     return review
+
+
+def _legal_act_matches_wfs_document(
+    legal_number: str,
+    base_legal_act: dict[str, str] | None,
+    document: dict[str, Any],
+) -> bool:
+    wfs_number_digits = "".join(re.findall(r"\d+", _text(document.get("doc_number"))))
+    legal_number_digits = "".join(re.findall(r"\d+", legal_number))
+    if wfs_number_digits and wfs_number_digits == legal_number_digits:
+        return True
+    if base_legal_act is None:
+        return False
+    base_number_digits = "".join(re.findall(r"\d+", base_legal_act["number"]))
+    return bool(wfs_number_digits and wfs_number_digits == base_number_digits)
+
+
+def _validate_base_legal_act(legal_act: dict[str, Any]) -> dict[str, str] | None:
+    base = legal_act.get("base_legal_act")
+    if base is None:
+        return None
+    if not isinstance(base, dict):
+        raise BuildError("base_legal_act must be an object")
+    base_number = _text(base.get("number"))
+    base_date = _text(base.get("date"))
+    base_url = _text(base.get("url"))
+    if not base_number or not base_date or not base_url:
+        raise BuildError("base_legal_act must include number, date and url")
+    try:
+        datetime.fromisoformat(base_date)
+    except ValueError as exc:
+        raise BuildError("base_legal_act date must use YYYY-MM-DD") from exc
+    parsed_url = urlsplit(base_url)
+    allowed_hosts = {"adilet.zan.kz", "www.adilet.zan.kz", "zan.gov.kz", "www.gov.kz"}
+    if parsed_url.scheme != "https" or parsed_url.hostname not in allowed_hosts:
+        raise BuildError("base_legal_act url must point to an official Adilet, Zan or gov.kz page")
+    return {
+        "number": base_number,
+        "date": base_date,
+        "url": base_url,
+        "status": _text(base.get("status")).lower() or "active",
+    }
+
+
+def _approval_document(document: dict[str, Any], legal_act: dict[str, Any]) -> str:
+    authority = _text(document.get("approved_by"))
+    legal_number = _text(legal_act.get("number"))
+    base = legal_act.get("base_legal_act")
+    if isinstance(base, dict):
+        base_number = _text(base.get("number"))
+        if legal_number and base_number and legal_number != base_number:
+            suffix = f"{legal_number} (изменяет {base_number})"
+        else:
+            suffix = legal_number or base_number
+    else:
+        suffix = legal_number or _text(document.get("doc_number"))
+    return " ".join(part for part in (authority, suffix) if part)
 
 
 def _feature_collection(

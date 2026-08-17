@@ -168,6 +168,63 @@ def test_internal_planning_api_check_endpoint(monkeypatch) -> None:
     assert response.json()["result"] == "POSSIBLE"
 
 
+def test_admin_urban_plan_map_geojson_endpoint() -> None:
+    session = build_session()
+    add_layer(session, kind="allowed", geometry=mapping(box(70.93, 51.99, 70.95, 52.01)))
+
+    def override_db() -> Iterator[Session]:
+        yield session
+
+    main.app.dependency_overrides[main.get_db] = override_db
+    main.app.dependency_overrides[main.require_admin] = lambda: "admin"
+    try:
+        response = TestClient(main.app).get(
+            "/admin/urban-plans/map/geojson"
+            "?region=Акмолинская+область"
+            "&district=г.Акколь"
+            "&locality=г.Акколь"
+            "&requested_use=LPH_HOMESTEAD"
+            "&include_shadow=true",
+        )
+    finally:
+        main.app.dependency_overrides.clear()
+        session.close()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["type"] == "FeatureCollection"
+    assert len(payload["features"]) == 1
+    assert payload["features"][0]["properties"]["layer_kind"] == "allowed"
+
+
+def test_admin_urban_plan_coverage_json_endpoint() -> None:
+    session = build_session()
+    add_layer(session, kind="allowed", geometry=mapping(box(70.93, 51.99, 70.95, 52.01)))
+
+    def override_db() -> Iterator[Session]:
+        yield session
+
+    main.app.dependency_overrides[main.get_db] = override_db
+    main.app.dependency_overrides[main.require_admin] = lambda: "admin"
+    try:
+        response = TestClient(main.app).get(
+            "/admin/urban-plans/coverage.json"
+            "?lat=52.000000"
+            "&lon=70.940000"
+            "&region=Акмолинская+область"
+            "&district=г.Акколь"
+            "&locality=г.Акколь"
+            "&requested_use=LPH_HOMESTEAD"
+            "&include_shadow=true",
+        )
+    finally:
+        main.app.dependency_overrides.clear()
+        session.close()
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "POSSIBLE"
+
+
 def test_internal_planning_api_batch_check_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(settings, "app_env", "development")
     monkeypatch.setattr(settings, "internal_api_key", "")
