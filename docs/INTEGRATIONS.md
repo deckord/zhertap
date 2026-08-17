@@ -168,9 +168,10 @@ PDF/JPG без геопривязки не является автоматиче
 - Geonomix через `tools.genplan_geonomix_release`;
 - generic WFS/GeoServer через `tools.genplan_wfs_release`.
 
-Production на 17.08.2026 содержит 426 строк `urban_plan_layers`: 90 активных
-`VERIFIED_STRICT/search` слоев для клиентского поиска в 30 областях применения
-и 336 неактивных QA/shadow. Ручная очередь рассчитанных точек завершена:
+Production на 17.08.2026 содержит 426 строк `urban_plan_layers`: 111 активных
+`VERIFIED_STRICT/search` слоев для клиентского поиска в 37 областях применения,
+99 `SUPERSEDED` и 216 `REVIEWED_HOLD`; необработанных `WARNING` нет. Ручная
+очередь рассчитанных точек завершена:
 641 из 641 проверена, `queued = 0`. Новые Smart GeoHub/Geonomix-слои включены только для
 `ЛПХ:household` по узкой зоне `usl_i32=11010000` (`Территория усадебной
 застройки`) и только после пересборки как `VERIFIED_STRICT/search`.

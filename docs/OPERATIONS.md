@@ -227,8 +227,9 @@ sudo docker compose run --rm -T \
   --manifest /exports/smart-geohub/releases/almaty-region-lph-household-v1/release-manifest.json
 ```
 
-На 17.08.2026 в production есть 426 строк `urban_plan_layers`: 90 активных
-`VERIFIED_STRICT/search` в 30 областях применения и 336 неактивных QA/shadow.
+На 17.08.2026 в production есть 426 строк `urban_plan_layers`: 111 активных
+`VERIFIED_STRICT/search` в 37 областях применения, 99 `SUPERSEDED` и 216
+`REVIEWED_HOLD`. Необработанных `WARNING` среди прежних 336 строк нет.
 Ручная очередь рассчитанных точек завершена: 641 из 641 проверена,
 `queued = 0`. Неактивные слои, 1313 элементов легенд `needs_review` и 344
 источника `not_imported` относятся к будущему расширению покрытия и не
@@ -238,6 +239,18 @@ sudo docker compose run --rm -T \
 ручным изменением флагов в БД. Для продвижения в боевой режим нужен новый
 release с `VERIFIED_STRICT`, `release_mode=search`, стабильным
 `layer_sha256`/`release_policy` в `source-manifest.json` и независимой приемкой.
+
+Воспроизводимый итоговый разбор 336 строк выполняется сначала без записи, затем
+с `--apply` (для геометрического PostGIS-аудита использовать worker с длинным
+statement timeout):
+
+```bash
+docker compose exec -T worker python -m tools.genplan_release_resolution
+docker compose exec -T worker python -m tools.genplan_release_resolution --apply
+```
+
+Повторно применять команду к уже закрытой партии без нового аудита источников
+не нужно. Итог решения хранится в `qa_review_json.resolution` каждой строки.
 
 ### Generic WFS / GeoServer genplan release
 

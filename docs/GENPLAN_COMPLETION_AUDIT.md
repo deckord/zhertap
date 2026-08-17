@@ -4,8 +4,9 @@ Last checked: 2026-08-04
 
 > This file preserves the 2026-08-04 gap analysis. The canonical current
 > status is `docs/GENPLAN_STATUS_2026_08_17.md`. On 2026-08-17 all 641 manual
-> candidate points were reviewed (`queued = 0`); production had 426 layer rows,
-> including 90 active strict rows in 30 scopes.
+> candidate points were reviewed (`queued = 0`). The later final resolution of
+> the 336-row shadow backlog produced 111 active strict rows in 37 scopes, 99
+> `SUPERSEDED` rows and 216 `REVIEWED_HOLD` rows; see the canonical status file.
 
 Historical correction after the 2026-08-04 production verification:
 

@@ -24,9 +24,10 @@ Not:
 
 The manual candidate-review stage is complete: all `641` saved candidates have
 been classified and `queued = 0`. Production contains `426` rows in
-`urban_plan_layers`; `90` active and search-approved `VERIFIED_STRICT` rows are
-used in `30` territorial/purpose scopes. The other `336` rows are inactive QA
-or shadow material and do not affect client search.
+`urban_plan_layers`; `111` active and search-approved `VERIFIED_STRICT` rows
+are used in `37` territorial/purpose scopes. The former `336` inactive rows
+have all been resolved: `99` are `SUPERSEDED`, `216` are `REVIEWED_HOLD`, and
+none remain as unreviewed `WARNING`.
 
 The remaining legend and source queues are a backlog for expanding coverage,
 not unfinished work on the 641 manually marked points. See

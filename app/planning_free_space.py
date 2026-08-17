@@ -21,6 +21,7 @@ from app.planning_service import (
     PlanningScope,
     _is_search_layer,
     _matches_planning_scope,
+    _prefer_most_specific_layers,
 )
 from app.providers.egkn import (
     DistrictInfo,
@@ -275,12 +276,13 @@ def _candidate_layers(
     if purpose:
         statement = statement.where(UrbanPlanLayer.purpose.in_((purpose, "all")))
     rows = session.scalars(statement).all()
-    return [
+    matching = [
         row
         for row in rows
         if _matches_planning_scope(row, scope)
         and (include_shadow or _is_search_layer(row))
     ]
+    return _prefer_most_specific_layers(matching)
 
 
 def _load_review_feedback(

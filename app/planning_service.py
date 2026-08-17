@@ -131,12 +131,32 @@ def _candidate_layers(
     include_shadow: bool,
 ) -> list[UrbanPlanLayer]:
     rows = session.scalars(select(UrbanPlanLayer)).all()
-    return [
+    matching = [
         row
         for row in rows
         if _matches_planning_scope(row, scope)
         and (include_shadow or _is_search_layer(row))
     ]
+    return _prefer_most_specific_layers(matching)
+
+
+def _prefer_most_specific_layers(layers: list[UrbanPlanLayer]) -> list[UrbanPlanLayer]:
+    """Do not mix a locality genplan with a broader regional fallback."""
+    if not layers:
+        return []
+    max_specificity = max(_layer_scope_specificity(row) for row in layers)
+    return [row for row in layers if _layer_scope_specificity(row) == max_specificity]
+
+
+def _layer_scope_specificity(layer: UrbanPlanLayer) -> int:
+    def specific(value: str | None) -> bool:
+        return bool(value and value.strip().casefold() not in {"*", "all"})
+
+    if specific(layer.locality):
+        return 2
+    if specific(layer.district):
+        return 1
+    return 0
 
 
 def _matches_planning_scope(layer: UrbanPlanLayer, scope: PlanningScope) -> bool:

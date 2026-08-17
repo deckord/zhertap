@@ -770,6 +770,20 @@
 </section>
 
 <section class="table-wrap">
+  <div class="section-head compact-head">
+    <div>
+      <h2>Итог обработки цифровых слоёв</h2>
+      <p>
+        Обработано {{ layer_resolution_stats.processed }} из {{ layer_resolution_stats.total }}:
+        в поиске {{ layer_resolution_stats.active }}, удержано после проверки
+        {{ layer_resolution_stats.reviewed_hold }}, заменено более новым релизом
+        {{ layer_resolution_stats.superseded }}.
+      </p>
+    </div>
+    <span class="status {{ 'status-delivered' if not layer_resolution_stats.unresolved else 'status-failed' }}">
+      {{ 'очередь закрыта' if not layer_resolution_stats.unresolved else 'не разобрано: ' ~ layer_resolution_stats.unresolved }}
+    </span>
+  </div>
   <table>
     <thead><tr><th>Территория</th><th>Тип</th><th>Документ</th><th>Источник</th><th>Статус</th><th></th></tr></thead>
     <tbody>
@@ -789,6 +803,10 @@
             <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
             <button type="submit">{{ 'Отключить' if item.active else 'Включить' }}</button>
           </form>
+          {% elif item.qa_status == 'SUPERSEDED' %}
+          <span class="muted">Обработан: заменён действующим или более новым релизом</span>
+          {% elif item.qa_status == 'REVIEWED_HOLD' %}
+          <span class="muted">Обработан: проверен и безопасно удержан от поиска</span>
           {% else %}
           <span class="muted">Ожидает независимой приемки</span>
           {% endif %}

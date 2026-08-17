@@ -656,8 +656,10 @@ finally:
 ## Product Status Text
 
 Latest production status is tracked in `docs/GENPLAN_STATUS_2026_08_17.md`.
-Production has `426` `urban_plan_layers` rows, `90` active
-`VERIFIED_STRICT/search` rows in 30 scopes and `336` inactive QA/shadow rows.
+Production has `426` `urban_plan_layers` rows, `111` active
+`VERIFIED_STRICT/search` rows in 37 scopes, `99` `SUPERSEDED` rows and `216`
+`REVIEWED_HOLD` rows. The former 336-row shadow backlog has no unresolved
+`WARNING` rows.
 All `641` manually generated candidate points have been reviewed and
 `queued = 0`; the source and legend queues below are future coverage work.
 The automatic checker now also supports genplan-first prefiltering: when

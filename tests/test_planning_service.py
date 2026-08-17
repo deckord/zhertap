@@ -35,16 +35,19 @@ def add_layer(
     approved_for_search: bool = True,
     qa_status: str = "VERIFIED_STRICT",
     zone_name: str = "Территория усадебной застройки",
+    district: str = "г.Акколь",
+    locality: str = "г.Акколь",
+    title: str = "Генеральный план г. Акколь",
 ) -> None:
     session.add(
         UrbanPlanLayer(
             region="Акмолинская область",
-            district="г.Акколь",
-            locality="г.Акколь",
+            district=district,
+            locality=locality,
             purpose=LPH_HOUSEHOLD_LAYER,
             layer_kind=kind,
             zone_name=zone_name,
-            title="Генеральный план г. Акколь",
+            title=title,
             approval_document="Решение маслихата №С 38-2",
             approval_date=date(2011, 5, 23),
             source_authority="АИС ГГК",
@@ -98,6 +101,39 @@ def test_planning_check_reports_restriction_intersection() -> None:
 
     assert result["result"] == "BLOCKED_BY_RESTRICTION"
     assert result["restrictions"][0]["layer_type"] == "red_line"
+
+
+def test_locality_genplan_takes_priority_over_regional_fallback() -> None:
+    with build_session() as session:
+        add_layer(
+            session,
+            kind="allowed",
+            geometry=mapping(box(70.0, 51.0, 72.0, 53.0)),
+            district="*",
+            locality="*",
+            title="Региональный fallback",
+        )
+        add_layer(
+            session,
+            kind="allowed",
+            geometry=mapping(box(70.93, 51.99, 70.95, 52.01)),
+            title="Генеральный план города",
+        )
+
+        result = planning_check(
+            session,
+            geometry=mapping(box(70.935, 51.995, 70.94, 52.0)),
+            scope=PlanningScope(
+                region="Акмолинская область",
+                district="г.Акколь",
+                locality="г.Акколь",
+                requested_use="LPH_HOMESTEAD",
+            ),
+        )
+
+    assert {item["document_title"] for item in result["intersections"]} == {
+        "Генеральный план города"
+    }
 
 
 def test_shadow_layers_are_visible_only_when_requested() -> None:

@@ -66,6 +66,7 @@ def build_urban_plans_admin_context(
     )
     return {
         "layers": _urban_plan_layers(session),
+        "layer_resolution_stats": _urban_plan_resolution_stats(session),
         "sources": _urban_plan_sources(session),
         "source_stats": _urban_plan_source_stats(session),
         "pipeline_documents": list_pipeline_documents(session, limit=120),
@@ -216,6 +217,36 @@ def _urban_plan_sources(session: Session) -> list[UrbanPlanSource]:
             .limit(700)
         )
     )
+
+
+def _urban_plan_resolution_stats(session: Session) -> dict[str, int]:
+    result = {
+        "active": 0,
+        "reviewed_hold": 0,
+        "superseded": 0,
+        "unresolved": 0,
+    }
+    for active, qa_status, count in session.execute(
+        select(
+            UrbanPlanLayer.active,
+            UrbanPlanLayer.qa_status,
+            func.count(UrbanPlanLayer.id),
+        ).group_by(UrbanPlanLayer.active, UrbanPlanLayer.qa_status)
+    ):
+        value = int(count)
+        if active:
+            result["active"] += value
+        elif qa_status == "REVIEWED_HOLD":
+            result["reviewed_hold"] += value
+        elif qa_status == "SUPERSEDED":
+            result["superseded"] += value
+        else:
+            result["unresolved"] += value
+    result["total"] = sum(result.values())
+    result["processed"] = (
+        result["active"] + result["reviewed_hold"] + result["superseded"]
+    )
+    return result
 
 
 def _urban_plan_source_stats(session: Session) -> list[tuple[str, str, int]]:
