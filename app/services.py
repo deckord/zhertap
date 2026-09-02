@@ -45,6 +45,7 @@ from app.models import (
     SearchStatus,
     UrbanPlanStatus,
 )
+from app.provider_guard import ProviderCallDeferred
 from app.providers.urban_plan import allowed_search_area_geojsons, evaluate_urban_plan
 from app.purposes import (
     LPH_NEW,
@@ -332,6 +333,8 @@ def has_paid_access(
 
 
 def delivered_coordinates(session: Session, request: SearchRequest) -> list[tuple[float, float]]:
+    if not request.continuation_of_request_id:
+        return []
     identity_conditions = []
     if request.telegram_user_id:
         identity_conditions.append(SearchRequest.telegram_user_id == request.telegram_user_id)
@@ -677,6 +680,20 @@ def process_search(
             route_ready_report(session, request.id)
         session.refresh(request)
         return request
+    except ProviderCallDeferred as exc:
+        # A deferred provider call is not an active computation.  Persist the
+        # queued state before Celery schedules the next attempt; otherwise the
+        # cabinet shows "processing" for the whole retry window.
+        request.status = SearchStatus.queued.value
+        request.progress = 10
+        request.error_message = (
+            f"Публичный сервис {exc.provider} временно ограничил запросы; "
+            "заявка будет повторена автоматически."
+        )
+        request.search_outcome = None
+        request.search_finished_at = None
+        session.commit()
+        raise
     except Exception as exc:
         request.status = SearchStatus.failed.value
         request.error_message = str(exc)

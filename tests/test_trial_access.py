@@ -132,7 +132,7 @@ def test_linked_paid_telegram_user_syncs_legacy_permanent_access() -> None:
 
 
 def test_linked_paid_telegram_user_syncs_monthly_expiry() -> None:
-    expiry = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+    expiry = datetime.now(UTC) + timedelta(days=30)
     account = Account(phone="+77020000005", telegram_user_id="paid-monthly")
     request = SearchRequest(
         region="region",

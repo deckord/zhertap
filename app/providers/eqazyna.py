@@ -5,10 +5,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from app.config import settings
+from app.provider_backpressure import ProviderBackpressure
+from app.provider_guard import bounded_http_request, guarded_http_call
 
 AuctionPublishDateWindow = tuple[str, str]
 
@@ -30,6 +33,7 @@ class AuctionLotData:
     source_url: str
     title: str
     source_search_status: str | None = None
+    object_type: str = "land"
     auction_number: str | None = None
     auction_type: str | None = None
     status: str | None = None
@@ -39,8 +43,13 @@ class AuctionLotData:
     locality: str | None = None
     location_text: str | None = None
     cadastre_number: str | None = None
+    land_object_id: str | None = None
     area_ha: float | None = None
     land_rights: str | None = None
+    lease_term_years: float | None = None
+    divisible: bool | None = None
+    additional_payment_kzt: float | None = None
+    annual_rent_kzt: float | None = None
     functional_purpose_level2: str | None = None
     functional_purpose_level3: str | None = None
     functional_purpose_level4: str | None = None
@@ -96,6 +105,8 @@ class _PageParser(HTMLParser):
         self._skip_depth = 0
         self._active_href: str | None = None
         self._active_text: list[str] = []
+        self._active_excluded = False
+        self._div_exclusion_stack: list[bool] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style", "noscript"}:
@@ -103,10 +114,18 @@ class _PageParser(HTMLParser):
             return
         if self._skip_depth:
             return
+        attr_map = dict(attrs)
+        if tag == "div":
+            class_name = str(attr_map.get("class") or "")
+            parent_excluded = self._div_exclusion_stack[-1] if self._div_exclusion_stack else False
+            self._div_exclusion_stack.append(parent_excluded or "trade-adv" in class_name.split())
+            return
         if tag == "a":
-            attr_map = dict(attrs)
             self._active_href = attr_map.get("href")
             self._active_text = []
+            self._active_excluded = (
+                self._div_exclusion_stack[-1] if self._div_exclusion_stack else False
+            )
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style", "noscript"}:
@@ -114,10 +133,16 @@ class _PageParser(HTMLParser):
             return
         if self._skip_depth:
             return
+        if tag == "div":
+            if self._div_exclusion_stack:
+                self._div_exclusion_stack.pop()
+            return
         if tag == "a" and self._active_href:
-            self.links.append((self._active_href, _clean_text(" ".join(self._active_text))))
+            if not self._active_excluded:
+                self.links.append((self._active_href, _clean_text(" ".join(self._active_text))))
             self._active_href = None
             self._active_text = []
+            self._active_excluded = False
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth:
@@ -134,15 +159,18 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _bounded_text(value: str | None, limit: int) -> str | None:
+    """Fit a derived dimension to its database contract without truncating source prose."""
+    if value is None:
+        return None
+    cleaned = _clean_text(value)
+    return cleaned[:limit] if cleaned else None
+
+
 def _parse_number(value: str | None) -> float | None:
     if not value:
         return None
-    normalized = (
-        value.replace("\xa0", "")
-        .replace(" ", "")
-        .replace("₸", "")
-        .replace(",", ".")
-    )
+    normalized = value.replace("\xa0", "").replace(" ", "").replace("₸", "").replace(",", ".")
     match = re.search(r"-?\d+(?:\.\d+)?", normalized)
     return float(match.group(0)) if match else None
 
@@ -153,7 +181,12 @@ def _parse_datetime(value: str | None) -> datetime | None:
     match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})", value)
     if not match:
         return None
-    return datetime.strptime(" ".join(match.groups()), "%d.%m.%Y %H:%M").replace(tzinfo=UTC)
+    # E-Qazyna renders a Kazakhstan civil-time wall clock without an offset.
+    # Asia/Almaty preserves the UTC+6 historical offset and the nationwide
+    # UTC+5 transition in 2024; interpreting this text as UTC delays deadline
+    # handling by five or six hours.
+    local_value = datetime.strptime(" ".join(match.groups()), "%d.%m.%Y %H:%M")
+    return local_value.replace(tzinfo=ZoneInfo("Asia/Almaty")).astimezone(UTC)
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -201,10 +234,31 @@ def extract_source_lot_id(source_url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def classify_auction_object_type(*, title: str | None, description: str | None) -> str:
+    """Classify the lot's own title/description, excluding unrelated page chrome/ads."""
+    material = f"{title or ''} {description or ''}".casefold()
+    vehicle_markers = ("автомобиль", "автокөлік", "транспорт:", "vin-код", "vin код")
+    if any(marker in material for marker in vehicle_markers):
+        return "vehicle"
+    land_markers = (
+        "земельный участок",
+        "жер учаск",
+        "права на землю",
+        "кадастровый номер",
+        "площадь земельного участка",
+    )
+    return "land" if any(marker in material for marker in land_markers) else "non_land"
+
+
 def parse_lot_detail(html: str, source_url: str, base_url: str) -> AuctionLotData:
     parser = _PageParser()
     parser.feed(html)
     text = _clean_text(" ".join(parser.text_parts))
+    lowered = text.casefold()
+    if "превышен лимит запросов" in lowered:
+        raise EqazynaError("E-Qazyna временно ограничил запросы к карточке лота")
+    if "ошибка исполнения" in lowered:
+        raise EqazynaError("E-Qazyna вернул страницу ошибки вместо карточки лота")
     source_lot_id = extract_source_lot_id(source_url)
     if not source_lot_id:
         raise EqazynaError("Не удалось определить идентификатор лота E-Qazyna")
@@ -273,17 +327,47 @@ def parse_lot_detail(html: str, source_url: str, base_url: str) -> AuctionLotDat
         description or text,
         flags=re.IGNORECASE,
     )
+    land_object_id_match = re.search(
+        r"(?:идентификатор(?:\s+земельного)?\s+(?:участка|объекта)(?:\s+в\s+(?:цс\s+)?егкн)?)[^0-9]{0,40}(\d{12,32})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    lease_term_match = re.search(
+        r"(?:срок(?:ом)?\s+(?:аренды\s*)?(?:на\s+)?|землепользован\w*[^.;]{0,60}?)[^0-9]{0,20}(\d+(?:[.,]\d+)?)\s*(?:лет|года|год)",
+        " ".join((land_rights or "", description or "", text)),
+        flags=re.IGNORECASE,
+    )
+    divisible_match = re.search(
+        r"(?:делимость|делимый\s+участок)\s*[:\-]?\s*(неделимый|делимый)",
+        description or text,
+        flags=re.IGNORECASE,
+    )
+    additional_payment_match = re.search(
+        r"(?:возместить|возмещение)[^.;]{0,100}?(?:потер\w*|затрат\w*)[^0-9]{0,80}([0-9][0-9\s\u00a0]*(?:[.,]\d+)?)\s*(?:₸|тенге)",
+        description or text,
+        flags=re.IGNORECASE,
+    )
+    annual_rent_match = re.search(
+        r"(?:ежегодн\w*\s+)?арендн\w*\s+плат\w*[^0-9]{0,40}([0-9][0-9\s\u00a0]*(?:[.,]\d+)?)\s*(?:₸|тенге)",
+        description or text,
+        flags=re.IGNORECASE,
+    )
     seller_bin_match = re.search(r"(?:ИИН/БИН|БИН):\s*(\d{12})", seller or "")
     publication_match = re.search(
-        r"Извещение о продаже опубликовано:[^-]*-\s*(\d{2}-\d{2}-\d{4})",
+        r"Извещение о продаже опубликовано:.{0,300}?\b(\d{2}-\d{2}-\d{4})",
         text,
+        flags=re.IGNORECASE,
     )
 
     documents: list[AuctionDocumentData] = []
     source_object_url = None
     for href, link_text in parser.links:
         absolute = urljoin(base_url, href)
-        if "source-object-view" in href:
+        if "source-object-view" in href or (
+            "jerler.e-qazyna.kz" in absolute
+            and "/reestr/objects/list/" in absolute
+            and "/view" in absolute
+        ):
             source_object_url = absolute
         if "MnuFileStoreFileDownload" not in href:
             continue
@@ -295,6 +379,7 @@ def parse_lot_detail(html: str, source_url: str, base_url: str) -> AuctionLotDat
                 file_type=suffix,
             )
         )
+    land_object_id = land_object_id_match.group(1) if land_object_id_match else None
 
     region = None
     district = None
@@ -309,33 +394,43 @@ def parse_lot_detail(html: str, source_url: str, base_url: str) -> AuctionLotDat
         source_lot_id=source_lot_id,
         source_url=source_url,
         title=title or f"Земельный лот {source_lot_id}",
+        object_type=classify_auction_object_type(title=title, description=description),
         auction_number=auction_number_match.group(1) if auction_number_match else None,
-        auction_type=_clean_text(auction_type_match.group(1)) if auction_type_match else None,
+        auction_type=(
+            _bounded_text(auction_type_match.group(1), 160) if auction_type_match else None
+        ),
         status=status,
         description=description,
-        region=region,
-        district=district,
-        locality=locality,
+        region=_bounded_text(region, 160),
+        district=_bounded_text(district, 160),
+        locality=_bounded_text(locality, 160),
         location_text=location,
         cadastre_number=_clean_text(cadastre_match.group(1)) if cadastre_match else None,
+        land_object_id=land_object_id,
         area_ha=_parse_number(area_match.group(1)) if area_match else None,
-        land_rights=land_rights,
+        land_rights=_bounded_text(land_rights, 240),
+        lease_term_years=_parse_number(lease_term_match.group(1)) if lease_term_match else None,
+        divisible=(divisible_match.group(1).casefold() == "делимый") if divisible_match else None,
+        additional_payment_kzt=(
+            _parse_number(additional_payment_match.group(1)) if additional_payment_match else None
+        ),
+        annual_rent_kzt=_parse_number(annual_rent_match.group(1)) if annual_rent_match else None,
         functional_purpose_level2=(
-            _clean_text(functional_purpose_matches[2].group(1))
+            _bounded_text(functional_purpose_matches[2].group(1), 240)
             if functional_purpose_matches[2]
             else None
         ),
         functional_purpose_level3=(
-            _clean_text(functional_purpose_matches[3].group(1))
+            _bounded_text(functional_purpose_matches[3].group(1), 320)
             if functional_purpose_matches[3]
             else None
         ),
         functional_purpose_level4=(
-            _clean_text(functional_purpose_matches[4].group(1))
+            _bounded_text(functional_purpose_matches[4].group(1), 320)
             if functional_purpose_matches[4]
             else None
         ),
-        use_goal=_clean_text(use_goal_match.group(1)) if use_goal_match else None,
+        use_goal=_bounded_text(use_goal_match.group(1), 160) if use_goal_match else None,
         purpose=_clean_text(purpose_match.group(1)) if purpose_match else None,
         start_price_kzt=_parse_number(
             _after_label(text, "Стартовая цена", ["Начало торгов", "Гарантийный взнос"])
@@ -358,11 +453,7 @@ def parse_lot_detail(html: str, source_url: str, base_url: str) -> AuctionLotDat
 
 
 def configured_search_statuses() -> list[str]:
-    values = [
-        item.strip()
-        for item in settings.eqazyna_sync_statuses.split(",")
-        if item.strip()
-    ]
+    values = [item.strip() for item in settings.eqazyna_sync_statuses.split(",") if item.strip()]
     return values or ["ApplicationsAccept"]
 
 
@@ -374,11 +465,13 @@ class EqazynaProvider:
         timeout_seconds: int | None = None,
         verify_tls: bool | None = None,
         transport: httpx.BaseTransport | None = None,
+        backpressure: ProviderBackpressure | None = None,
     ) -> None:
         self.base_url = (base_url or settings.eqazyna_base_url).rstrip("/")
         self.timeout_seconds = timeout_seconds or settings.eqazyna_timeout_seconds
         self.verify_tls = settings.eqazyna_verify_tls if verify_tls is None else verify_tls
         self.transport = transport
+        self.backpressure = backpressure
 
     def _client(self) -> httpx.Client:
         return httpx.Client(
@@ -391,6 +484,43 @@ class EqazynaProvider:
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
+
+    def lot_url_page(
+        self,
+        *,
+        search_status: str,
+        page: int,
+        publish_date_window: AuctionPublishDateWindow | None = None,
+    ) -> list[str]:
+        """Fetch and parse exactly one resumable list-page request."""
+        if not search_status or not 1 <= page <= 1_000:
+            raise ValueError("invalid E-Qazyna page unit")
+        params: list[tuple[str, str]] = [
+            ("objectType", "Land"),
+            ("searchStatus", search_status),
+        ]
+        if publish_date_window is not None:
+            from_inclusive, to_inclusive = publish_date_window
+            params.extend(
+                [
+                    ("moreFilters", "on"),
+                    ("publishDateFromInclusive", from_inclusive),
+                    ("publishDateToInclusive", to_inclusive),
+                ]
+            )
+        params.append(("p", str(page)))
+        with self._client() as client:
+            try:
+                response = guarded_http_call(
+                    "eqazyna",
+                    lambda: bounded_http_request(
+                        client, "GET", f"{self.base_url}/ru/list", params=params
+                    ),
+                    backpressure=self.backpressure,
+                )
+            except httpx.HTTPError as exc:
+                raise EqazynaError(f"E-Qazyna list-page request failed: {exc}") from exc
+        return extract_lot_urls(response.text, self.base_url)
 
     def current_lot_url_crawl(
         self,
@@ -434,8 +564,16 @@ class EqazynaProvider:
                         )
                     params.append(("p", str(page)))
                     try:
-                        response = client.get(f"{self.base_url}/ru/list", params=params)
-                        response.raise_for_status()
+                        response = guarded_http_call(
+                            "eqazyna",
+                            lambda request_params=params: bounded_http_request(
+                                client,
+                                "GET",
+                                f"{self.base_url}/ru/list",
+                                params=request_params,
+                            ),
+                            backpressure=self.backpressure,
+                        )
                     except httpx.HTTPError as exc:
                         raise EqazynaError(
                             f"E-Qazyna не ответил при загрузке списка {search_status}: {exc}"
@@ -476,8 +614,11 @@ class EqazynaProvider:
     def lot_detail(self, source_url: str) -> AuctionLotData:
         with self._client() as client:
             try:
-                response = client.get(source_url)
-                response.raise_for_status()
+                response = guarded_http_call(
+                    "eqazyna",
+                    lambda: bounded_http_request(client, "GET", source_url),
+                    backpressure=self.backpressure,
+                )
             except httpx.HTTPError as exc:
                 raise EqazynaError(f"E-Qazyna не ответил при загрузке лота: {exc}") from exc
         return parse_lot_detail(response.text, source_url, self.base_url)
@@ -561,11 +702,7 @@ class EqazynaProvider:
             source_lot_ids=source_lot_ids,
             url_count=len(urls),
             pages_scanned=url_crawl.pages_scanned,
-            complete=(
-                url_crawl.complete
-                and len(limited_urls) == len(urls)
-                and not detail_errors
-            ),
+            complete=(url_crawl.complete and len(limited_urls) == len(urls) and not detail_errors),
             detail_errors=detail_errors,
             status_counts=url_crawl.status_counts,
             url_statuses=url_crawl.url_statuses,

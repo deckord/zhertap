@@ -26,10 +26,12 @@
       История анализов
     </a>
 
-    <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions-v2') else '' }}" href="/cabinet/auctions-v2">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6"/><path d="m4 14 6 6"/><path d="m7 17 10-10"/><path d="m3 21 6-6"/><path d="m15 9 6-6"/></svg>
-      Аукционы
-    </a>
+    {% if (auction_access is defined and auction_access.can_open_detail) or is_web_admin %}
+      <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/auctions-v2') else '' }}" href="/cabinet/auctions-v2">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6"/><path d="m4 14 6 6"/><path d="m7 17 10-10"/><path d="m3 21 6-6"/><path d="m15 9 6-6"/></svg>
+        Аукционы
+      </a>
+    {% endif %}
 
     <span class="side-separator"></span>
     <a class="{{ 'is-active' if request.url.path.startswith('/cabinet/payment') else '' }}" href="/cabinet/payment">

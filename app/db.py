@@ -25,6 +25,43 @@ def validate_database_url(database_url: str | None = None, app_env: str | None =
         )
 
 
+def validate_production_schema(db_engine: Engine) -> None:
+    """Fail fast when the deploy skipped one of the Alembic branch heads."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    inspector = inspect(db_engine)
+    required_tables = {"accounts", "auction_lots", "urban_plan_layers", "alembic_version"}
+    existing_tables = set(inspector.get_table_names())
+    missing_tables = sorted(required_tables - existing_tables)
+    if missing_tables:
+        raise RuntimeError(
+            "Production database migrations are incomplete; missing tables: "
+            + ", ".join(missing_tables)
+        )
+    required_auction_columns = {"land_object_id", "lease_term_years", "annual_rent_kzt"}
+    auction_columns = {
+        column["name"] for column in inspector.get_columns("auction_lots")
+    }
+    missing_columns = sorted(required_auction_columns - auction_columns)
+    if missing_columns:
+        raise RuntimeError(
+            "Production database migrations are incomplete; auction_lots missing: "
+            + ", ".join(missing_columns)
+        )
+    expected_heads = set(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
+    with db_engine.connect() as connection:
+        rows = connection.execute(text("SELECT version_num FROM alembic_version"))
+        applied_heads = {
+            str(row[0]) for row in rows
+        }
+    if applied_heads != expected_heads:
+        raise RuntimeError(
+            "Production Alembic heads mismatch; run `alembic upgrade heads`. "
+            f"Expected {sorted(expected_heads)}, got {sorted(applied_heads)}"
+        )
+
+
 def _engine_kwargs(database_url: str) -> dict:
     kwargs: dict = {"pool_pre_ping": True}
     if _is_sqlite_url(database_url):
@@ -36,6 +73,12 @@ def _engine_kwargs(database_url: str) -> dict:
                 "max_overflow": settings.db_max_overflow,
                 "pool_timeout": settings.db_pool_timeout_seconds,
                 "pool_recycle": settings.db_pool_recycle_seconds,
+                "connect_args": {
+                    "options": (
+                        f"-c statement_timeout={settings.db_statement_timeout_ms} "
+                        f"-c lock_timeout={settings.db_lock_timeout_ms}"
+                    )
+                },
             }
         )
     return kwargs
@@ -491,6 +534,11 @@ def _add_auction_columns(db_engine: Engine) -> None:
         "functional_purpose_level3": "VARCHAR(320)",
         "functional_purpose_level4": "VARCHAR(320)",
         "use_goal": "VARCHAR(160)",
+        "land_object_id": "VARCHAR(64)",
+        "lease_term_years": "FLOAT",
+        "divisible": "BOOLEAN",
+        "additional_payment_kzt": "FLOAT",
+        "annual_rent_kzt": "FLOAT",
     }
     with db_engine.begin() as connection:
         for name, definition in additions.items():
@@ -535,6 +583,18 @@ def _add_auction_columns(db_engine: Engine) -> None:
                 "CREATE INDEX IF NOT EXISTS "
                 "ix_auction_lots_source_search_status "
                 "ON auction_lots (source_search_status)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_auction_lots_land_object_id "
+                "ON auction_lots (land_object_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_auction_lots_lease_term_years "
+                "ON auction_lots (lease_term_years)"
             )
         )
         if "auction_subscriptions" in inspector.get_table_names():

@@ -1,5 +1,5 @@
 import csv
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from io import StringIO
 
 import httpx
@@ -86,7 +86,11 @@ DETAIL_HTML = """
        Функциональное назначение земельного участка (уровень 4): Земли, объекты складов;
        Цель использования: Строительство;
        Целевое назначение земельного участка: для строительства склада;
-       Делимость: Делимый;</p>
+       Делимость: Делимый;
+       Срок аренды: 5 лет;
+       Идентификатор земельного участка в ЕГКН: 23340720260504000001;
+       Ежегодная арендная плата: 159 490 тенге;
+       Необходимо возместить потери сельскохозяйственного производства 16 200 тенге;</p>
     <p>Расположение объекта</p>
     <p>Северо-Казахстанская область, Аккайынский район, с. Южное</p>
     <p>Продавец</p>
@@ -165,6 +169,11 @@ def test_parse_eqazyna_lot_detail() -> None:
     assert lot.land_rights == "Продажа права аренды земельного участка"
     assert lot.cadastre_number == "15-229-046-001"
     assert lot.area_ha == pytest.approx(2.9188)
+    assert lot.land_object_id == "23340720260504000001"
+    assert lot.lease_term_years == 5
+    assert lot.divisible is True
+    assert lot.additional_payment_kzt == pytest.approx(16200)
+    assert lot.annual_rent_kzt == pytest.approx(159490)
     assert lot.functional_purpose_level2 == "Промышленности и производственная"
     assert lot.functional_purpose_level3 == "Складов"
     assert lot.functional_purpose_level4 == "Земли, объекты складов"
@@ -172,10 +181,82 @@ def test_parse_eqazyna_lot_detail() -> None:
     assert lot.start_price_kzt == pytest.approx(360045.66)
     assert lot.guarantee_kzt == pytest.approx(196600)
     assert lot.sale_price_kzt == pytest.approx(1370552)
+    assert lot.published_at == date(2025, 5, 2)
     assert lot.region == "Северо-Казахстанская область"
     assert lot.district == "Аккайынский район"
     assert lot.seller_bin == "621240000018"
     assert lot.documents[0].title == "Паспорт участка.pdf"
+
+
+def test_parse_eqazyna_lot_detail_bounds_index_dimensions_but_keeps_full_location() -> None:
+    long_locality = "Очень длинное описание ориентира " * 10
+    html = DETAIL_HTML.replace(
+        "Северо-Казахстанская область, Аккайынский район, с. Южное",
+        f"Северо-Казахстанская область, Аккайынский район, {long_locality}",
+    )
+
+    lot = parse_lot_detail(
+        html,
+        "https://sauda.e-qazyna.kz/ru/list/294585512097000000",
+        "https://sauda.e-qazyna.kz",
+    )
+
+    assert lot.locality == long_locality.strip()[:160]
+    assert lot.location_text is not None
+    assert long_locality.strip() in lot.location_text
+
+
+def test_parse_eqazyna_lot_detail_extracts_new_jerler_object_link() -> None:
+    html = DETAIL_HTML.replace(
+        '<a href="https://traderesources.e-qazyna.kz/ru/source-object-view?id=1">Объект</a>',
+        '<a href="https://jerler.e-qazyna.kz/ru/guest/reestr/objects/list/334736394851000000/view">Объект</a>',
+    )
+
+    lot = parse_lot_detail(
+        html,
+        "https://sauda.e-qazyna.kz/ru/list/334753357709000000",
+        "https://sauda.e-qazyna.kz",
+    )
+
+    assert lot.source_object_url == (
+        "https://jerler.e-qazyna.kz/ru/guest/reestr/objects/list/334736394851000000/view"
+    )
+
+
+def test_parse_eqazyna_lot_detail_does_not_invent_jerler_object_from_list_id() -> None:
+    html = DETAIL_HTML.replace(
+        "Идентификатор земельного участка в ЕГКН: 23340720260504000001;",
+        "",
+    ).replace(
+        '<a href="https://traderesources.e-qazyna.kz/ru/source-object-view?id=1">Объект</a>',
+        "",
+    )
+
+    lot = parse_lot_detail(
+        html,
+        "https://sauda.e-qazyna.kz/ru/list/334931391085000000",
+        "https://sauda.e-qazyna.kz",
+    )
+
+    assert lot.land_object_id is None
+    assert lot.source_object_url is None
+
+
+def test_upsert_does_not_invent_jerler_identity_from_eqazyna_list_id(session: Session) -> None:
+    lot, created, changed = upsert_auction_lot(
+        session,
+        lot_data(
+            source_lot_id="334931391085000000",
+            source_url="https://sauda.e-qazyna.kz/ru/list/334931391085000000",
+            land_object_id=None,
+            source_object_url=None,
+        ),
+    )
+
+    assert created is True
+    assert changed is False
+    assert lot.land_object_id is None
+    assert lot.source_object_url is None
 
 
 def test_provider_follows_public_list_and_detail_pages() -> None:
@@ -459,6 +540,33 @@ def test_upsert_tracks_eqazyna_search_status_change(session: Session) -> None:
     assert changes[0].field_name == "source_search_status"
     assert changes[0].old_value == "Pending"
     assert changes[0].new_value == "ApplicationsAccept"
+
+
+def test_upsert_tracks_guarantee_and_description_changes(session: Session) -> None:
+    lot, created, changed = upsert_auction_lot(
+        session,
+        lot_data(guarantee_kzt=100_000, description="Первоначальные условия"),
+    )
+    session.commit()
+
+    assert created is True
+    assert changed is False
+
+    updated, created, changed = upsert_auction_lot(
+        session,
+        lot_data(guarantee_kzt=150_000, description="Условия изменены"),
+    )
+    session.commit()
+    changes = auction_lot_changes(session, updated.id)
+    by_field = {item.field_name: item for item in changes}
+
+    assert created is False
+    assert changed is True
+    assert len(lot.history) == 2
+    assert by_field["guarantee_kzt"].old_value == "100000"
+    assert by_field["guarantee_kzt"].new_value == "150000"
+    assert by_field["description"].old_value == "Первоначальные условия"
+    assert by_field["description"].new_value == "Условия изменены"
 
 
 def test_export_auction_lots_csv_includes_prices_and_source_status(session: Session) -> None:

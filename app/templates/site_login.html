@@ -1,8 +1,9 @@
 {% extends "site_base.html" %}
 {% block title %}Вход — Жертап{% endblock %}
 {% block content %}
+{% set initial_auth_mode = 'reset' if reset_error or email_reset_sent else ('register' if register_error else 'login') %}
 <section class="auth-shell">
-  <div class="auth-panel">
+  <div class="auth-panel" data-auth-initial="{{ initial_auth_mode }}">
     <span class="eyebrow">Личный кабинет</span>
     <div class="auth-tabs" role="tablist" aria-label="Авторизация">
       <button class="auth-tab is-active" type="button" data-auth-tab="login">Вход</button>
@@ -11,27 +12,24 @@
 
     <div class="auth-mode is-active" data-auth-mode="login">
       <h1>Вход по паролю</h1>
-      <p>После регистрации SMS больше не нужен для каждого входа. Введите телефон и пароль.</p>
+      <p>Введите телефон и пароль, указанные при регистрации.</p>
     </div>
     <div class="auth-mode" data-auth-mode="register">
       <h1>Регистрация</h1>
-      <p>Сначала подтвердите номер SMS-кодом, затем задайте пароль для дальнейшего входа.</p>
+      <p>Укажите телефон, email и придумайте пароль. После регистрации вы сразу войдёте в кабинет.</p>
     </div>
     <div class="auth-mode" data-auth-mode="reset">
       <h1>Восстановление пароля</h1>
-      <p>Введите номер, получите SMS-код и задайте новый пароль для входа.</p>
+      <p>Введите номер телефона — мы отправим одноразовую ссылку на email, указанный при регистрации.</p>
     </div>
 
     {% if error %}<div class="form-alert">{{ error }}</div>{% endif %}
-    {% if existing_account_phone %}<div class="form-alert neutral">Под этим номером уже есть аккаунт. Войдите по паролю или восстановите доступ через SMS.</div>{% endif %}
+    {% if existing_account_phone %}<div class="form-alert neutral">Этот номер уже зарегистрирован. Войдите по паролю или восстановите доступ.</div>{% endif %}
     {% if request.query_params.get("invalid_password") %}<div class="form-alert">Неверный телефон или пароль. После 3 ошибок вход блокируется на 5 минут.</div>{% endif %}
-    {% if request.query_params.get("invalid") %}<div class="form-alert">Неверный SMS-код. После 3 ошибок вход блокируется на 5 минут.</div>{% endif %}
-    {% if request.query_params.get("reset_invalid") %}<div class="form-alert">Неверный SMS-код восстановления. После 3 ошибок вход блокируется на 5 минут.</div>{% endif %}
-    {% if request.query_params.get("reset_missing") %}<div class="form-alert">Аккаунт с таким номером не найден. Сначала пройдите регистрацию.</div>{% endif %}
     {% if request.query_params.get("locked") %}<div class="form-alert">Аккаунт временно заблокирован. Повторите через 5 минут.</div>{% endif %}
 
     <form class="auth-form auth-mode is-active" data-auth-mode="login" method="post" action="/login">
-      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <label>Телефон
         <input id="login_phone" name="phone" value="{{ phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
       </label>
@@ -43,84 +41,50 @@
       <button class="text-action" type="button" data-auth-switch="reset">Забыли пароль?</button>
     </form>
 
-    {% if register_error %}<div class="form-alert">{{ register_error }}</div>{% endif %}
-    <form class="auth-form auth-mode" data-auth-mode="register" method="post" action="/register/request-code">
-      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
-      <div class="step-title">1. Подтвердите телефон</div>
+    {% if register_error %}<div class="form-alert auth-mode" data-auth-mode="register">{{ register_error }}</div>{% endif %}
+    <form class="auth-form auth-mode" data-auth-mode="register" method="post" action="/register">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <label>Телефон
         <input id="register_phone" name="phone" value="{{ register_phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
       </label>
+      <label>Email для восстановления пароля
+        <input id="register_email" name="email" type="email" value="{{ register_email or '' }}" placeholder="name@example.kz" autocomplete="email" required>
+      </label>
+      <label>Придумайте пароль
+        <input name="password" type="password" minlength="8" autocomplete="new-password" required>
+      </label>
+      <label>Повторите пароль
+        <input name="password_confirm" type="password" minlength="8" autocomplete="new-password" required>
+      </label>
       <label class="check-row">
         <input type="checkbox" name="offer_accepted" value="yes" required>
-        <span>Я принимаю <a href="/offer" target="_blank" rel="noopener">оферту</a>, <a href="/terms" target="_blank" rel="noopener">условия сервиса</a> и понимаю, что Жертап дает предварительный анализ без гарантии выдачи земельного участка.</span>
+        <span>Я принимаю <a href="/offer" target="_blank" rel="noopener">оферту</a>, <a href="/terms" target="_blank" rel="noopener">условия сервиса</a> и понимаю предварительный характер анализа.</span>
       </label>
-      <button class="primary-action" type="submit">Получить SMS-код</button>
+      <button class="primary-action" type="submit">Создать аккаунт и войти</button>
     </form>
 
-      <form class="auth-form verify auth-mode {% if register_code_requested %}is-ready{% else %}is-disabled{% endif %}" data-auth-mode="register" method="post" action="/register/verify">
-        <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
-        <div class="step-title">2. Введите SMS-код и задайте пароль</div>
-        {% if not register_code_requested %}
-          <div class="step-hint">Сначала нажмите “Получить SMS-код”. После успешной отправки этот блок станет активным.</div>
-        {% endif %}
-        <input id="verify_phone" type="hidden" name="phone" value="{{ register_phone or '' }}">
-        <label>Код из SMS
-          <input name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" {% if not register_code_requested %}disabled{% endif %} required>
-        </label>
-        <label>Пароль для входа
-          <input name="password" type="password" minlength="8" autocomplete="new-password" {% if not register_code_requested %}disabled{% endif %} required>
-        </label>
-        <label>Повторите пароль
-          <input name="password_confirm" type="password" minlength="8" autocomplete="new-password" {% if not register_code_requested %}disabled{% endif %} required>
-        </label>
-        <button class="primary-action" type="submit" {% if not register_code_requested %}disabled{% endif %}>Создать аккаунт</button>
-      </form>
-      {% if dev_code %}
-        <div class="dev-code">Тестовый код: <strong>{{ dev_code }}</strong></div>
-      {% endif %}
-
-    {% if reset_error %}<div class="form-alert">{{ reset_error }}</div>{% endif %}
-    <form class="auth-form auth-mode" data-auth-mode="reset" method="post" action="/password/reset/request-code">
-      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
-      <div class="step-title">1. Получите SMS-код восстановления</div>
+    {% if reset_error %}<div class="form-alert auth-mode" data-auth-mode="reset">{{ reset_error }}</div>{% endif %}
+    {% if email_reset_sent %}<div class="form-alert neutral auth-mode" data-auth-mode="reset">Ссылка отправлена на {{ masked_reset_email }}. Проверьте входящие и папку «Спам».</div>{% endif %}
+    <form class="auth-form auth-mode" data-auth-mode="reset" method="post" action="/password/reset/request-email">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <label>Телефон
         <input id="reset_phone" name="phone" value="{{ reset_phone or phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
       </label>
-      <button class="primary-action" type="submit">Получить SMS-код</button>
+      <button class="primary-action" type="submit">Отправить ссылку на email</button>
       <button class="text-action" type="button" data-auth-switch="login">Вернуться ко входу</button>
-    </form>
-
-    <form class="auth-form verify auth-mode {% if reset_code_requested %}is-ready{% else %}is-disabled{% endif %}" data-auth-mode="reset" method="post" action="/password/reset/verify">
-      <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
-      <div class="step-title">2. Введите SMS-код и новый пароль</div>
-      {% if not reset_code_requested %}
-        <div class="step-hint">Сначала нажмите “Получить SMS-код”. После успешной отправки этот блок станет активным.</div>
-      {% endif %}
-      <input id="reset_verify_phone" type="hidden" name="phone" value="{{ reset_phone or phone or '' }}">
-      <label>Код из SMS
-        <input name="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" {% if not reset_code_requested %}disabled{% endif %} required>
-      </label>
-      <label>Новый пароль
-        <input name="password" type="password" minlength="8" autocomplete="new-password" {% if not reset_code_requested %}disabled{% endif %} required>
-      </label>
-      <label>Повторите новый пароль
-        <input name="password_confirm" type="password" minlength="8" autocomplete="new-password" {% if not reset_code_requested %}disabled{% endif %} required>
-      </label>
-      <button class="primary-action" type="submit" {% if not reset_code_requested %}disabled{% endif %}>Сменить пароль и войти</button>
     </form>
   </div>
   <aside class="auth-aside">
     <h2>Что будет в кабинете</h2>
     <ul>
       <li>История поисков и статусы обработки</li>
+      <li>Проверка участков и карты</li>
       <li>Аукционы с полными фильтрами</li>
       <li>Единый доступ после оплаты Kaspi</li>
-      <li>Привязка Telegram к тому же аккаунту</li>
     </ul>
   </aside>
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/site-login.js?v=20260808b" defer></script>
+<script src="/static/site-login.js?v=20260825-email-auth" defer></script>
 {% endblock %}
-

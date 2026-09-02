@@ -1,0 +1,38 @@
+{% extends "site_base.html" %}
+{% block title %}Предварительный результат — Жертап{% endblock %}
+{% block content %}
+<section class="guest-result-shell" data-guest-search data-status-url="/guest-searches/{{ search.id }}/status">
+  <div class="guest-result-head">
+    <span class="eyebrow">Предварительный результат</span>
+    <h1>{{ search.region_label or search.region }} · {{ search.district_label or search.district }}</h1>
+    <p>{{ search.purpose }}{% if search.locality_label or search.locality %} · {{ search.locality_label or search.locality }}{% endif %}</p>
+  </div>
+
+  <div class="guest-progress-card" data-search-pending>
+    <div class="guest-progress-title"><strong data-progress-title>Анализируем территорию</strong><span data-progress-value>{{ search.progress }}%</span></div>
+    <div class="guest-progress-track"><span data-progress-bar style="width: {{ search.progress }}%"></span></div>
+    <div class="guest-stage-list">
+      <span>Анализируем территорию</span>
+      <span>Проверяем доступные данные</span>
+      <span>Ищем возможные участки</span>
+      <span>Формируем результат</span>
+    </div>
+  </div>
+
+  <div class="guest-preview-result" data-search-result {% if search.status not in ['ready', 'delivered', 'completed', 'failed'] %}hidden{% endif %}>
+    <div class="guest-result-summary">
+      <span>Поиск завершён</span>
+      <h2 data-result-heading>{% if candidate_count %}Найдено {{ candidate_count }} возможных участков{% elif search.status == 'failed' %}Поиск пока не завершён{% else %}Варианты требуют дополнительной проверки{% endif %}</h2>
+      <p>Мы показываем предварительный итог без регистрации. Точные координаты, подробные карточки и полный отчёт защищены и откроются в вашем аккаунте.</p>
+    </div>
+    <div class="guest-blurred-map" aria-label="Обезличенный фрагмент карты результатов"><i></i><i></i><i></i><b></b></div>
+    <div class="guest-unlock-card">
+      <div><span class="eyebrow">Полный результат</span><h3>Получить результаты</h3><p>Телефон → SMS-код → вход. Ваш уже запущенный поиск автоматически сохранится в кабинете.</p></div>
+      <div><strong>{{ price_kzt }} ₸</strong><a class="primary-action" href="/login">Получить результаты</a></div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/site-guest-search.js?v=20260825" defer></script>
+{% endblock %}

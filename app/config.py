@@ -15,10 +15,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_base_url: str = "http://localhost:8000"
     database_url: str = "sqlite:///./land_scout.db"
-    db_pool_size: int = Field(default=10, ge=1, le=200)
-    db_max_overflow: int = Field(default=20, ge=0, le=500)
+    db_pool_size: int = Field(default=5, ge=1, le=200)
+    db_max_overflow: int = Field(default=2, ge=0, le=500)
     db_pool_timeout_seconds: int = Field(default=30, ge=1, le=300)
     db_pool_recycle_seconds: int = Field(default=1800, ge=60, le=86400)
+    db_statement_timeout_ms: int = Field(default=30_000, ge=1000, le=600_000)
+    db_lock_timeout_ms: int = Field(default=5_000, ge=100, le=120_000)
     redis_url: str = "redis://localhost:6379/0"
     run_tasks_inline: bool = True
     trusted_proxy_networks: str = ""
@@ -34,6 +36,10 @@ class Settings(BaseSettings):
     telegram_admin_user_ids: str = ""
     analytics_excluded_telegram_user_ids: str = "70557953"
 
+    # Public web plans. Keep the legacy prices below for old Telegram/search flows.
+    lite_plan_price_kzt: int = Field(default=1490, ge=0, le=10_000_000)
+    pro_plan_price_kzt: int = Field(default=30000, ge=0, le=10_000_000)
+    pro_year_plan_price_kzt: int = Field(default=300000, ge=0, le=10_000_000)
     platform_access_price_kzt: int = Field(default=1990, ge=0, le=10_000_000)
     auction_team_price_kzt: int = Field(default=12990, ge=0, le=10_000_000)
     platform_access_months: int = Field(default=1, ge=1, le=24)
@@ -62,6 +68,25 @@ class Settings(BaseSettings):
     smsc_base_url: str = "https://smsc.kz/sys/send.php"
     smsc_sender: str = ""
     smsc_timeout_seconds: int = Field(default=15, ge=5, le=60)
+
+    green_api_enabled: bool = False
+    green_api_base_url: str = "https://api.green-api.com"
+    green_api_id_instance: str = ""
+    green_api_token_instance: str = ""
+    green_api_timeout_seconds: int = Field(default=15, ge=5, le=60)
+    green_api_delivery_timeout_seconds: float = Field(default=8.0, ge=0, le=60)
+    green_api_delivery_poll_seconds: float = Field(default=1.0, ge=0, le=10)
+
+    smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_ssl: bool = False
+    smtp_starttls: bool = True
+    smtp_timeout_seconds: int = Field(default=15, ge=5, le=60)
+    password_reset_token_minutes: int = Field(default=30, ge=5, le=120)
 
     service_provider_name: str = ""
     service_provider_status: str = ""
@@ -94,7 +119,7 @@ class Settings(BaseSettings):
     )
     eqazyna_history_sync_max_pages: int = Field(default=100, ge=1, le=1000)
     eqazyna_history_sync_max_lots: int = Field(default=1000, ge=1, le=20000)
-    eqazyna_history_sync_start_year: int = Field(default=2020, ge=2000, le=2100)
+    eqazyna_history_sync_start_year: int = Field(default=2019, ge=2000, le=2100)
     eqazyna_history_sync_window_days: int = Field(default=366, ge=1, le=3660)
     eqazyna_timeout_seconds: int = Field(default=30, ge=5, le=120)
     eqazyna_verify_tls: bool = True
@@ -109,9 +134,16 @@ class Settings(BaseSettings):
     auction_v2_event_lookback_hours: int = Field(default=72, ge=1, le=720)
     auction_v2_events_per_lot_limit: int = Field(default=4, ge=1, le=20)
     auction_v2_document_download_enabled: bool = False
+    auction_v2_document_extraction_enabled: bool = False
     auction_v2_document_storage_dir: str = "var/auction-documents"
     auction_v2_document_download_limit: int = Field(default=25, ge=1, le=500)
     auction_v2_document_max_mb: int = Field(default=25, ge=1, le=100)
+    auction_v2_llm_enabled: bool = False
+    auction_v2_llm_base_url: str = "http://127.0.0.1:11434"
+    auction_v2_llm_model: str = "qwen2.5:3b"
+    auction_v2_llm_timeout_seconds: int = Field(default=180, ge=10, le=900)
+    auction_v2_llm_max_text_chars: int = Field(default=40_000, ge=1_000, le=200_000)
+    auction_v2_ocr_languages: str = "kaz+rus+eng"
     auction_v2_live_gov_kz_enabled: bool = True
     auction_v2_gov_kz_projects: str = (
         "vko-altai,vko-shemonaiha,astana-saulet,almaty-zher,almobl-zher,"
@@ -134,6 +166,12 @@ class Settings(BaseSettings):
     auction_v2_egkn_context_radius_m: int = Field(default=1200, ge=100, le=5000)
     auction_v2_egkn_context_max_features_per_layer: int = Field(default=25, ge=1, le=200)
     auction_v2_map_limit: int = Field(default=300, ge=10, le=1000)
+    auction_cache_enabled: bool = False
+    auction_cache_ttl_seconds: int = Field(default=60, ge=5, le=3600)
+    auction_cache_local_max_entries: int = Field(default=128, ge=8, le=2048)
+    auction_spatial_feed_enabled: bool = False
+    auction_spatial_providers_json: str = ""
+    auction_spatial_batch_size: int = Field(default=10, ge=1, le=50)
 
     enable_live_osm: bool = True
     overpass_url: str = "https://overpass-api.de/api/interpreter"
@@ -189,6 +227,8 @@ class Settings(BaseSettings):
             problems.append("DATABASE_URL")
         if not self.redis_url.strip():
             problems.append("REDIS_URL")
+        if not self.auction_cache_enabled:
+            problems.append("AUCTION_CACHE_ENABLED")
         if self.run_tasks_inline:
             problems.append("RUN_TASKS_INLINE")
         if self.demo_data_enabled:

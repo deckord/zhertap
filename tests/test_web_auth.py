@@ -5,12 +5,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import app.account_payments as account_payments
+import app.models as models
 import app.web as web
 from app.apipay import ApiPayCancellation, ApiPayQrInvoice
 from app.config import settings
@@ -190,9 +192,39 @@ def test_existing_registered_phone_cannot_request_registration_sms(monkeypatch) 
             )
 
         assert response.status_code == 200
-        assert "Не удалось отправить SMS-код" in response.text
-        assert "уже есть аккаунт" not in response.text.lower()
+        assert "Этот номер уже зарегистрирован" in response.text
+        assert "Войдите по паролю или восстановите доступ" in response.text
+        assert "Не удалось отправить SMS-код" not in response.text
         assert sent == []
+        assert session.scalar(select(WebLoginCode.id)) is None
+
+
+def test_registration_with_phone_email_and_password_logs_in_without_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web,
+        "send_login_code",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("code must not be sent")),
+    )
+    with build_session() as session:
+        with client_for(session) as client:
+            response = client.post(
+                "/register",
+                data={
+                    "phone": "7026669475",
+                    "email": " Client@Example.kz ",
+                    "password": "password-1",
+                    "password_confirm": "password-1",
+                    "offer_accepted": "yes",
+                },
+                follow_redirects=False,
+            )
+
+        account = session.scalar(select(Account).where(Account.phone == "+77026669475"))
+        assert response.status_code == 303
+        assert response.headers["location"] == "/cabinet"
+        assert account is not None
+        assert account.email == "client@example.kz"
+        assert web._verify_password("password-1", account.password_hash)
         assert session.scalar(select(WebLoginCode.id)) is None
 
 
@@ -260,12 +292,54 @@ def test_login_empty_form_returns_form_error() -> None:
         assert "Введите телефон и пароль для входа." in response.text
 
 
+def test_login_code_failure_falls_back_to_linked_telegram(monkeypatch) -> None:
+    account = Account(phone="+77010000000", telegram_chat_id="9001")
+    telegram_calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        web,
+        "send_login_code",
+        lambda phone, code: (_ for _ in ()).throw(RuntimeError("all providers failed")),
+    )
+    monkeypatch.setattr(
+        web,
+        "telegram_request",
+        lambda method, payload: telegram_calls.append((method, payload)) or {"ok": True},
+    )
+
+    web._send_login_code_with_telegram_fallback(account, "+77010000000", "482913")
+
+    assert telegram_calls == [
+        (
+            "sendMessage",
+            {
+                "chat_id": "9001",
+                "text": (
+                    "Код подтверждения Жертап: 482913. "
+                    "Никому не сообщайте этот код. Код действует 10 минут."
+                ),
+            },
+        )
+    ]
+
+
+def test_login_code_failure_without_linked_telegram_is_reported(monkeypatch) -> None:
+    account = Account(phone="+77010000000", telegram_chat_id=None)
+    monkeypatch.setattr(
+        web,
+        "send_login_code",
+        lambda phone, code: (_ for _ in ()).throw(RuntimeError("all providers failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="all providers failed"):
+        web._send_login_code_with_telegram_fallback(account, "+77010000000", "482913")
+
+
 def test_form_body_survives_csrf_middleware_without_header() -> None:
     with build_session() as session:
         with client_for(session) as client:
             client.headers.pop("x-csrf-token", None)
             login_page = client.get("/login")
-            csrf = re.search(r"name='csrf_token' value='([^']+)'", login_page.text).group(1)
+            csrf = re.search(r'name="csrf_token" value="([^"]+)"', login_page.text).group(1)
             response = client.post(
                 "/login",
                 data={
@@ -346,6 +420,34 @@ def test_cabinet_help_page_renders_for_authorized_account() -> None:
         assert "Как проходит проверка" in response.text
         assert "ЕГКН" in response.text
         assert "генплан" in response.text
+
+
+def test_existing_account_can_add_recovery_email_with_password() -> None:
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            email=None,
+            phone_verified_at=web._now(),
+            password_hash=web._hash_password("password-1"),
+        )
+        session.add(account)
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                "/cabinet/settings/email",
+                data={
+                    "email": " Recovery@Example.kz ",
+                    "current_password": "password-1",
+                },
+                follow_redirects=False,
+            )
+
+        session.refresh(account)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/cabinet/settings?email_updated=1"
+        assert account.email == "recovery@example.kz"
 
 
 def test_onboarding_tour_can_be_dismissed() -> None:
@@ -469,6 +571,120 @@ def test_password_reset_uses_sms_code_and_updates_password(monkeypatch) -> None:
         assert web._verify_password("new-password", account.password_hash)
         assert not web._verify_password("old-password", account.password_hash)
         assert session.scalar(select(WebLoginCode.consumed_at)) is not None
+
+
+def test_password_reset_email_link_is_hashed_one_time_and_logs_in(monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        web,
+        "send_password_reset_email",
+        lambda email, reset_url: sent.append((email, reset_url)),
+    )
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            email="client@example.kz",
+            password_hash=web._hash_password("old-password"),
+            password_set_at=web._now(),
+        )
+        session.add(account)
+        session.commit()
+        old_session = WebSession(
+            account_id=account.id,
+            token_hash=web._hash("old-session-token"),
+            expires_at=web._now() + timedelta(days=1),
+        )
+        session.add(old_session)
+        session.commit()
+
+        with client_for(session) as client:
+            request_response = client.post(
+                "/password/reset/request-email",
+                data={"phone": "7026669475"},
+            )
+            token_row = session.scalar(select(models.PasswordResetToken))
+            assert token_row is not None
+            raw_token = sent[0][1].rsplit("/", 1)[-1]
+            reset_page = client.get(f"/password/reset/email/{raw_token}")
+            reset_response = client.post(
+                f"/password/reset/email/{raw_token}",
+                data={
+                    "password": "new-password",
+                    "password_confirm": "new-password",
+                },
+                follow_redirects=False,
+            )
+
+        session.refresh(account)
+        session.refresh(token_row)
+        session.refresh(old_session)
+        assert request_response.status_code == 200
+        assert "client@example.kz" not in request_response.text
+        assert "c***@example.kz" in request_response.text
+        assert token_row.token_hash == web._hash(raw_token)
+        assert raw_token not in token_row.token_hash
+        assert reset_page.status_code == 200
+        assert reset_response.status_code == 303
+        assert reset_response.headers["location"] == "/cabinet"
+        assert token_row.consumed_at is not None
+        assert old_session.revoked_at is not None
+        assert web._verify_password("new-password", account.password_hash)
+
+        with client_for(session) as client:
+            reused = client.get(f"/password/reset/email/{raw_token}")
+        assert reused.status_code == 400
+
+
+def test_expired_password_reset_email_link_is_rejected() -> None:
+    raw_token = "expired-token"
+    with build_session() as session:
+        account = Account(
+            phone="+77026669475",
+            email="client@example.kz",
+            password_hash=web._hash_password("old-password"),
+        )
+        session.add(account)
+        session.flush()
+        session.add(
+            models.PasswordResetToken(
+                account_id=account.id,
+                token_hash=web._hash(raw_token),
+                expires_at=web._now() - timedelta(minutes=1),
+            )
+        )
+        session.commit()
+
+        with client_for(session) as client:
+            response = client.get(f"/password/reset/email/{raw_token}")
+
+        assert response.status_code == 400
+        assert "Ссылка уже использована или срок её действия истёк" in response.text
+
+
+def test_password_reset_by_phone_explains_when_recovery_email_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web,
+        "send_password_reset_email",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("email must not send")),
+    )
+    with build_session() as session:
+        session.add(
+            Account(
+                phone="+77026669475",
+                email=None,
+                password_hash=web._hash_password("old-password"),
+            )
+        )
+        session.commit()
+
+        with client_for(session) as client:
+            response = client.post(
+                "/password/reset/request-email",
+                data={"phone": "7026669475"},
+            )
+
+        assert response.status_code == 400
+        assert "Для этого номера email не указан" in response.text
 
 
 def test_web_payment_status_auto_activates_paid_account(monkeypatch) -> None:

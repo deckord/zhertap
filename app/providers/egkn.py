@@ -1,5 +1,4 @@
 import re
-import time
 import unicodedata
 from dataclasses import dataclass
 from math import cos, radians
@@ -14,6 +13,10 @@ from shapely.ops import transform as transform_geometry
 from shapely.ops import unary_union
 
 from app.config import settings
+from app.provider_backpressure import ProviderBackpressure
+from app.provider_guard import bounded_http_request, guarded_http_call
+
+EGKN_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 class EgknProviderError(RuntimeError):
@@ -105,8 +108,14 @@ def normalize_cadastre(value: str | None) -> str:
 
 
 class EgknProvider:
-    def __init__(self, *, verify_tls: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        verify_tls: bool | None = None,
+        backpressure: ProviderBackpressure | None = None,
+    ) -> None:
         self.verify_tls = settings.egkn_verify_tls if verify_tls is None else verify_tls
+        self.backpressure = backpressure
 
     def _client(self) -> httpx.Client:
         return httpx.Client(
@@ -116,28 +125,32 @@ class EgknProvider:
         )
 
     def _get(self, url: str, *, params: dict[str, Any]) -> httpx.Response:
-        """Fetch a public EGKN endpoint with one short retry for transient outages."""
-        last_error: Exception | None = None
-        for attempt in range(settings.egkn_request_attempts):
-            try:
-                with self._client() as client:
-                    response = client.get(url, params=params)
-                status_code = getattr(response, "status_code", 200)
-                if status_code == 429 or status_code >= 500:
-                    last_error = EgknProviderError(
-                        f"Public EGKN service temporarily returned HTTP {status_code}"
-                    )
-                else:
-                    if hasattr(response, "raise_for_status"):
-                        response.raise_for_status()
-                    return response
-            except (httpx.RequestError, httpx.HTTPStatusError) as exc:
-                last_error = exc
-            if attempt + 1 < settings.egkn_request_attempts:
-                time.sleep(1 + attempt)
-        raise EgknProviderError(
-            "Public EGKN service did not respond in time. Please retry the search later."
-        ) from last_error
+        """Fetch once under distributed backpressure; Celery owns delayed continuation."""
+
+        def request() -> httpx.Response:
+            with self._client() as client:
+                return bounded_http_request(
+                    client,
+                    "GET",
+                    url,
+                    params=params,
+                    max_bytes=EGKN_MAX_RESPONSE_BYTES,
+                )
+
+        try:
+            return guarded_http_call(
+                "egkn",
+                request,
+                backpressure=self.backpressure,
+                wait_for_rate_limit_seconds=10,
+            )
+        except ValueError as exc:
+            if "provider response exceeds byte cap" in str(exc):
+                raise EgknProviderError(
+                    "Слой ЕГКН превысил лимит объектов; сузьте поиск до другого "
+                    "населенного пункта"
+                ) from exc
+            raise
 
     def _json(self, url: str, *, params: dict[str, Any]) -> Any:
         response = self._get(url, params=params)
@@ -221,9 +234,7 @@ class EgknProvider:
             return self.district_search_area(district)
 
     def regions(self) -> list[dict[str, Any]]:
-        return self._json(
-            f"{settings.egkn_rest_url}/map/districts", params={"lang": "ru"}
-        )
+        return self._json(f"{settings.egkn_rest_url}/map/districts", params={"lang": "ru"})
 
     def districts(self, region: str) -> list[DistrictInfo]:
         region_key = normalize_name(region)
@@ -300,10 +311,9 @@ class EgknProvider:
         for region_row in self.regions():
             current_region = str(region_row.get("nameRu") or region_row.get("name") or "")
             for row in region_row.get("districts", []):
-                if (
-                    str(row.get("regionCode") or "").zfill(2) != region_code.zfill(2)
-                    or str(row.get("code") or "").zfill(3) != district_code.zfill(3)
-                ):
+                if str(row.get("regionCode") or "").zfill(2) != region_code.zfill(2) or str(
+                    row.get("code") or ""
+                ).zfill(3) != district_code.zfill(3):
                     continue
                 district_id = int(row["id"])
                 if district_id in seen_ids:
@@ -326,17 +336,98 @@ class EgknProvider:
                 seen_ids.add(district_id)
         return candidates
 
-    def _settlement_rows(
-        self, district_id: int, language: str = "ru"
-    ) -> list[dict[str, Any]]:
+    def resolve_district_for_cadastre(self, cadastre: str) -> DistrictInfo:
+        """Resolve one cadastral district in one REST request for a resumable unit."""
+        cadastre_key = normalize_cadastre(cadastre)
+        parts = cadastre_key.split("-")
+        if len(parts) < 2:
+            raise EgknProviderError("Некорректный кадастровый номер")
+        region_code, district_code = parts[:2]
+        for region_row in self.regions():
+            region_name = str(region_row.get("nameRu") or region_row.get("name") or "")
+            for row in region_row.get("districts", []):
+                if str(row.get("regionCode") or "").zfill(2) != region_code.zfill(2):
+                    continue
+                if str(row.get("code") or "").zfill(3) != district_code.zfill(3):
+                    continue
+                name = str(row.get("nameRu") or row.get("name") or "")
+                return DistrictInfo(
+                    id=int(row["id"]),
+                    region_name=region_name,
+                    code=f"{row['regionCode']}-{row['code']}",
+                    name=name.split("(")[0].strip(),
+                    display_name=f"{row.get('type', 'р-н')} {name}".strip(),
+                    srs=int(row["srs"]),
+                    ate_code=str(row.get("ate_code") or ""),
+                    kato=str(row.get("kato") or ""),
+                    name_kz=str(row.get("nameKz") or "").split("(")[0].strip(),
+                    display_name_kz=str(row.get("nameKz") or name).strip(),
+                )
+        raise EgknProviderError("Район ЕГКН не найден по коду кадастра")
+
+    def lookup_cadastre_direct(
+        self, cadastre: str, *, district: DistrictInfo
+    ) -> CadastreLookupResult:
+        """Fetch one cadastral parcel without a preceding boundary request."""
+        cadastre_key = normalize_cadastre(cadastre)
+        params: dict[str, Any] = {
+            "service": "WFS",
+            "version": "1.0.0",
+            "request": "GetFeature",
+            "typeName": "egkn:u_view",
+            "outputFormat": "application/json",
+            "viewparams": f"district_id:{district.id}",
+            "CQL_FILTER": f"kad_nomer='{cadastre_key}'",
+            "srsName": f"EPSG:{district.srs}",
+            "maxFeatures": 5,
+        }
+        payload = self._json(settings.egkn_wfs_url, params=params)
+        for feature in payload.get("features", []):
+            raw_geometry = feature.get("geometry")
+            properties = feature.get("properties") or {}
+            found = normalize_cadastre(str(properties.get("kad_nomer") or ""))
+            if not raw_geometry or found != cadastre_key:
+                continue
+            try:
+                geometry = make_valid(shape(raw_geometry))
+            except Exception as exc:
+                raise EgknProviderError("ЕГКН вернул некорректную геометрию участка") from exc
+            transformer = Transformer.from_crs(
+                f"EPSG:{district.srs}", "EPSG:4326", always_xy=True
+            )
+            geometry_wgs84 = make_valid(transform_geometry(transformer.transform, geometry))
+            centroid = geometry_wgs84.representative_point()
+            area = properties.get("squ") or properties.get("shape_area")
+            return CadastreLookupResult(
+                found=True,
+                cadastre=found,
+                source_layer="egkn:u_view",
+                district=district,
+                address=str(properties.get("address_ru") or ""),
+                land_use=str(properties.get("tsn_ru") or properties.get("tsn") or ""),
+                area_m2=float(area) if area is not None else None,
+                category_id=str(properties.get("category_id") or "") or None,
+                right_type_id=str(properties.get("right_type_id") or "") or None,
+                latitude=float(centroid.y),
+                longitude=float(centroid.x),
+                geometry=geometry_wgs84,
+                raw_properties=dict(properties),
+            )
+        return CadastreLookupResult(
+            found=False,
+            cadastre=cadastre_key,
+            source_layer="egkn:u_view",
+            district=district,
+            message="Кадастровый номер не найден в публичном слое ЕГКН",
+        )
+
+    def _settlement_rows(self, district_id: int, language: str = "ru") -> list[dict[str, Any]]:
         return self._json(
             f"{settings.egkn_rest_url}/map/ate",
             params={"lang": language, "districtId": district_id},
         )
 
-    def settlement_options(
-        self, district_id: int, language: str = "ru"
-    ) -> list[SettlementOption]:
+    def settlement_options(self, district_id: int, language: str = "ru") -> list[SettlementOption]:
         return [
             SettlementOption(
                 gid=str(row.get("gid") or ""),

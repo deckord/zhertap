@@ -87,7 +87,16 @@
           <strong id="urban-plan-status-short">{{ current_plan_badge.short }}</strong>
           <p id="urban-plan-status">{{ current_plan_badge.detail }}{% if search.urban_plan_message %} {{ search.urban_plan_message }}{% endif %}</p>
         </div>
-        <a id="genplan-reference-link" class="genplan-action-button" href="{{ genplan_map_url }}">Открыть карту генплана</a>
+        {% if search_unlocked %}
+          <a id="genplan-reference-link" class="genplan-action-button" href="{{ genplan_map_url }}">Открыть карту генплана</a>
+        {% else %}
+          <button id="genplan-reference-link" class="genplan-action-button locked-action" type="button" disabled>Генплан после оплаты</button>
+        {% endif %}
+        <button
+          class="genplan-action-button secondary {% if not search_unlocked or not can_show_without_genplan %}is-hidden{% endif %}"
+          type="button"
+          data-show-without-genplan
+        >Показать без проверки генплана</button>
       </article>
       <article><h3>Доступ к отчету</h3><p id="payment-status">{{ search.payment_status }}</p></article>
     </div>
@@ -160,6 +169,7 @@
                 <a href="{{ candidate.egkn_url }}" target="_blank" rel="noopener">Проверить ЕГКН</a>
               {% else %}
                 <button class="locked-action" type="button" disabled>Карта после оплаты</button>
+                <button class="locked-action" type="button" disabled>Генплан после оплаты</button>
                 <button class="locked-action" type="button" disabled>ЕГКН после оплаты</button>
               {% endif %}
             </div>
@@ -172,6 +182,9 @@
             {% elif search.urban_plan_status == "blocked" %}
               <strong>Подходящих мест по генплану не осталось</strong>
               <span>Кадастровая карта дала предварительные промежутки, но подключенный генплан/ПДП не подтвердил их для выбранной цели. Эти места не показываем как варианты для подачи.</span>
+              {% if can_show_without_genplan %}
+                <button class="secondary-action compact" type="button" data-show-without-genplan>Показать без проверки генплана</button>
+              {% endif %}
             {% else %}
               <strong>Подходящие места не найдены</strong>
               <span>Попробуйте другой населенный пункт, район или цель анализа.</span>
@@ -184,6 +197,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/site-search-status.js?v=20260814-candidate-genplan-link" defer></script>
+<script src="/static/site-search-status.js?v=20260825-paid-only-trial-lock" defer></script>
 {% endblock %}
 

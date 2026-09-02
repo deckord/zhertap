@@ -52,13 +52,53 @@ def test_status_report_detects_qa_pending(tmp_path: Path) -> None:
     record_hash = hashlib.sha256(b"asset-1").hexdigest()
     record_dir = tmp_path / "workbench_data" / "records" / record_hash
     record_dir.mkdir(parents=True)
-    (record_dir / "gcps.json").write_text("{}", encoding="utf-8")
-    (record_dir / "qa.json").write_text("{}", encoding="utf-8")
+    (record_dir / "gcps.json").write_text(
+        json.dumps({"workflow_status": "qa_pending"}), encoding="utf-8"
+    )
+    (record_dir / "qa.json").write_text(
+        json.dumps({"workflow_status": "qa_pending"}), encoding="utf-8"
+    )
 
     report = build_report(manual_manifest=manifest)
 
     assert report["status_counts"] == {"qa_pending": 1}
     assert report["records"][0]["next_action"] == "independent_georef_review"
+
+
+def test_status_report_keeps_diagnostic_anchor_seed_as_gcp_draft(
+    tmp_path: Path,
+) -> None:
+    manifest = _write_manifest(tmp_path)
+    record_hash = hashlib.sha256(b"asset-1").hexdigest()
+    record_dir = tmp_path / "workbench_data" / "records" / record_hash
+    record_dir.mkdir(parents=True)
+    (record_dir / "gcps.json").write_text(
+        json.dumps(
+            {
+                "workflow_status": "proposed",
+                "operator": "diagnostic-anchor-seed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (record_dir / "qa.json").write_text(
+        json.dumps(
+            {
+                "workflow_status": "proposed",
+                "qa_decision": "pending",
+                "guardrails": {"approved_by_workbench": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_report(manual_manifest=manifest)
+
+    assert report["status_counts"] == {"gcp_draft": 1}
+    assert (
+        report["records"][0]["next_action"]
+        == "verify_or_move_diagnostic_points_then_submit"
+    )
 
 
 def test_status_report_detects_geotiff_export(tmp_path: Path) -> None:

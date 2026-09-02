@@ -9,6 +9,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from app.config import settings
+from app.provider_backpressure import ProviderBackpressure
+from app.provider_guard import bounded_http_request, guarded_http_call
 
 
 class GovKzError(RuntimeError):
@@ -72,9 +74,7 @@ LAND_AUCTION_KEYWORDS = (
 )
 
 CADASTRE_RE = re.compile(r"\b\d{2}-\d{3}-\d{3}-\d{3,}\b")
-LOT_NUMBER_RE = re.compile(
-    r"(?iu)(?:№\s*лота|лот\s*№|номер\s*лота|лота\s*№)\D{0,50}(\d{3,12})"
-)
+LOT_NUMBER_RE = re.compile(r"(?iu)(?:№\s*лота|лот\s*№|номер\s*лота|лота\s*№)\D{0,50}(\d{3,12})")
 AUCTION_NUMBER_RE = re.compile(
     r"(?iu)(?:№\s*торгов|аукцион\s*№|номер\s*аукциона)\D{0,50}([A-ZА-Я0-9-]{3,32})"
 )
@@ -129,10 +129,12 @@ class GovKzProvider:
         base_url: str = "https://www.gov.kz",
         timeout_seconds: int | None = None,
         verify_tls: bool | None = None,
+        backpressure: ProviderBackpressure | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds or settings.gov_kz_timeout_seconds
         self.verify_tls = settings.gov_kz_verify_tls if verify_tls is None else verify_tls
+        self.backpressure = backpressure
         self.errors: list[str] = []
         self._client = httpx.Client(
             base_url=self.base_url,
@@ -212,7 +214,13 @@ class GovKzProvider:
         return announcements
 
     def fetch_detail_url(self, url: str) -> GovKzAnnouncement:
-        response = self._client.get(_absolute_url(self.base_url, url))
+        response = guarded_http_call(
+            "gov_kz",
+            lambda: bounded_http_request(
+                self._client, "GET", _absolute_url(self.base_url, url)
+            ),
+            backpressure=self.backpressure,
+        )
         try:
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -239,6 +247,7 @@ class GovKzProvider:
         project: str,
         page: int,
         size: int,
+        request_headers: dict[str, str] | None = None,
     ) -> list[dict[str, object]]:
         params = {
             "projects": project,
@@ -246,10 +255,20 @@ class GovKzProvider:
             "size": size,
             "sort-by": _sort_for_kind(kind),
         }
-        response = self._client.get(
-            f"/api/v1/public/content-manager/{kind}",
-            params=params,
-            headers=self._special_headers(kind),
+        response = guarded_http_call(
+            "gov_kz",
+            lambda: bounded_http_request(
+                self._client,
+                "GET",
+                f"/api/v1/public/content-manager/{kind}",
+                params=params,
+                headers=(
+                    request_headers
+                    if request_headers is not None
+                    else self._special_headers(kind)
+                ),
+            ),
+            backpressure=self.backpressure,
         )
         try:
             response.raise_for_status()
@@ -263,11 +282,55 @@ class GovKzProvider:
             return []
         return [item for item in payload if isinstance(item, dict)]
 
+    def list_items_page(
+        self,
+        *,
+        kind: str,
+        project: str,
+        page: int,
+        size: int,
+        request_headers: dict[str, str] | None = None,
+    ) -> list[dict[str, object]]:
+        """Fetch one parsed gov.kz page; news headers are a separate workflow unit."""
+        if kind not in {"documents", "events", "news"} or not 0 <= page <= 1_000:
+            raise ValueError("invalid gov.kz page unit")
+        return self._list_items(
+            kind=kind,
+            project=project,
+            page=page,
+            size=size,
+            request_headers=request_headers,
+        )
+
+    def news_headers_unit(self) -> dict[str, str]:
+        """Fetch the news challenge in one request; malformed data is terminal for the unit."""
+        response = guarded_http_call(
+            "gov_kz",
+            lambda: bounded_http_request(
+                self._client, "POST", "/api/v2/_/c/k6", json={}
+            ),
+            backpressure=self.backpressure,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise GovKzError("gov.kz news headers returned invalid payload")
+        result = {str(key): str(value) for key, value in payload.items() if value is not None}
+        if len(result) > 32 or sum(len(k) + len(v) for k, v in result.items()) > 4000:
+            raise GovKzError("gov.kz news headers exceed bounds")
+        return result
+
     def _special_headers(self, kind: str) -> dict[str, str]:
         if kind != "news":
             return {}
         try:
-            response = self._client.post("/api/v2/_/c/k6", json={})
+            response = guarded_http_call(
+                "gov_kz",
+                lambda: bounded_http_request(
+                    self._client, "POST", "/api/v2/_/c/k6", json={}
+                ),
+                backpressure=self.backpressure,
+            )
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError):
@@ -322,8 +385,7 @@ class GovKzProvider:
             )
         if kind == "news":
             return (
-                f"{self.base_url}/memleket/entities/{project}/press/news/details/{item_id}"
-                "?lang=ru"
+                f"{self.base_url}/memleket/entities/{project}/press/news/details/{item_id}?lang=ru"
             )
         return f"{self.base_url}/memleket/entities/{project}/documents/details/{item_id}?lang=ru"
 

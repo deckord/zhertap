@@ -1,21 +1,25 @@
 import json
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from shapely.geometry import box, mapping
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+import app.auction_v2 as auction_v2_module
 import app.services as services
 import app.web as web
 from app.auction_commercial import add_workspace_member, ensure_team_workspace
+from app.auction_decision_snapshot import DECISION_ENGINE_VERSION
 from app.auction_service import AuctionFilters, AuctionSyncResult
+from app.auction_shortlist import ShortlistReason, ShortlistResult
 from app.auction_v2 import (
     AuctionV2Filters,
     AuctionV2FullSyncResult,
@@ -48,13 +52,18 @@ from app.auction_v2 import (
     sync_auction_v2_sources,
     update_auction_v2_pipeline,
 )
+from app.auction_verdict import RULES_VERSION as VERDICT_RULES_VERSION
 from app.config import settings
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
     Account,
     AuctionCrawlRun,
+    AuctionDecisionSnapshot,
     AuctionDocument,
+    AuctionDocumentExtractionState,
+    AuctionDueDiligenceAttachment,
+    AuctionDueDiligenceRequest,
     AuctionEvidence,
     AuctionLot,
     AuctionLotChange,
@@ -85,6 +94,144 @@ def build_session() -> Session:
     )
     Base.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_catalog_missing_analysis_uses_lightweight_placeholder_without_builder(monkeypatch) -> None:
+    with build_session() as session:
+        for index in range(30):
+            lot = make_lot(cadastre=f"21-318-001-{index:03d}")
+            lot.id = str(uuid.uuid4())
+            lot.source_lot_id = f"catalog-missing-{index}"
+            session.add(lot)
+        session.commit()
+
+        def fail_builder(*_args, **_kwargs):
+            raise AssertionError("catalog must not execute the detail analysis lookup per lot")
+
+        monkeypatch.setattr(auction_v2_module, "build_auction_v2_analysis", fail_builder)
+        payloads, total = list_auction_v2_lots(
+            session,
+            AuctionV2Filters(base=AuctionFilters()),
+            limit=30,
+        )
+
+        assert total == 30
+        assert len(payloads) == 30
+        assert {payload.analysis.risk_level for payload in payloads} == {"unknown"}
+        assert all(payload.shortlist_result is not None for payload in payloads)
+        assert not any(payload.shortlist_result.interesting for payload in payloads)
+
+
+def test_map_cache_waiter_never_falls_through_to_expensive_build(monkeypatch) -> None:
+    with build_session() as session:
+        monkeypatch.setattr(settings, "auction_cache_enabled", True)
+        monkeypatch.setattr(auction_v2_module.shared_json_cache, "get", lambda *_args: None)
+        monkeypatch.setattr(
+            auction_v2_module.shared_json_cache,
+            "acquire_build_lock",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            auction_v2_module.shared_json_cache,
+            "wait_for_value",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def fail_catalog(*_args, **_kwargs):
+            raise AssertionError("only the build-lock owner may build the map snapshot")
+
+        monkeypatch.setattr(auction_v2_module, "list_auction_v2_lots", fail_catalog)
+        payload = list_auction_v2_map_markers(
+            session,
+            AuctionV2Filters(base=AuctionFilters()),
+            account_id=str(uuid.uuid4()),
+        )
+
+        assert payload["building"] is True
+        assert payload["markers"] == []
+
+
+def test_map_boundary_reader_rejects_topologically_invalid_geometry() -> None:
+    raw_payload = json.dumps(
+        {
+            "geometry_geojson": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [76.0, 50.0],
+                        [76.02, 50.02],
+                        [76.0, 50.02],
+                        [76.03, 50.0],
+                        [76.0, 50.0],
+                    ]
+                ],
+            }
+        }
+    )
+
+    assert auction_v2_module._safe_geojson_geometry(raw_payload) is None
+
+
+def test_catalog_filters_and_payload_use_exact_current_decision_snapshot() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        now = datetime.now(UTC)
+        session.add_all([account, lot])
+        session.flush()
+        build_auction_v2_analysis(session, lot, force=True)
+        session.add(
+            AuctionDecisionSnapshot(
+                lot_id=lot.id,
+                engine_version=DECISION_ENGINE_VERSION,
+                rules_version=VERDICT_RULES_VERSION,
+                verdict_engine_version="auction-verdict.v1",
+                scenario_engine_version="auction-scenario-rules.v1",
+                price_engine_version="auction-price-ceiling.v1",
+                formula_version=None,
+                input_hash="a" * 64,
+                is_current=True,
+                stale=False,
+                verdict="requires_check",
+                data_readiness="insufficient",
+                scenario_key="camping",
+                repeat_attempt_count=1,
+                has_repeat=True,
+                evidence_generation_ids_json="{}",
+                source_freshness_json="{}",
+                stale_reasons_json="[]",
+                payload_json="{}",
+                computed_at=now,
+                checked_at=now,
+                created_at=now,
+            )
+        )
+        session.commit()
+
+        rows, total = list_auction_v2_lots(
+            session,
+            AuctionV2Filters(
+                base=AuctionFilters(),
+                investment_verdict="requires_check",
+                data_readiness="insufficient",
+                repeat_auction="repeat",
+                use_scenario="camping",
+            ),
+            account_id=account.id,
+        )
+
+        assert total == 1
+        assert rows[0].decision_snapshot is not None
+        assert rows[0].investment_verdict == "requires_check"
+        assert rows[0].bid_limit_status == "insufficient_data"
+        map_data = list_auction_v2_map_markers(
+            session,
+            AuctionV2Filters(base=AuctionFilters()),
+            account_id=account.id,
+        )
+        assert map_data["query_contract"] == "persisted_projection.v1"
+        assert map_data["markers"][0]["recommended_action"] == "requires_check"
+        assert map_data["markers"][0]["bid_ceiling_kzt"] is None
 
 
 @pytest.fixture(autouse=True)
@@ -600,6 +747,8 @@ def test_auction_v2_admin_list_renders_prepared_analysis_sources_and_evidence() 
         assert "Земельный участок под ИЖС" in response.text
         assert "Риск:" in response.text
         assert "Следующее действие:" in response.text
+        assert "Нет подтверждённой причины выделить лот; требуется дополнить данные" in response.text
+        assert "Данных недостаточно для полной проверки" in response.text
         assert "Открыть лот" in response.text
         assert "Показать лоты" in response.text
         assert "Рынок</span>" in response.text
@@ -620,13 +769,94 @@ def test_auction_v2_admin_list_renders_prepared_analysis_sources_and_evidence() 
         assert payload.lot_scope == "future"
         assert payload.lot_scope_label == "Будущие"
         assert payload.map_embed_url is not None
-        assert "openstreetmap.org/export/embed.html" in payload.map_embed_url
+        assert "www.google.com/maps" in payload.map_embed_url
+        assert "output=embed" in payload.map_embed_url
         assert payload.osm_map_url is not None
         assert analysis.recommended_action in {
             "prepare_official_review",
             "watch_and_check",
             "manual_check",
         }
+
+
+def test_auction_v2_catalog_renders_shortlist_evidence_without_promoting_manual_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        interesting = make_lot()
+        interesting.id = str(uuid.uuid4())
+        interesting.source_lot_id = "shortlist-interesting"
+        interesting.source_search_status = "ApplicationsAccept"
+        manual = make_lot(cadastre="21-318-001-002")
+        manual.id = str(uuid.uuid4())
+        manual.source_lot_id = "shortlist-manual"
+        manual.source_search_status = "Pending"
+        session.add_all([account, interesting, manual])
+        session.commit()
+
+        def shortlist_projection(_session, rows, **_kwargs):
+            results = {}
+            for lot, _snapshot, _geo in rows:
+                if lot.id == interesting.id:
+                    reason = ShortlistReason(
+                        kind="comparative_price",
+                        classification="confirmed",
+                        statement="Цена за сотку на 20.0% ниже медианы строгой выборки",
+                        source="Официальные протоколы E-Qazyna",
+                        source_url="https://example.test/protocol/shortlist-1",
+                        source_date="2026-08-31",
+                        metric="80000 vs 100000 KZT/sotka; 20.0% below; n=4",
+                        compared_with="4 verified same-year alternatives",
+                        comparison_method="strict same-year median",
+                    )
+                    results[lot.id] = ShortlistResult(
+                        lot_id=lot.id,
+                        eligible=True,
+                        interesting=True,
+                        manual_required=False,
+                        reasons=(reason,),
+                        readiness_line="Данные достаточны для проверки",
+                        summary="Есть подтверждённая сравнительная причина",
+                        confirmed=(reason.statement,),
+                        indicators=(),
+                        risks=(),
+                        unchecked=(),
+                        actions=(),
+                    )
+                else:
+                    results[lot.id] = ShortlistResult(
+                        lot_id=lot.id,
+                        eligible=True,
+                        interesting=False,
+                        manual_required=True,
+                        reasons=(),
+                        readiness_line="Данных недостаточно для полной проверки",
+                        summary="Нет подтверждённой причины выделить лот",
+                        confirmed=(),
+                        indicators=(),
+                        risks=(),
+                        unchecked=("Источник сравнения недоступен; проверить вручную",),
+                        actions=("Открыть официальный источник и повторить проверку сравнения",),
+                    )
+            return results
+
+        monkeypatch.setattr(auction_v2_module, "project_shortlist_results", shortlist_projection)
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.get("/cabinet/auctions-v2")
+
+        assert response.status_code == 200
+        assert response.text.count("Интересные лоты · стоит проверить") == 1
+        assert "Цена за сотку на 20.0% ниже медианы строгой выборки" in response.text
+        assert "80000 vs 100000 KZT/sotka; 20.0% below; n=4" in response.text
+        assert "4 verified same-year alternatives" in response.text
+        assert "strict same-year median" in response.text
+        assert "https://example.test/protocol/shortlist-1" in response.text
+        assert "Данные достаточны для проверки" in response.text
+        assert "Требуется ручная проверка источника" in response.text
+        assert "Источник сравнения недоступен; проверить вручную" in response.text
+        assert "Открыть официальный источник и повторить проверку сравнения" in response.text
 
 
 def test_auction_v2_empty_admin_list_explains_empty_catalog_without_diagnostics() -> None:
@@ -731,6 +961,12 @@ def test_auction_v2_admin_can_open_map_view() -> None:
             authorize_client(client, session, account)
             response = client.get("/cabinet/auctions-v2/map")
 
+        persisted_analysis_count = session.scalar(
+            select(func.count(AuctionLotV2Analysis.id))
+        )
+        persisted_geo_count = session.scalar(select(func.count(AuctionLotGeoCheck.id)))
+        persisted_watchlist_count = session.scalar(select(func.count(AuctionWatchlist.id)))
+
         assert response.status_code == 200
         assert "Карта земельных аукционов" in response.text
         assert "auction-v2-map-data" in response.text
@@ -747,6 +983,9 @@ def test_auction_v2_admin_can_open_map_view() -> None:
         assert "auction-v2-map-svg" not in response.text
         assert lot.id in response.text
         assert "51.1282" in response.text
+        assert persisted_analysis_count == 0
+        assert persisted_geo_count == 0
+        assert persisted_watchlist_count == 0
 
 
 def test_auction_v2_admin_list_renders_sort_control() -> None:
@@ -1057,6 +1296,68 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         lot.source_search_status = "ApplicationsAccept"
         session.add_all([account, lot])
         session.commit()
+        document = lot.documents[0]
+        document.storage_status = "downloaded"
+        document.local_path = "auction-documents/test-notice.pdf"
+        document.content_sha256 = "a" * 64
+        document.downloaded_at = web._now()
+        evidence = AuctionEvidence(
+            lot_id=lot.id,
+            evidence_type="document_extraction",
+            status="found",
+            title=f"Извлечение документа #{document.id}: ok",
+            value_text="idempotency:test",
+            source_url=document.source_url,
+            confidence=1.0,
+            raw_payload_json=json.dumps(
+                {
+                    "result": {
+                        "status": "ok",
+                        "candidates": [
+                            {
+                                "field": "lease_term_years",
+                                "value": 10,
+                                "status": "confirmed",
+                                "extractor_version": "auction-legal-doc.v1",
+                            },
+                            {
+                                "field": "development_obligation",
+                                "value": "строительство",
+                                "status": "preliminary",
+                                "extractor_version": "auction-legal-doc.v1+llm",
+                                "evidence_excerpt": "Победитель обязан выполнить строительство",
+                                "page": 2,
+                                "section": "line:4",
+                                },
+                        ],
+                        "conflicts": [],
+                        "pages_processed": 2,
+                        "text_chars_processed": 1200,
+                        "detail": "Срок аренды найден в договоре.",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            observed_at=web._now(),
+        )
+        session.add(evidence)
+        session.flush()
+        session.add(
+            AuctionDocumentExtractionState(
+                document_id=document.id,
+                lot_id=lot.id,
+                document_signature="b" * 64,
+                content_hash=document.content_sha256,
+                document_path=document.local_path,
+                extractor_version="auction-document-extractor/2026.1",
+                writer_version="auction-document-extraction-writer/2026.1",
+                status="ready",
+                current_evidence_id=evidence.id,
+                current_evidence_hash="test",
+                last_validated_at=web._now(),
+            )
+        )
+        session.commit()
 
         with client_for(session) as client:
             authorize_client(client, session, account)
@@ -1097,30 +1398,38 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
 
         pipeline = session.scalar(select(AuctionUserLotPipeline))
         assert detail_response.status_code == 200
-        assert "Предварительный вывод" in detail_response.text
-        assert "Что влияет на решение" in detail_response.text
-        assert "Что ещё нужно уточнить" in detail_response.text
-        assert "Цена и предел ставки" in detail_response.text
-        assert "За сотку" in detail_response.text
-        assert "За весь участок" in detail_response.text
-        assert "Предел Жертап сейчас" in detail_response.text
-        assert "Моё решение и лимит" in detail_response.text
+        assert "Проверка участка" in detail_response.text
+        assert "Что приобретается" in detail_response.text
+        assert "Расположение и окружение" in detail_response.text
+        assert "Цена и рынок" in detail_response.text
+        assert "Перспективность территории" in detail_response.text
+        assert "Генплан / ПДП / красные линии" in detail_response.text
+        assert "Координаты и границы" in detail_response.text
+        assert "Расчёт сделки" in detail_response.text
+        assert "Моё решение" in detail_response.text
         assert "Мой предел ставки за весь участок" in detail_response.text
-        assert "Сохранить решение" in detail_response.text
+        assert "Сохранить" in detail_response.text
         assert "Рабочий процесс до участия" not in detail_response.text
         assert "Перед переходом на E-Qazyna" not in detail_response.text
         assert "Подтверждающие данные" not in detail_response.text
         assert "Решение заблокировано" not in detail_response.text
         assert "Индекс преимущества" not in detail_response.text
-        assert "Моя работа" in detail_response.text
-        assert "Изменить решение" in detail_response.text
-        assert "Экономика" in detail_response.text
+        assert "Моя работа" not in detail_response.text
+        assert "Предел Жертап сейчас" not in detail_response.text
+        assert "ownership" not in detail_response.text
+        assert "Карта появится после сверки" not in detail_response.text
+        assert "Координаты пока не подтверждены" not in detail_response.text
         assert "Документы" in detail_response.text
         assert "Извещение о проведении торгов" in detail_response.text
-        assert "Ссылка найдена" in detail_response.text
-        assert "Пока только ссылка" in detail_response.text
-        assert "Файл хранится у источника" in detail_response.text
-        assert "Открыть документ" in detail_response.text
+        assert "Распознавание готово" in detail_response.text
+        assert "2 факт." in detail_response.text
+        assert "Что важно для решения" in detail_response.text
+        assert "Показать все извлечённые данные" in detail_response.text
+        assert "Проверить обязанность и срок освоения" in detail_response.text
+        assert "Срок аренды" in detail_response.text
+        assert "Обязанность по освоению" in detail_response.text
+        assert "Срок аренды найден в договоре." in detail_response.text
+        assert "Открыть" in detail_response.text
         assert "Статус E-Qazyna" in detail_response.text
         assert "Прием заявок" in detail_response.text
         assert "Можно готовить проверку и заявку" in detail_response.text
@@ -1162,6 +1471,335 @@ def test_auction_v2_detail_and_pipeline_update() -> None:
         assert payload.next_actions[0]["status"] in {"manual", "missing", "warning", "external"}
 
 
+def test_auction_v2_detail_shows_repeat_years_and_start_price_decline() -> None:
+    source_object_url = (
+        "https://jerler.e-qazyna.kz/ru/guest/reestr/objects/list/934/view"
+    )
+    with build_session() as session:
+        account = make_admin_account()
+        current = make_lot(cadastre=None)
+        current.source_object_url = source_object_url
+        current.auction_starts_at = datetime(2026, 3, 1, tzinfo=UTC)
+        current.start_price_kzt = 700_000
+        prior_2024 = AuctionLot(
+            source_lot_id="repeat-2024",
+            title=current.title,
+            region=current.region,
+            district=current.district,
+            locality=current.locality,
+            source_url="https://sauda.e-qazyna.kz/ru/auction/repeat-2024",
+            source_object_url=source_object_url,
+            auction_starts_at=datetime(2024, 3, 1, tzinfo=UTC),
+            start_price_kzt=1_000_000,
+            source_search_status="FailureProtocolSigned",
+        )
+        prior_2025 = AuctionLot(
+            source_lot_id="repeat-2025",
+            title=current.title,
+            region=current.region,
+            district=current.district,
+            locality=current.locality,
+            source_url="https://sauda.e-qazyna.kz/ru/auction/repeat-2025",
+            source_object_url=source_object_url,
+            auction_starts_at=datetime(2025, 3, 1, tzinfo=UTC),
+            start_price_kzt=800_000,
+            source_search_status="FailureProtocolSigned",
+        )
+        session.add_all((account, prior_2024, prior_2025, current))
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.get(f"/cabinet/auctions-v2/{current.id}")
+
+        assert response.status_code == 200
+        assert "История повторных торгов" in response.text
+        assert "3 попытки" in response.text
+        assert "2024–2026" in response.text
+        assert "1 000 000 ₸" in response.text
+        assert "700 000 ₸" in response.text
+        assert "−30.0%" in response.text
+        assert "Цена старта снижалась 2 раза" in response.text
+        assert "не доказывает проблему с участком" in response.text
+
+
+def test_auction_v2_detail_uses_raw_payload_coordinates_when_saved_geo_is_missing() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot(coordinates=True)
+        session.add_all([account, lot])
+        session.commit()
+        build_auction_v2_analysis(session, lot, force=True)
+        session.execute(delete(AuctionLotGeoCheck).where(AuctionLotGeoCheck.lot_id == lot.id))
+        session.add(
+            AuctionLotGeoCheck(
+                lot_id=lot.id,
+                coordinate_status="missing",
+                cadastre_status="found",
+                boundary_status="not_checked",
+                urban_plan_status="not_checked",
+            )
+        )
+        session.commit()
+
+        payload = get_auction_v2_payload(session, lot.id, account_id=account.id)
+
+        assert payload is not None
+        assert payload.geo_check.latitude == 51.1282
+        assert payload.geo_check.longitude == 71.4304
+        assert payload.coordinate_source_label == "Координаты из карточки лота"
+        assert (
+            payload.map_embed_url
+            == "https://www.google.com/maps?q=51.128200,71.430400&z=17&output=embed"
+        )
+        stored_geo_check = session.scalar(
+            select(AuctionLotGeoCheck).where(AuctionLotGeoCheck.lot_id == lot.id)
+        )
+        assert stored_geo_check is not None
+        assert stored_geo_check.latitude is None
+
+
+def test_egkn_lot_url_requires_land_object_id() -> None:
+    lot = make_lot(cadastre="23-248-030")
+
+    assert auction_v2_module._egkn_lot_url(lot) is None
+
+    lot.land_object_id = "334736394851000000"
+
+    assert (
+        auction_v2_module._egkn_lot_url(lot)
+        == "https://map.gov4c.kz/egkn/?id=334736394851000000"
+    )
+
+
+def test_auction_v2_detail_shows_manual_genplan_when_no_planning_layer() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+        build_auction_v2_analysis(session, lot, force=True)
+
+        payload = get_auction_v2_payload(session, lot.id, account_id=account.id)
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.get(f"/cabinet/auctions-v2/{lot.id}")
+
+        assert payload is not None
+        assert payload.planning_status["status"] == "manual_required"
+        assert payload.planning_status["label"] == (
+            "Нет генплана в Жертапе, нужна ручная сверка"
+        )
+        assert response.status_code == 200
+        assert "Нет генплана в Жертапе, нужна ручная сверка" in response.text
+        assert "Нужна ручная сверка" in response.text
+
+
+def test_auction_v2_detail_uses_clear_planning_snapshot_for_red_lines() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        now = datetime.now(UTC)
+        session.add_all([account, lot])
+        session.flush()
+        build_auction_v2_analysis(session, lot, force=True)
+        session.add(
+            AuctionDecisionSnapshot(
+                lot_id=lot.id,
+                engine_version=DECISION_ENGINE_VERSION,
+                rules_version=VERDICT_RULES_VERSION,
+                verdict_engine_version="auction-verdict.v1",
+                scenario_engine_version="auction-scenario-rules.v1",
+                price_engine_version="auction-price-ceiling.v1",
+                formula_version=None,
+                input_hash="b" * 64,
+                is_current=True,
+                stale=False,
+                verdict="requires_check",
+                data_readiness="partial",
+                scenario_key="residential",
+                repeat_attempt_count=0,
+                has_repeat=False,
+                evidence_generation_ids_json="{}",
+                source_freshness_json="{}",
+                stale_reasons_json="[]",
+                payload_json=json.dumps(
+                    {
+                        "scenario_input": {
+                            "planning_context": {
+                                "status": "clear",
+                                "current_use_allowed": True,
+                                "pdp_complete": True,
+                                "future_adverse": [],
+                                "provenance_refs": ["planning:1"],
+                            }
+                        }
+                    }
+                ),
+                computed_at=now,
+                checked_at=now,
+                created_at=now,
+            )
+        )
+        session.commit()
+
+        payload = get_auction_v2_payload(session, lot.id, account_id=account.id)
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.get(f"/cabinet/auctions-v2/{lot.id}")
+
+        assert payload is not None
+        assert payload.planning_status["status"] == "clear"
+        assert payload.planning_status["label"] == "Генплан и ПДП сверены"
+        assert payload.planning_status["red_line_label"] == "Пересечений не найдено"
+        assert response.status_code == 200
+        assert "Генплан и ПДП сверены" in response.text
+        assert "Пересечений не найдено" in response.text
+
+
+def test_refresh_geo_check_preserves_jerler_coordinates_over_invalid_text_point() -> None:
+    with build_session() as session:
+        lot = make_lot(coordinates=False)
+        lot.description = "Координаты 0, 10; кадастровый номер: 23-248-030"
+        session.add(lot)
+        session.flush()
+        geo_check = AuctionLotGeoCheck(
+            lot_id=lot.id,
+            coordinate_status="found",
+            cadastre_status="found",
+            boundary_status="verified",
+            boundary_source="jerler:source_object",
+            latitude=47.022938,
+            longitude=81.745659,
+        )
+        session.add(geo_check)
+        session.flush()
+
+        auction_v2_module._refresh_geo_check(session, lot, geo_check)
+
+        assert geo_check.coordinate_status == "found"
+        assert geo_check.latitude == pytest.approx(47.022938)
+        assert geo_check.longitude == pytest.approx(81.745659)
+        assert geo_check.osm_status == "not_checked"
+        assert auction_v2_module._coordinate_source_label(geo_check) == (
+            "Координаты из Jerler / E-Qazyna"
+        )
+
+
+def test_auction_v2_manual_check_modal_saves_status_note_and_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "auction_v2_document_storage_dir", str(tmp_path))
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "app.tasks.analyze_due_diligence_attachment_task.delay",
+        lambda attachment_id: queued.append(attachment_id),
+    )
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/manual-check",
+                data={
+                    "check_code": "electricity",
+                    "status": "done",
+                    "note": "Ответ энергосетей получен, подключение возможно.",
+                },
+                files={"document": ("answer.pdf", b"%PDF-1.4\nok", "application/pdf")},
+                follow_redirects=True,
+            )
+
+        assert response.status_code == 200
+        assert "Ответ энергосетей получен" in response.text
+        assert "Отработано" in response.text
+        pipeline = session.scalar(select(AuctionUserLotPipeline))
+        assert pipeline is not None
+        inspection = json.loads(pipeline.inspection_json)
+        check = inspection["manual_checks"]["electricity"]
+        assert check["status"] == "done"
+        assert check["documents"][0]["title"] == "answer.pdf"
+        assert (tmp_path / check["documents"][0]["path"]).exists()
+        request = session.scalar(select(AuctionDueDiligenceRequest))
+        attachment = session.scalar(select(AuctionDueDiligenceAttachment))
+        assert request is not None
+        assert request.status == "received"
+        assert request.authority == "Определяется из загруженного ответа"
+        assert attachment is not None
+        assert attachment.request_id == request.id
+        assert attachment.local_path == check["documents"][0]["path"]
+        assert queued == [attachment.id]
+        attachment.extraction_status = "ready"
+        attachment.extraction_json = json.dumps(
+            {
+                "status": "ready",
+                "fact_status": "candidate_only",
+                "candidates": [
+                    {
+                        "field": "restriction",
+                        "value": "Подключение возможно после строительства ТП",
+                        "confidence": 0.91,
+                        "page": 2,
+                        "section": "пункт 4",
+                        "evidence_excerpt": "Подключение возможно после строительства ТП.",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        session.commit()
+        session.query(WebSession).delete()
+        session.commit()
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            detail = client.get(f"/cabinet/auctions-v2/{lot.id}")
+            download = client.get(
+                f"/cabinet/auctions-v2/{lot.id}/due-diligence/requests/"
+                f"{request.id}/attachments/{attachment.id}"
+            )
+        assert detail.status_code == 200
+        assert download.status_code == 200
+        assert download.content == b"%PDF-1.4\nok"
+        assert "Подключение возможно после строительства ТП" in detail.text
+        assert "стр. 2" in detail.text
+
+
+def test_manual_check_upload_rejects_content_that_does_not_match_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "auction_v2_document_storage_dir", str(tmp_path))
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/manual-check",
+                data={"check_code": "electricity", "status": "done"},
+                files={
+                    "document": (
+                        "fake.pdf",
+                        b"<html>not a pdf</html>",
+                        "application/pdf",
+                    )
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 400
+        assert "не соответствует заявленному типу" in response.json()["detail"]
+        assert list(tmp_path.rglob("*")) == []
+        assert session.scalar(select(AuctionUserLotPipeline)) is None
+
+
 def test_auction_v2_detail_hides_duplicate_documents_with_rotating_tokens() -> None:
     with build_session() as session:
         account = make_admin_account()
@@ -1190,6 +1828,39 @@ def test_auction_v2_detail_hides_duplicate_documents_with_rotating_tokens() -> N
 
         assert detail_response.status_code == 200
         assert detail_response.text.count("auction-v2-document-row") == 1
+
+
+def test_auction_v2_detail_opens_downloaded_document_from_local_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "auction_v2_document_storage_dir", str(tmp_path))
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.flush()
+        document = lot.documents[0]
+        document.storage_status = "downloaded"
+        document.local_path = str(tmp_path / "doc.pdf")
+        document.content_sha256 = "a" * 64
+        document.downloaded_at = web._now()
+        Path(document.local_path).write_bytes(b"%PDF-1.4\nlocal")
+        session.commit()
+
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            detail_response = client.get(f"/cabinet/auctions-v2/{lot.id}")
+            file_response = client.get(
+                f"/cabinet/auctions-v2/{lot.id}/documents/{document.id}"
+            )
+
+        assert detail_response.status_code == 200
+        assert f"/cabinet/auctions-v2/{lot.id}/documents/{document.id}" in detail_response.text
+        assert "Открыть PDF" in detail_response.text
+        assert file_response.status_code == 200
+        assert file_response.content == b"%PDF-1.4\nlocal"
+        assert file_response.headers["content-type"].startswith("application/pdf")
 
 
 def test_auction_v2_admin_can_add_market_comparable_from_detail() -> None:
@@ -1231,11 +1902,19 @@ def test_auction_v2_document_sync_downloads_found_documents(
 ) -> None:
     content = b"%PDF-1.4 zhertap document"
     storage_dir = Path("var/test-auction-documents")
+    guard_waits: list[float] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "https://sauda.e-qazyna.kz/doc/100.pdf"
         return httpx.Response(200, content=content)
 
+    real_guard = auction_v2_module.guarded_http_call
+
+    def guarded_spy(*args, **kwargs):
+        guard_waits.append(kwargs.get("wait_for_rate_limit_seconds", 0))
+        return real_guard(*args, **kwargs)
+
+    monkeypatch.setattr(auction_v2_module, "guarded_http_call", guarded_spy)
     monkeypatch.setattr(
         "app.auction_v2.settings.auction_v2_document_storage_dir",
         str(storage_dir),
@@ -1256,6 +1935,7 @@ def test_auction_v2_document_sync_downloads_found_documents(
         session.commit()
 
         document = session.get(AuctionDocument, document_id)
+        extraction_state = session.get(AuctionDocumentExtractionState, document_id)
         assert document is not None
         assert result.checked == 1
         assert result.downloaded == 1
@@ -1266,6 +1946,67 @@ def test_auction_v2_document_sync_downloads_found_documents(
         assert document.downloaded_at is not None
         assert document.local_path is not None
         assert Path(document.local_path).read_bytes() == content
+        assert extraction_state is not None
+        assert extraction_state.status == "pending"
+        assert extraction_state.content_hash == document.content_sha256
+        assert extraction_state.document_path == document.local_path
+        assert guard_waits == [5]
+
+
+def test_auction_v2_document_sync_prioritizes_failed_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_dir = Path("var/test-auction-documents")
+    downloaded_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        downloaded_urls.append(str(request.url))
+        return httpx.Response(200, content=b"%PDF-1.4 retry")
+
+    monkeypatch.setattr(
+        "app.auction_v2.settings.auction_v2_document_storage_dir",
+        str(storage_dir),
+    )
+    with build_session() as session:
+        failed_lot = make_lot()
+        failed_lot.id = "failed-lot"
+        failed_lot.source_lot_id = "failed-lot"
+        failed_lot.documents[0].source_url = "https://sauda.e-qazyna.kz/doc/failed.pdf"
+        failed_lot.documents[0].storage_status = "failed"
+        failed_lot.documents[0].download_error = "previous transient error"
+
+        linked_lot = make_lot()
+        linked_lot.id = "linked-lot"
+        linked_lot.source_lot_id = "linked-lot"
+        linked_lot.documents[0].source_url = "https://sauda.e-qazyna.kz/doc/linked.pdf"
+        linked_lot.documents[0].storage_status = "linked"
+        linked_lot.documents[0].created_at = web._now() + timedelta(hours=1)
+
+        session.add_all([failed_lot, linked_lot])
+        session.commit()
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            result = sync_auction_v2_documents(
+                session,
+                limit=1,
+                enabled=True,
+                client=client,
+            )
+        session.commit()
+
+        failed_document = session.scalar(
+            select(AuctionDocument).where(AuctionDocument.lot_id == failed_lot.id)
+        )
+        linked_document = session.scalar(
+            select(AuctionDocument).where(AuctionDocument.lot_id == linked_lot.id)
+        )
+        assert result.checked == 1
+        assert result.downloaded == 1
+        assert downloaded_urls == ["https://sauda.e-qazyna.kz/doc/failed.pdf"]
+        assert failed_document is not None
+        assert failed_document.storage_status == "downloaded"
+        assert linked_document is not None
+        assert linked_document.storage_status == "linked"
 
 
 def test_auction_v2_official_readiness_tracks_external_steps_and_user_decision() -> None:
@@ -1580,6 +2321,42 @@ def test_auction_v2_rejects_coordinates_outside_kazakhstan() -> None:
         assert map_data["without_coordinates"] == 1
 
 
+def test_auction_v2_hides_persisted_invalid_geo_check_coordinates() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.flush()
+        session.add(
+            AuctionLotGeoCheck(
+                lot_id=lot.id,
+                latitude=0,
+                longitude=40,
+                coordinate_status="found",
+                boundary_source="egkn:u_view",
+                google_maps_url="https://www.google.com/maps?q=0.000000,40.000000",
+            )
+        )
+        session.commit()
+
+        payload = get_auction_v2_payload(session, lot.id, account_id=account.id)
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            detail_response = client.get(f"/cabinet/auctions-v2/{lot.id}")
+
+        assert payload is not None
+        assert payload.geo_check.latitude is None
+        assert payload.geo_check.longitude is None
+        assert payload.geo_check.google_maps_url is None
+        assert payload.map_embed_url is None
+        assert payload.coordinate_label == "Координаты не подтверждены"
+        assert detail_response.status_code == 200
+        assert "auction-v2-buyer-hero-grid no-map" in detail_response.text
+        assert "auction-v2-buyer-map" not in detail_response.text
+        assert "Карта появится после сверки" not in detail_response.text
+        assert "Координаты пока не подтверждены" not in detail_response.text
+
+
 def test_auction_v2_osm_infrastructure_is_saved_and_used_in_risk_analysis() -> None:
     class FakeOsmProvider:
         def analyze_points(
@@ -1872,7 +2649,7 @@ def test_auction_v2_lot_list_searches_by_cadastre_and_archive_scope() -> None:
         assert archive_rows[0].lot_scope_label == "Архив"
 
 
-def test_auction_v2_lot_list_creates_missing_analysis_for_legacy_lots() -> None:
+def test_auction_v2_lot_list_uses_transient_analysis_for_legacy_lots() -> None:
     with build_session() as session:
         account = make_admin_account()
         active = make_lot(cadastre="01-005-061-079")
@@ -1907,7 +2684,7 @@ def test_auction_v2_lot_list_creates_missing_analysis_for_legacy_lots() -> None:
     assert [item.lot.id for item in active_rows] == [active.id]
     assert archive_total == 1
     assert [item.lot.id for item in archive_rows] == [archived.id]
-    assert analysis_count == 2
+    assert analysis_count == 0
 
 
 def test_auction_v2_lot_list_filters_by_geo_and_osm_status() -> None:
@@ -2017,6 +2794,15 @@ def test_auction_v2_market_comparable_updates_analysis_limits_and_dossier() -> N
             area_ha=0.10,
             price_kzt=2_000_000,
         )
+        create_auction_v2_market_comparable(
+            session,
+            lot_id=lot.id,
+            source_name="OLX",
+            source_url="https://www.olx.kz/d/market-2",
+            title="Второй сопоставимый участок",
+            area_ha=0.11,
+            price_kzt=2_090_000,
+        )
         session.commit()
         analysis = session.scalar(
             select(AuctionLotV2Analysis).where(AuctionLotV2Analysis.lot_id == lot.id)
@@ -2028,8 +2814,8 @@ def test_auction_v2_market_comparable_updates_analysis_limits_and_dossier() -> N
         assert saved is not None
         assert comparable.price_per_sotka == pytest.approx(200_000)
         assert analysis is not None
-        assert analysis.max_bid_market_kzt is not None
-        assert base_market_limit is None or analysis.max_bid_market_kzt >= base_market_limit
+        assert analysis.max_bid_market_kzt is None
+        assert base_market_limit is None
         assert payload is not None
         market_status = next(
             item for item in payload.source_statuses if item["code"] == "krisha_land_market"
@@ -2040,6 +2826,155 @@ def test_auction_v2_market_comparable_updates_analysis_limits_and_dossier() -> N
         assert dossier is not None
         assert "РЫНОЧНЫЕ АНАЛОГИ" in dossier
         assert "https://krisha.kz/a/show/market-1" in dossier
+
+
+def test_auction_v2_short_lease_requires_check_and_hides_bid_limit() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        lot.land_rights = "временное возмездное землепользование сроком на 3 года"
+        lot.purpose = "размещение и эксплуатация объектов отдыха на природе (кемпинг)"
+        session.add_all([account, lot])
+        session.commit()
+
+        build_auction_v2_analysis(session, lot, force=True)
+        payload = get_auction_v2_payload(session, lot.id, account_id=account.id, force=True)
+
+        assert payload is not None
+        assert payload.right_type == "lease_short"
+        assert payload.lease_years == 3
+        assert payload.use_scenario == "camping"
+        assert payload.investment_verdict == "requires_check"
+        assert payload.analysis.max_bid_conservative_kzt is None
+        assert "Краткосрочная аренда" in payload.bid_limit_reason
+        rows, total = list_auction_v2_lots(
+            session,
+            AuctionV2Filters(
+                base=AuctionFilters(),
+                investment_verdict="requires_check",
+            ),
+            account_id=account.id,
+        )
+        assert total == 1
+        assert rows[0].decision_snapshot is None
+
+
+def test_legacy_skip_with_missing_coordinates_never_becomes_do_not_participate() -> None:
+    with build_session() as session:
+        lot = make_lot(coordinates=False)
+        session.add(lot)
+        session.commit()
+
+        analysis = build_auction_v2_analysis(session, lot, force=True)
+        assert analysis is not None
+        analysis.recommended_action = "skip"
+        analysis.risk_level = "high"
+
+        verdict = auction_v2_module._investment_verdict(
+            lot,
+            analysis,
+            [
+                {
+                    "code": "no_coordinates",
+                    "level": "high",
+                    "label": "Нет координат",
+                }
+            ],
+        )
+
+        assert verdict == "requires_check"
+        payload = get_auction_v2_payload(session, lot.id)
+        assert payload is not None
+        assert payload.investment_verdict == "requires_check"
+        assert payload.decision_summary["title"] == "Требует проверки"
+        assert payload.decision_summary["fit_status"] == "not_confirmed"
+        assert all(
+            item.get("code") != "no_coordinates"
+            for item in payload.decision_summary["blockers"]
+        )
+
+
+def test_auction_v2_filters_by_right_type_and_use_scenario() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        shop = make_lot()
+        shop.title = "Участок для строительства магазина"
+        shop.functional_purpose_level2 = "Торговля"
+        lease = make_lot()
+        lease.id = str(uuid.uuid4())
+        lease.source_lot_id = "v2-lot-lease"
+        lease.auction_number = "A-LEASE"
+        lease.title = "Участок для кемпинга"
+        lease.purpose = "размещение кемпинга"
+        lease.functional_purpose_level2 = "Объекты отдыха"
+        lease.land_rights = "право аренды сроком на 3 года"
+        session.add_all([account, shop, lease])
+        session.commit()
+        build_auction_v2_analysis(session, shop, force=True)
+        build_auction_v2_analysis(session, lease, force=True)
+
+        ownership_rows, ownership_total = list_auction_v2_lots(
+            session,
+            AuctionV2Filters(base=AuctionFilters(), right_type="ownership"),
+            account_id=account.id,
+        )
+        camping_rows, camping_total = list_auction_v2_lots(
+            session,
+            AuctionV2Filters(base=AuctionFilters(), use_scenario="camping"),
+            account_id=account.id,
+        )
+
+        assert ownership_total == 1
+        assert ownership_rows[0].lot.id == shop.id
+        assert camping_total == 1
+        assert camping_rows[0].lot.id == lease.id
+
+
+def test_auction_v2_read_paths_do_not_create_geo_rows() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+        build_auction_v2_analysis(session, lot, force=True)
+        session.execute(delete(AuctionLotGeoCheck))
+        session.commit()
+
+        rows, total = list_auction_v2_lots(
+            session,
+            AuctionV2Filters(base=AuctionFilters()),
+            account_id=account.id,
+            prepare_missing=False,
+        )
+        detail = get_auction_v2_payload(session, lot.id, account_id=account.id)
+
+        assert total == 1
+        assert rows
+        assert detail is not None
+        assert session.scalar(select(func.count(AuctionLotGeoCheck.id))) == 0
+        assert not session.new
+        assert not session.dirty
+
+
+def test_auction_v2_detail_serves_stale_snapshot_without_dirtying_it() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+        analysis = build_auction_v2_analysis(session, lot, force=True)
+        analysis.checked_at = web._now() - timedelta(days=2)
+        analysis.summary = "stored snapshot"
+        session.commit()
+        stored_checked_at = analysis.checked_at
+
+        payload = get_auction_v2_payload(session, lot.id, account_id=account.id, force=True)
+
+        assert payload is not None
+        assert payload.analysis.summary == "stored snapshot"
+        assert payload.analysis.checked_at == stored_checked_at
+        assert not session.new
+        assert not session.dirty
 
 
 def test_auction_v2_source_sync_creates_runs_and_query_evidence() -> None:
@@ -2445,6 +3380,42 @@ def test_eqazyna_history_backfill_uses_safe_archive_mode(
     assert payload["deactivated"] == 0
     assert payload["publish_date_windows_count"] == 2
     assert payload["status_counts"]["SuccessProtocolSigned"] == 33
+
+
+def test_eqazyna_history_default_start_year_includes_oldest_production_year() -> None:
+    assert settings.eqazyna_history_sync_start_year == 2019
+
+
+def test_detail_decision_segments_submit_valid_pipeline_stages() -> None:
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "templates"
+        / "site_auction_v2_detail.html"
+    ).read_text(encoding="utf-8")
+    assert 'name="stage" value="interested"' not in template
+    assert 'name="stage" value="rejected"' not in template
+    assert 'name="stage" value="watching"' in template
+    assert 'name="stage" value="checking"' in template
+    assert 'name="stage" value="skipped"' in template
+    assert "Начать проверку" in template
+
+
+def test_official_request_generator_route_is_disabled() -> None:
+    with build_session() as session:
+        account = make_admin_account()
+        lot = make_lot()
+        session.add_all([account, lot])
+        session.commit()
+        with client_for(session) as client:
+            authorize_client(client, session, account)
+            response = client.post(
+                f"/cabinet/auctions-v2/{lot.id}/due-diligence/requests",
+                data={"check_code": "electricity"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 410
+        assert session.scalar(select(func.count(AuctionDueDiligenceRequest.id))) == 0
 
 
 def test_eqazyna_history_publish_date_windows_use_configured_start_year(

@@ -1,7 +1,10 @@
 {% extends "site_base.html" %}
 {% block title %}Оплата доступа — Жертап{% endblock %}
 {% block content %}
-{% set payment_is_upgrade = selected_plan == 'team' and account.auction_plan != 'team' %}
+{% set payment_is_upgrade = selected_plan in ['pro', 'pro_year'] and account.auction_plan not in ['pro', 'pro_year', 'investor', 'team'] %}
+{% set lite_purchased = account.paid_access and account.auction_plan == 'lite' %}
+{% set pro_purchased = account.paid_access and account.auction_plan in ['pro', 'pro_year', 'investor', 'team'] %}
+{% set pro_year_purchased = account.paid_access and account.auction_plan == 'pro_year' %}
 <section class="cabinet-layout">
   {% include "partials/cabinet_sidebar.html" %}
   <div class="cabinet-main">
@@ -10,24 +13,11 @@
       <a class="back-link" href="/cabinet/settings">Настройки</a>
     </div>
 
-    <div class="cabinet-hero payment-hero">
+    <div class="cabinet-hero payment-hero payment-pricing-hero">
       <div>
         <span class="eyebrow">Kaspi / ApiPay</span>
-        <h1>{{ 'Тариф Команда' if selected_plan == 'team' else 'Тариф Инвестор Pro' }}</h1>
-        <p>{% if selected_plan == 'team' %}Общий портфель, роли и единая история решений для команды до 5 человек.{% else %}Полный рабочий стол аукционов, анализ территории и точные данные на один месяц.{% endif %}</p>
-      </div>
-      <div class="detail-actions">
-        {% if access_kind == "paid" and not payment_is_upgrade %}
-          <a class="primary-action" href="/cabinet">Доступ активен</a>
-        {% elif payment and payment_url %}
-          <a class="primary-action" href="{{ payment_url }}" target="_blank" rel="noopener">Открыть Kaspi</a>
-        {% else %}
-          <form method="post" action="/cabinet/payment/start">
-            <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
-            <input type="hidden" name="plan" value="{{ selected_plan }}">
-            <button class="primary-action" type="submit">Получить QR Kaspi</button>
-          </form>
-        {% endif %}
+        <h1>Выберите доступ Жертап</h1>
+        <p>Оплачивайте только те инструменты, которые нужны сейчас. Доступ активируется автоматически после подтверждения оплаты в Kaspi.</p>
       </div>
     </div>
 
@@ -41,7 +31,56 @@
       <div class="form-alert neutral">Статус оплаты обновлен.</div>
     {% endif %}
 
-    <section class="payment-web-grid" data-payment-panel data-current-payment-id="{{ payment_id or '' }}" data-current-payment-url="{{ payment_url or '' }}">
+    <section class="payment-plan-grid payment-plan-grid-three" aria-label="Тарифы Жертап">
+      <article class="payment-plan-card {{ 'is-selected' if selected_plan == 'lite' else '' }} {{ 'is-active' if account.paid_access and account.auction_plan == 'lite' else '' }}">
+        <div class="payment-plan-top"><span class="payment-plan-badge">Для анализа</span><span class="payment-plan-status">{% if account.paid_access and account.auction_plan == 'lite' %}Активен{% endif %}</span></div>
+        <h2>Жертап Lite</h2>
+        <p class="payment-plan-lead">Быстрый поиск и проверка земельных участков без доступа к аукционам.</p>
+        <div class="payment-plan-price"><strong>{{ lite_price_kzt|default(1490) }} ₸</strong><span>в месяц</span></div>
+        <ul class="payment-check-list">
+          <li>Модуль «Новый анализ»</li><li>Сверка по генплану и назначению</li><li>Проверка ограничений и рисков</li><li>Поиск подходящих участков</li><li>История анализов и избранное</li>
+        </ul>
+        {% if lite_purchased %}<button class="secondary-action is-disabled" type="button" disabled>Куплено</button>{% elif pro_purchased %}<button class="secondary-action is-disabled" type="button" disabled>Включено в PRO</button>{% else %}<a class="{{ 'primary-action' if selected_plan == 'lite' else 'secondary-action' }} payment-plan-select" href="/cabinet/payment?plan=lite" data-payment-plan="lite">Выбрать Lite</a>{% endif %}
+      </article>
+      <article class="payment-plan-card payment-plan-card-pro {{ 'is-selected' if selected_plan == 'pro' else '' }} {{ 'is-active' if account.paid_access and account.auction_plan in ['pro', 'pro_year', 'investor', 'team'] else '' }}">
+        <div class="payment-plan-top"><span class="payment-plan-badge payment-plan-badge-pro">Популярный</span><span class="payment-plan-status">{% if account.paid_access and account.auction_plan in ['pro', 'pro_year', 'investor', 'team'] %}Активен{% endif %}</span></div>
+        <h2>Жертап PRO</h2>
+        <p class="payment-plan-lead">Полный рабочий доступ: анализ участков и модуль «Аукционы».</p>
+        <div class="payment-plan-price"><strong>{{ pro_price_kzt|default(30000) }} ₸</strong><span>в месяц</span></div>
+        <ul class="payment-check-list"><li>Всё из тарифа Lite</li><li>Поиск и фильтры аукционов</li><li>Полные карточки и документы лотов</li><li>Анализ лота по генплану и рискам</li><li>Избранное, мониторинги и уведомления</li></ul>
+        {% if pro_purchased %}<button class="secondary-action is-disabled" type="button" disabled>Куплено</button>{% else %}<a class="{{ 'primary-action' if selected_plan == 'pro' else 'secondary-action' }} payment-plan-select" href="/cabinet/payment?plan=pro" data-payment-plan="pro">Выбрать PRO</a>{% endif %}
+      </article>
+      <article class="payment-plan-card payment-plan-card-year {{ 'is-selected' if selected_plan == 'pro_year' else '' }} {{ 'is-active' if account.paid_access and account.auction_plan == 'pro_year' else '' }}">
+        <div class="payment-plan-top"><span class="payment-plan-badge payment-plan-badge-year">Выгоднее на 17%</span><span class="payment-plan-status">{% if account.paid_access and account.auction_plan == 'pro_year' %}Активен{% endif %}</span></div>
+        <h2>Жертап PRO</h2>
+        <p class="payment-plan-lead">Годовой доступ ко всем инструментам без ежемесячного продления.</p>
+        <div class="payment-plan-price"><strong>{{ pro_year_price_kzt|default(300000) }} ₸</strong><span>в год</span></div>
+        <div class="payment-plan-old-price">360 000 ₸ <span>при оплате помесячно</span></div>
+        <ul class="payment-check-list"><li>Всё из тарифа PRO</li><li>Доступ на 12 месяцев</li><li>Экономия 60 000 ₸</li><li>Приоритетная поддержка</li><li>Бесплатные обновления функций</li></ul>
+        {% if pro_year_purchased %}<button class="secondary-action is-disabled" type="button" disabled>Куплено</button>{% else %}<a class="{{ 'primary-action payment-year-action' if selected_plan == 'pro_year' else 'secondary-action' }} payment-plan-select" href="/cabinet/payment?plan=pro_year" data-payment-plan="pro_year">Выбрать PRO годовой</a>{% endif %}
+      </article>
+    </section>
+
+    <section class="payment-comparison panel-modern">
+      <div class="panel-head"><div><span class="eyebrow">Сравнение возможностей</span><h2>Что входит в каждый тариф</h2></div><span class="payment-monthly-note">Оплата за 1 месяц</span></div>
+      <div class="payment-comparison-head payment-comparison-head-four"><span>Функция</span><span>Lite</span><span>PRO (мес.)</span><span>PRO (год)</span></div>
+      <div class="payment-comparison-table">
+        {% for feature, lite, pro in [
+          ('Новый анализ земельных участков', true, true),
+          ('Сверка по генплану и разрешённому использованию', true, true),
+          ('Проверка ограничений и инфраструктуры', true, true),
+          ('История анализов и избранное', true, true),
+          ('Каталог и поиск аукционов', false, true),
+          ('Полная карточка лота и документы', false, true),
+          ('Мониторинг сроков, цен и новых лотов', false, true),
+          ('Расширенная оценка рисков и отчёт', false, true)
+        ] %}
+          <div class="payment-comparison-row payment-comparison-row-four"><span>{{ feature }}</span><strong class="comparison-yes">{{ 'Да' if lite else '—' }}</strong><strong class="comparison-yes">{{ 'Да' if pro else '—' }}</strong><strong class="comparison-yes">{{ 'Да' if pro else '—' }}</strong></div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="payment-web-grid" data-payment-panel data-current-access-paid="{{ 'true' if access_kind == 'paid' else 'false' }}" data-current-payment-id="{{ payment_id or '' }}" data-current-payment-url="{{ payment_url or '' }}">
       <article class="payment-qr-card">
         {% if access_kind == "paid" and not payment_is_upgrade %}
           <div class="payment-success-mark">?</div>
@@ -50,15 +89,15 @@
           <a class="primary-action compact" href="/cabinet/search">Анализ территории</a>
         {% elif payment and payment_url %}
           <div class="qr-box">
-            {% if payment_qr_image_url %}
-              <img src="{{ payment_qr_image_url }}" alt="Официальный QR Kaspi для оплаты">
-            {% elif payment_qr %}
+            {% if payment_qr %}
               <img src="{{ payment_qr }}" alt="QR для оплаты Kaspi">
+            {% elif payment_qr_image_url %}
+              <img src="{{ payment_qr_image_url }}" alt="Официальный QR Kaspi для оплаты">
             {% else %}
               <span>QR недоступен</span>
             {% endif %}
           </div>
-          <h2>{{ payment_amount }} ₸ / месяц</h2>
+          <h2>{{ payment_amount }} ₸ {% if payment_target_plan == 'pro_year' %}/ год{% else %}/ месяц{% endif %}</h2>
           <p>Сканируйте официальный QR в Kaspi. Если вы уже на телефоне или QR не открылся, нажмите кнопку ниже.</p>
           <div class="payment-action-row">
             <a class="primary-action compact" href="{{ payment_url }}" target="_blank" rel="noopener">Открыть Kaspi</a>
@@ -71,7 +110,7 @@
           </div>
         {% else %}
           <div class="qr-placeholder">QR</div>
-          <h2>{{ team_price_kzt if selected_plan == 'team' else price_kzt }} ₸ / месяц</h2>
+          <h2>{% if selected_plan == 'pro_year' %}{{ pro_year_price_kzt }} ₸ / год{% elif selected_plan == 'pro' %}{{ pro_price_kzt }} ₸ / месяц{% else %}{{ lite_price_kzt }} ₸ / месяц{% endif %}</h2>
           <p>Нажмите кнопку, чтобы создать безопасный счет ApiPay/Kaspi для вашего аккаунта.</p>
           {% if apipay_enabled %}
             <form method="post" action="/cabinet/payment/start">
@@ -91,22 +130,16 @@
           <span class="status-pill access-{{ access_kind }}" data-payment-status>{{ access_label }}</span>
         </div>
         <div class="payment-feature-list">
-          {% if selected_plan == 'team' %}
-            <span>До 5 участников в одном рабочем пространстве</span>
-            <span>Общий портфель, этапы и экономика сделок</span>
-            <span>Роли и авторство записей в комнате сделки</span>
-            <span>Все возможности тарифа Инвестор Pro</span>
+          {% if selected_plan in ['pro', 'pro_year'] %}
+            <span>Новый анализ и все проверки Lite</span><span>Каталог, фильтры и карточки аукционов</span><span>Анализ лота, документы и риски</span><span>Избранное, мониторинги и уведомления</span>
           {% else %}
-            <span>Точные координаты, карта, кадастр и документы</span>
-            <span>Лимит ставки, полная себестоимость, ROI и прибыль</span>
-            <span>Портфель, мониторинги и контроль сроков</span>
-            <span>Единый доступ в вебке и Telegram</span>
+            <span>Новый анализ земельных участков</span><span>Сверка по генплану и назначению</span><span>Ограничения, риски и инфраструктура</span><span>История анализов и избранное</span>
           {% endif %}
         </div>
         {% if payment %}
           <dl class="payment-meta">
             <div><dt>Статус счета</dt><dd data-provider-status>{{ payment.payment_provider_status or payment.payment_status }}</dd></div>
-            <div><dt>Тариф</dt><dd>{{ 'Команда' if payment_target_plan == 'team' else 'Инвестор Pro' }}</dd></div>
+            <div><dt>Тариф</dt><dd>{{ 'Жертап PRO годовой' if payment_target_plan == 'pro_year' else ('Жертап PRO' if payment_target_plan == 'pro' else 'Жертап Lite') }}</dd></div>
             <div><dt>Сумма</dt><dd>{{ payment_amount }} ₸</dd></div>
             <div><dt>Создан</dt><dd>{{ payment.created_at.strftime("%d.%m.%Y %H:%M") }}</dd></div>
           </dl>
@@ -115,6 +148,23 @@
     </section>
   </div>
 </section>
-<script src="/static/site-payment.js?v=20260729c"></script>
+<div class="payment-modal" data-payment-modal hidden>
+  <div class="payment-modal-backdrop" data-payment-modal-close></div>
+  <section class="payment-modal-card" role="dialog" aria-modal="true" aria-labelledby="payment-modal-title">
+    <button class="payment-modal-close" type="button" data-payment-modal-close aria-label="Закрыть">×</button>
+    <span class="eyebrow">Kaspi / ApiPay</span>
+    <h2 id="payment-modal-title">Оплата тарифа</h2>
+    <p class="payment-modal-caption" data-payment-modal-caption>Создаём безопасный счёт для оплаты.</p>
+    <div class="payment-modal-loading" data-payment-modal-loading>Генерируем QR-код…</div>
+    <img class="payment-modal-qr" data-payment-modal-qr alt="QR для оплаты Kaspi" hidden>
+    <strong class="payment-modal-amount" data-payment-modal-amount></strong>
+    <div class="payment-modal-error" data-payment-modal-error hidden></div>
+    <div class="payment-modal-actions">
+      <a class="primary-action" data-payment-modal-kaspi href="#" target="_blank" rel="noopener" hidden>Открыть Kaspi</a>
+      <button class="secondary-action" type="button" data-payment-modal-close>Закрыть</button>
+    </div>
+  </section>
+</div>
+<script src="/static/site-payment.js?v=20260821-payment-modal"></script>
 {% endblock %}
 

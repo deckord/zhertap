@@ -3,41 +3,56 @@ from __future__ import annotations
 # ruff: noqa: E501
 import hashlib
 import json
+import math
 import re
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from statistics import median
-from threading import Lock
 from urllib.parse import quote_plus, urlparse
 
 import httpx
 from shapely.geometry import mapping
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.auction_decision_snapshot import (
+    DECISION_ENGINE_VERSION,
+    read_current_decision_snapshot,
+)
+from app.auction_document_extraction_writer import mark_document_extraction_pending
 from app.auction_documents import (
     auction_document_key,
     deduplicate_lot_documents,
     unique_auction_documents,
 )
+from app.auction_map_projection import (
+    AuctionMapProjectionFilter,
+    load_auction_map_projection,
+)
+from app.auction_parcel_geometry import GeometryValidationError, validate_parcel_geojson
 from app.auction_service import (
     AuctionFilters,
     AuctionLotMetrics,
     AuctionSyncResult,
+    auction_lot_coordinates,
     auction_lot_geo_metrics,
     auction_lot_metrics,
     auction_lots_metrics,
     sync_current_auctions,
 )
+from app.auction_shortlist import ShortlistResult
+from app.auction_shortlist_projection import project_shortlist_results
+from app.auction_taxonomy import SCENARIO_KEYWORDS, classify_scenario
+from app.auction_verdict import RULES_VERSION as VERDICT_RULES_VERSION
 from app.config import settings
 from app.models import (
     Account,
     AuctionCrawlRun,
+    AuctionDecisionSnapshot,
     AuctionDocument,
     AuctionEvidence,
     AuctionLot,
@@ -50,14 +65,18 @@ from app.models import (
     AuctionWatchlist,
     AuctionWatchlistNotification,
 )
+from app.provider_backpressure import ProviderBackpressure
+from app.provider_guard import ProviderCallDeferred, guarded_http_call
 from app.providers.egkn import (
     CadastreLookupResult,
     EgknContextFeature,
     EgknProvider,
     EgknProviderError,
 )
+from app.providers.eqazyna import EqazynaError, EqazynaProvider
 from app.providers.gov_kz import GovKzAnnouncement, GovKzError, GovKzProvider
 from app.providers.osm import OsmProvider, OsmProviderError, Surroundings
+from app.shared_cache import shared_json_cache
 
 PIPELINE_STAGES: tuple[tuple[str, str], ...] = (
     ("watching", "Слежу"),
@@ -97,6 +116,19 @@ FIELD_INSPECTION_OPTIONS: tuple[tuple[str, str], ...] = (
     ("completed", "Участок осмотрен"),
     ("repeat_required", "Нужен повторный выезд"),
     ("rejected", "Отказ после осмотра"),
+)
+
+MANUAL_CHECK_TYPES: tuple[tuple[str, str], ...] = (
+    ("electricity", "Электричество"),
+    ("access", "Подъезд"),
+    ("flood", "Паводок / вода"),
+    ("restrictions", "Ограничения / обременения"),
+)
+
+MANUAL_CHECK_STATUS_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("no_data", "Нет данных"),
+    ("in_progress", "В работе"),
+    ("done", "Отработано"),
 )
 
 AUCTION_ACTIVITY_TYPES: tuple[tuple[str, str], ...] = (
@@ -157,6 +189,62 @@ CADASTRE_STATUS_LABELS = {
     "not_found": "ЕГКН не подтвердил",
     "unavailable": "ЕГКН не ответил",
     "unknown": "Не проверено",
+}
+
+RIGHT_TYPE_LABELS = {
+    "ownership": "Частная собственность",
+    "lease_short": "Аренда до 3 лет",
+    "lease_medium": "Аренда 4–10 лет",
+    "lease_long": "Долгосрочная аренда",
+    "lease_unknown": "Аренда, срок не указан",
+    "unknown": "Право не определено",
+}
+
+USE_SCENARIO_LABELS = {
+    "retail": "Магазин и торговля",
+    "roadside": "АЗС и придорожный сервис",
+    "warehouse": "Склад и логистика",
+    "industrial": "Производство",
+    "camping": "Кемпинг и отдых на природе",
+    "hospitality": "Гостиница и база отдыха",
+    "residential": "Жилая застройка",
+    "agriculture": "Сельское хозяйство",
+    "data_center": "Дата-центр",
+    "services": "Услуги и общепит",
+    "other": "Прочее назначение",
+    "unknown": "Назначение не определено",
+}
+
+INVESTMENT_VERDICT_LABELS = {
+    "participate": "Участвовать",
+    "participate_up_to": "Участвовать до предела",
+    "requires_check": "Требует проверки",
+    "high_risk": "Высокий риск",
+    "do_not_participate": "Не участвовать",
+}
+
+BID_LIMIT_STATUS_LABELS = {
+    "calculated": "Предел рассчитан",
+    "insufficient_data": "Недостаточно данных",
+}
+
+DATA_READINESS_LABELS = {
+    "complete": "Данные готовы",
+    "partial": "Частично готовы",
+    "insufficient": "Недостаточно данных",
+    "error": "Ошибка расчёта",
+}
+
+REPEAT_AUCTION_LABELS = {
+    "repeat": "Повторные торги",
+    "first": "Первое размещение",
+}
+
+LEASE_DURATION_LABELS = {
+    "short": "До 3 лет",
+    "medium": "4–10 лет",
+    "long": "Более 10 лет",
+    "unknown": "Срок не указан",
 }
 
 BOUNDARY_STATUS_LABELS = {
@@ -342,6 +430,12 @@ ARCHIVED_EQAZYNA_SEARCH_STATUSES = {
 CHANGE_NOTIFICATION_FIELDS: dict[str, tuple[str, str, str, int]] = {
     "auction_starts_at": ("auction_date_changed", "Изменилась дата торгов", "Дата торгов", 88),
     "start_price_kzt": ("price_changed", "Изменилась стартовая цена", "Стартовая цена", 86),
+    "guarantee_kzt": (
+        "guarantee_changed",
+        "Изменился гарантийный взнос",
+        "Гарантийный взнос",
+        87,
+    ),
     "sale_price_kzt": ("result_changed", "Появился результат торгов", "Цена продажи", 84),
     "source_search_status": (
         "eqazyna_status_changed",
@@ -354,6 +448,12 @@ CHANGE_NOTIFICATION_FIELDS: dict[str, tuple[str, str, str, int]] = {
     "area_ha": ("lot_terms_changed", "Изменились параметры участка", "Площадь", 74),
     "land_rights": ("lot_terms_changed", "Изменилось право на участок", "Право", 74),
     "purpose": ("lot_terms_changed", "Изменилось назначение участка", "Назначение", 74),
+    "description": (
+        "lot_terms_changed",
+        "Изменились условия или описание лота",
+        "Описание",
+        75,
+    ),
 }
 
 DEFAULT_AUCTION_SOURCES: tuple[dict[str, object], ...] = (
@@ -530,6 +630,13 @@ class AuctionV2Filters:
     stage: str | None = None
     deadline_status: str | None = None
     geo_status: str | None = None
+    right_type: str | None = None
+    lease_duration: str | None = None
+    use_scenario: str | None = None
+    investment_verdict: str | None = None
+    bid_limit_status: str | None = None
+    data_readiness: str | None = None
+    repeat_auction: str | None = None
 
 
 @dataclass(slots=True)
@@ -539,6 +646,8 @@ class AuctionV2LotPayload:
     metrics: AuctionLotMetrics
     geo_check: AuctionLotGeoCheck
     pipeline: AuctionUserLotPipeline | None
+    decision_snapshot: AuctionDecisionSnapshot | None
+    shortlist_result: ShortlistResult | None
     map_embed_url: str | None
     osm_map_url: str | None
     readiness: list[dict[str, object]]
@@ -556,6 +665,7 @@ class AuctionV2LotPayload:
     field_inspection: dict[str, object]
     deal_room: dict[str, object]
     decision_summary: dict[str, object]
+    planning_status: dict[str, object]
     risk_label: str
     confidence_label: str
     action_label: str
@@ -567,11 +677,22 @@ class AuctionV2LotPayload:
     eqazyna_status_label: str
     eqazyna_status_note: str
     coordinate_label: str
+    coordinate_source_label: str
     cadastre_label: str
     boundary_label: str
     urban_plan_label: str
     osm_label: str
     engineering_label: str
+    right_type: str
+    right_type_label: str
+    lease_years: float | None
+    use_scenario: str
+    use_scenario_label: str
+    investment_verdict: str
+    investment_verdict_label: str
+    bid_limit_status: str
+    bid_limit_status_label: str
+    bid_limit_reason: str
 
 
 @dataclass(slots=True)
@@ -685,10 +806,7 @@ class AuctionV2NotificationResult:
 
 
 def seed_auction_v2_sources(session: Session) -> list[AuctionSource]:
-    existing = {
-        source.code: source
-        for source in session.scalars(select(AuctionSource)).all()
-    }
+    existing = {source.code: source for source in session.scalars(select(AuctionSource)).all()}
     for spec in DEFAULT_AUCTION_SOURCES:
         code = str(spec["code"])
         source = existing.get(code)
@@ -704,9 +822,7 @@ def seed_auction_v2_sources(session: Session) -> list[AuctionSource]:
 
 def configured_eqazyna_history_statuses() -> list[str]:
     values = [
-        item.strip()
-        for item in settings.eqazyna_history_sync_statuses.split(",")
-        if item.strip()
+        item.strip() for item in settings.eqazyna_history_sync_statuses.split(",") if item.strip()
     ]
     return values or ["SuccessProtocolSigned", "FailureProtocolSigned"]
 
@@ -775,7 +891,9 @@ def _auction_v2_empty_diagnostics(
         }
     latest_run, source = latest
     payload = _json_payload(latest_run.raw_payload_json)
-    fetched = int(payload.get("fetched") or latest_run.items_created + latest_run.items_updated or 0)
+    fetched = int(
+        payload.get("fetched") or latest_run.items_created + latest_run.items_updated or 0
+    )
     url_count = int(payload.get("url_count") or latest_run.items_seen or 0)
     detail_errors = int(payload.get("detail_errors") or 0)
     pages_scanned = int(payload.get("pages_scanned") or 0)
@@ -857,7 +975,9 @@ def _auction_v2_empty_diagnostics(
 
 
 def auction_v2_dashboard(session: Session) -> dict[str, object]:
-    sources = seed_auction_v2_sources(session)
+    # Source seeding belongs to startup/worker flows. A dashboard GET is
+    # deliberately read-only to avoid lock amplification under load.
+    sources = list(session.scalars(select(AuctionSource).order_by(AuctionSource.priority.desc())))
     source_counts: dict[str, int] = {}
     for source in sources:
         source_counts[source.quality_status] = source_counts.get(source.quality_status, 0) + 1
@@ -870,8 +990,7 @@ def auction_v2_dashboard(session: Session) -> dict[str, object]:
     ).all()
     lots_total = session.scalar(select(func.count(AuctionLot.id))) or 0
     active_lots = (
-        session.scalar(select(func.count(AuctionLot.id)).where(AuctionLot.active.is_(True)))
-        or 0
+        session.scalar(select(func.count(AuctionLot.id)).where(AuctionLot.active.is_(True))) or 0
     )
     empty_diagnostics = _auction_v2_empty_diagnostics(
         session,
@@ -890,9 +1009,7 @@ def auction_v2_dashboard(session: Session) -> dict[str, object]:
         "evidence_total": session.scalar(select(func.count(AuctionEvidence.id))) or 0,
         "analysed_lots": session.scalar(select(func.count(AuctionLotV2Analysis.id))) or 0,
         "high_score_lots": session.scalar(
-            select(func.count(AuctionLotV2Analysis.id)).where(
-                AuctionLotV2Analysis.score >= 75
-            )
+            select(func.count(AuctionLotV2Analysis.id)).where(AuctionLotV2Analysis.score >= 75)
         )
         or 0,
         "high_risk_lots": session.scalar(
@@ -907,7 +1024,15 @@ def auction_v2_dashboard(session: Session) -> dict[str, object]:
             )
         )
         or 0,
-        "sources": sources,
+        "sources": [
+            {
+                "code": source.code,
+                "name": source.name,
+                "base_url": source.base_url,
+                "quality_status": source.quality_status,
+            }
+            for source in sources
+        ],
         "source_cards": [
             {
                 "code": source.code,
@@ -944,23 +1069,21 @@ def auction_v2_dashboard(session: Session) -> dict[str, object]:
     }
 
 
-_dashboard_cache_lock = Lock()
-_dashboard_cache: tuple[float, dict[str, object]] | None = None
-
-
 def cached_auction_v2_dashboard(session: Session, *, ttl_seconds: int = 15) -> dict[str, object]:
-    """Reuse global auction statistics briefly so every page load avoids 15 count queries."""
-    if settings.app_env.strip().lower() not in {"production", "prod"}:
-        return auction_v2_dashboard(session)
-
-    now = time.monotonic()
-    with _dashboard_cache_lock:
-        global _dashboard_cache
-        if _dashboard_cache is not None and now - _dashboard_cache[0] < ttl_seconds:
-            return _dashboard_cache[1]
-        dashboard = auction_v2_dashboard(session)
-        _dashboard_cache = (time.monotonic(), dashboard)
-        return dashboard
+    """Reuse global statistics across web workers through the shared cache."""
+    if settings.auction_cache_enabled:
+        cached = shared_json_cache.get("auction-dashboard-v2", "global")
+        if isinstance(cached, dict):
+            return cached
+    dashboard = auction_v2_dashboard(session)
+    if settings.auction_cache_enabled:
+        shared_json_cache.set(
+            "auction-dashboard-v2",
+            "global",
+            dashboard,
+            ttl_seconds=max(5, ttl_seconds),
+        )
+    return dashboard
 
 
 def auction_v2_analytics_payload(
@@ -971,6 +1094,22 @@ def auction_v2_analytics_payload(
     locality: str | None = None,
     limit: int = 80,
 ) -> dict[str, object]:
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "region": region or "",
+                "district": district or "",
+                "locality": locality or "",
+                "limit": limit,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    if settings.auction_cache_enabled:
+        cached = shared_json_cache.get("auction-analytics-v1", cache_key)
+        if isinstance(cached, dict):
+            return cached
     rows = session.execute(
         select(AuctionLot, AuctionLotV2Analysis, AuctionLotGeoCheck)
         .outerjoin(AuctionLotV2Analysis, AuctionLotV2Analysis.lot_id == AuctionLot.id)
@@ -987,7 +1126,9 @@ def auction_v2_analytics_payload(
         ).all()
         if lot_id
     }
-    filtered_rows: list[tuple[AuctionLot, AuctionLotV2Analysis | None, AuctionLotGeoCheck | None]] = []
+    filtered_rows: list[
+        tuple[AuctionLot, AuctionLotV2Analysis | None, AuctionLotGeoCheck | None]
+    ] = []
     for lot, analysis, geo_check in rows:
         if not _geo_values_match(lot.region, region):
             continue
@@ -997,7 +1138,10 @@ def auction_v2_analytics_payload(
             continue
         filtered_rows.append((lot, analysis, geo_check))
 
-    totals = _new_analytics_bucket("Все лоты", href=_auction_v2_filter_href(region=region, district=district, locality=locality))
+    totals = _new_analytics_bucket(
+        "Все лоты",
+        href=_auction_v2_filter_href(region=region, district=district, locality=locality),
+    )
     region_buckets: dict[str, dict[str, object]] = {}
     district_buckets: dict[str, dict[str, object]] = {}
     locality_buckets: dict[str, dict[str, object]] = {}
@@ -1088,7 +1232,12 @@ def auction_v2_analytics_payload(
         )
         month_bucket = month_buckets.setdefault(
             month_key,
-            _new_analytics_bucket(_lot_publication_month_label(lot), href=_auction_v2_filter_href(region=region, district=district, locality=locality, lot_scope="all")),
+            _new_analytics_bucket(
+                _lot_publication_month_label(lot),
+                href=_auction_v2_filter_href(
+                    region=region, district=district, locality=locality, lot_scope="all"
+                ),
+            ),
         )
 
         for bucket in (
@@ -1108,7 +1257,7 @@ def auction_v2_analytics_payload(
             )
 
     totals_row = _finalize_analytics_bucket(totals)
-    return {
+    payload = {
         "filters": {
             "region": region or "",
             "district": district or "",
@@ -1125,6 +1274,14 @@ def auction_v2_analytics_payload(
             for _key, bucket in sorted(month_buckets.items(), reverse=True)
         ][:24],
     }
+    if settings.auction_cache_enabled:
+        shared_json_cache.set(
+            "auction-analytics-v1",
+            cache_key,
+            payload,
+            ttl_seconds=settings.auction_cache_ttl_seconds,
+        )
+    return payload
 
 
 def _new_analytics_bucket(
@@ -1318,21 +1475,19 @@ def _geo_values_match(source_value: str | None, filter_value: str | None) -> boo
     source_variants = [source, *_geo_filter_variants(source)]
     wanted_variants = [wanted, *_geo_filter_variants(wanted)]
     source_keys = {
-        _analytics_bucket_key(value)
-        for value in source_variants
-        if _analytics_bucket_key(value)
+        _analytics_bucket_key(value) for value in source_variants if _analytics_bucket_key(value)
     }
     wanted_keys = {
-        _analytics_bucket_key(value)
-        for value in wanted_variants
-        if _analytics_bucket_key(value)
+        _analytics_bucket_key(value) for value in wanted_variants if _analytics_bucket_key(value)
     }
     for source_key in source_keys:
         for wanted_key in wanted_keys:
             if source_key == wanted_key:
                 return True
-            if len(source_key) >= 4 and len(wanted_key) >= 4 and (
-                source_key in wanted_key or wanted_key in source_key
+            if (
+                len(source_key) >= 4
+                and len(wanted_key) >= 4
+                and (source_key in wanted_key or wanted_key in source_key)
             ):
                 return True
     return False
@@ -1435,15 +1590,11 @@ def auction_v2_source_admin_payload(session: Session) -> dict[str, object]:
             "active_sources": sum(1 for source in sources if source.active),
             "runs": session.scalar(select(func.count(AuctionCrawlRun.id))) or 0,
             "errors": session.scalar(
-                select(func.count(AuctionCrawlRun.id)).where(
-                    AuctionCrawlRun.status == "error"
-                )
+                select(func.count(AuctionCrawlRun.id)).where(AuctionCrawlRun.status == "error")
             )
             or 0,
             "warnings": session.scalar(
-                select(func.count(AuctionCrawlRun.id)).where(
-                    AuctionCrawlRun.status == "warning"
-                )
+                select(func.count(AuctionCrawlRun.id)).where(AuctionCrawlRun.status == "warning")
             )
             or 0,
             "evidence": session.scalar(select(func.count(AuctionEvidence.id))) or 0,
@@ -1537,9 +1688,7 @@ def ensure_auction_v2_analyses_for_filters(
     cutoff = datetime.now(UTC) - timedelta(minutes=settings.auction_v2_analysis_ttl_minutes)
     conditions = _preanalysis_lot_conditions(filters)
     conditions.append(
-        _analysis_due_condition(cutoff)
-        if refresh_stale
-        else AuctionLotV2Analysis.id.is_(None)
+        _analysis_due_condition(cutoff) if refresh_stale else AuctionLotV2Analysis.id.is_(None)
     )
     query = (
         select(AuctionLot)
@@ -1660,6 +1809,9 @@ def prepare_auction_v2_worklist(
         ).all()
     )
     evidence_before = session.scalar(select(func.count(AuctionEvidence.id))) or 0
+    # Production SessionLocal keeps loaded work items usable; close the read/write
+    # transaction before every outbound provider phase.
+    session.commit()
     for lot in lots:
         build_auction_v2_analysis(session, lot, force=force)
         _sync_external_query_evidence(session, lot, sources_by_code)
@@ -1768,6 +1920,7 @@ def sync_auction_v2_sources(
     infrastructure_checked = 0
     infrastructure_errors = 0
     if _auction_v2_live_osm_enabled():
+        session.commit()
         infrastructure_checked, infrastructure_errors = _refresh_auction_v2_infrastructure_batch(
             session,
             lots,
@@ -1777,14 +1930,13 @@ def sync_auction_v2_sources(
     gov_kz_matches = 0
     gov_kz_errors: list[str] = []
     if _auction_v2_live_gov_kz_enabled():
+        session.commit()
         gov_kz_source = sources_by_code.get("gov_kz_akimat_announcements")
         if gov_kz_source is not None and gov_kz_source.active:
-            gov_kz_items_seen, gov_kz_matches, gov_kz_errors = (
-                sync_auction_v2_gov_kz_announcements(
-                    session,
-                    lots=lots,
-                    source=gov_kz_source,
-                )
+            gov_kz_items_seen, gov_kz_matches, gov_kz_errors = sync_auction_v2_gov_kz_announcements(
+                session,
+                lots=lots,
+                source=gov_kz_source,
             )
     for lot in lots:
         build_auction_v2_analysis(session, lot, force=force)
@@ -1881,6 +2033,8 @@ def sync_auction_v2_gov_kz_announcements(
     if not projects and not detail_urls:
         return 0, 0, []
 
+    if session.in_transaction():
+        session.commit()
     owned_provider = provider is None
     gov_provider = provider or GovKzProvider(base_url=_gov_kz_base_url(source.base_url))
     try:
@@ -2031,9 +2185,7 @@ def sync_auction_v2_eqazyna_history_backfill(
             run.items_updated = result.updated
             run.finished_at = finished_at
             run.error_message = (
-                f"Ошибки деталей: {result.detail_errors}"
-                if result.detail_errors
-                else None
+                f"Ошибки деталей: {result.detail_errors}" if result.detail_errors else None
             )
             run.raw_payload_json = json.dumps(
                 {
@@ -2058,9 +2210,7 @@ def sync_auction_v2_eqazyna_history_backfill(
         if source is not None:
             source.last_checked_at = finished_at
             source.last_error = (
-                f"Ошибки деталей: {result.detail_errors}"
-                if result.detail_errors
-                else None
+                f"Ошибки деталей: {result.detail_errors}" if result.detail_errors else None
             )
             if status in {"success", "missing"}:
                 source.last_success_at = finished_at
@@ -2139,9 +2289,7 @@ def sync_auction_v2_full_cycle(
         finished_at = datetime.now(UTC)
         eqazyna_run = session.get(AuctionCrawlRun, eqazyna_run_id)
         eqazyna_source = (
-            session.get(AuctionSource, eqazyna_source_id)
-            if eqazyna_source_id is not None
-            else None
+            session.get(AuctionSource, eqazyna_source_id) if eqazyna_source_id is not None else None
         )
         status = (
             "warning"
@@ -2227,8 +2375,7 @@ def sync_auction_v2_full_cycle(
                 v2_result.web_notifications_created + quick_result.web_notifications_created
             ),
             telegram_notifications_sent=(
-                v2_result.telegram_notifications_sent
-                + quick_result.telegram_notifications_sent
+                v2_result.telegram_notifications_sent + quick_result.telegram_notifications_sent
             ),
             notification_errors=v2_result.notification_errors + quick_result.notification_errors,
         ),
@@ -2241,26 +2388,47 @@ def sync_auction_v2_documents(
     limit: int | None = None,
     enabled: bool | None = None,
     client: httpx.Client | None = None,
+    backpressure: ProviderBackpressure | None = None,
+    document_ids: list[int] | None = None,
+    retry_failed: bool = True,
 ) -> AuctionV2DocumentSyncResult:
-    should_download = (
-        settings.auction_v2_document_download_enabled if enabled is None else enabled
-    )
+    should_download = settings.auction_v2_document_download_enabled if enabled is None else enabled
     if not should_download:
         return AuctionV2DocumentSyncResult()
 
     document_limit = limit or settings.auction_v2_document_download_limit
+    retryable_storage_statuses = ("linked", "failed") if retry_failed else ("linked",)
+    document_conditions = [
+        AuctionDocument.source_url != "",
+        or_(
+            AuctionDocument.storage_status.is_(None),
+            AuctionDocument.storage_status.in_(retryable_storage_statuses),
+        ),
+    ]
+    if document_ids is not None:
+        bounded_ids = sorted({int(value) for value in document_ids if int(value) > 0})[:100]
+        if not bounded_ids:
+            return AuctionV2DocumentSyncResult()
+        document_conditions.append(AuctionDocument.id.in_(bounded_ids))
     documents = list(
         session.scalars(
             select(AuctionDocument)
-            .where(
-                AuctionDocument.source_url != "",
-                or_(
-                    AuctionDocument.storage_status.is_(None),
-                    AuctionDocument.storage_status.in_(("linked", "failed")),
-                ),
-            )
+            .join(AuctionLot, AuctionLot.id == AuctionDocument.lot_id)
+            .where(*document_conditions)
             .order_by(
-                AuctionDocument.storage_status == "failed",
+                case(
+                    (
+                        and_(
+                            AuctionLot.active.is_(True),
+                            AuctionLot.source_search_status.in_(
+                                ("ApplicationsAccept", "Pending", "Running")
+                            ),
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                ).asc(),
+                (AuctionDocument.storage_status == "failed").desc(),
                 AuctionDocument.created_at.desc(),
                 AuctionDocument.id.desc(),
             )
@@ -2270,6 +2438,10 @@ def sync_auction_v2_documents(
     result = AuctionV2DocumentSyncResult(checked=len(documents))
     if not documents:
         return result
+    # Detach the bounded worklist and close the implicit read transaction before I/O.
+    for document in documents:
+        session.expunge(document)
+    session.commit()
 
     storage_root = Path(settings.auction_v2_document_storage_dir)
     storage_root.mkdir(parents=True, exist_ok=True)
@@ -2279,38 +2451,163 @@ def sync_auction_v2_documents(
         timeout=settings.eqazyna_timeout_seconds,
         follow_redirects=True,
     )
+    refreshed_document_cache: dict[str, list[object] | None] = {}
     try:
         for document in documents:
             try:
-                response = http_client.get(document.source_url)
-                response.raise_for_status()
-                content = response.content
-                if not content:
-                    raise ValueError("empty document response")
-                if len(content) > max_bytes:
-                    raise ValueError(
-                        f"document is larger than {settings.auction_v2_document_max_mb} MB"
-                    )
-                digest = hashlib.sha256(content).hexdigest()
-                lot_dir = storage_root / _safe_document_path_part(document.lot_id)
-                lot_dir.mkdir(parents=True, exist_ok=True)
-                file_path = lot_dir / _auction_document_file_name(document, digest)
-                file_path.write_bytes(content)
-                document.storage_status = "downloaded"
-                document.local_path = str(file_path)
-                document.content_sha256 = digest
-                document.downloaded_at = datetime.now(UTC)
-                document.download_error = None
+                content = _download_auction_document_content(
+                    http_client,
+                    document,
+                    max_bytes=max_bytes,
+                    backpressure=backpressure,
+                )
+                _persist_downloaded_auction_document(
+                    session,
+                    document,
+                    content,
+                    storage_root=storage_root,
+                )
                 result.downloaded += 1
+                session.commit()
+            except ProviderCallDeferred:
+                session.rollback()
+                raise
             except Exception as exc:
-                document.storage_status = "failed"
-                document.download_error = str(exc)[:1000]
+                session.rollback()
+                if str(exc) == "downloaded response is not a valid PDF":
+                    if _refresh_stale_document_url(session, document, refreshed_document_cache):
+                        current = session.get(AuctionDocument, document.id)
+                        if (
+                            current is not None
+                            and current.storage_status == "linked"
+                            and current.source_url != document.source_url
+                        ):
+                            document.source_url = current.source_url
+                            try:
+                                content = _download_auction_document_content(
+                                    http_client,
+                                    document,
+                                    max_bytes=max_bytes,
+                                    backpressure=backpressure,
+                                )
+                                _persist_downloaded_auction_document(
+                                    session,
+                                    document,
+                                    content,
+                                    storage_root=storage_root,
+                                )
+                                result.downloaded += 1
+                                session.commit()
+                                continue
+                            except ProviderCallDeferred:
+                                session.rollback()
+                                raise
+                            except Exception as retry_exc:
+                                session.rollback()
+                                exc = retry_exc
+                        else:
+                            result.errors += 1
+                            continue
+                current = session.get(AuctionDocument, document.id)
+                if current is not None:
+                    current.storage_status = "failed"
+                    current.download_error = str(exc)[:1000]
+                    session.commit()
                 result.errors += 1
-        session.flush()
     finally:
         if owned_client:
             http_client.close()
     return result
+
+
+def _download_auction_document_content(
+    client: httpx.Client,
+    document: AuctionDocument,
+    *,
+    max_bytes: int,
+    backpressure: ProviderBackpressure | None,
+) -> bytes:
+    response = guarded_http_call(
+        "auction_documents",
+        lambda: _bounded_document_response(client, document.source_url, max_bytes=max_bytes),
+        backpressure=backpressure,
+        wait_for_rate_limit_seconds=5,
+    )
+    content = response.content
+    if not content:
+        raise ValueError("empty document response")
+    if len(content) > max_bytes:
+        raise ValueError(f"document is larger than {settings.auction_v2_document_max_mb} MB")
+    content = _normalize_downloaded_document_content(document, content)
+    if len(content) > max_bytes:
+        raise ValueError(f"normalized document is larger than {settings.auction_v2_document_max_mb} MB")
+    _validate_downloaded_document_content(document, content)
+    return content
+
+
+def _persist_downloaded_auction_document(
+    session: Session,
+    document: AuctionDocument,
+    content: bytes,
+    *,
+    storage_root: Path,
+) -> None:
+    digest = hashlib.sha256(content).hexdigest()
+    lot_dir = storage_root / _safe_document_path_part(document.lot_id)
+    lot_dir.mkdir(parents=True, exist_ok=True)
+    file_path = lot_dir / _auction_document_file_name(document, digest)
+    file_path.write_bytes(content)
+    current = session.get(AuctionDocument, document.id)
+    if current is None:
+        raise ValueError("auction document disappeared during download")
+    current.storage_status = "downloaded"
+    current.local_path = str(file_path)
+    current.content_sha256 = digest
+    current.downloaded_at = datetime.now(UTC)
+    current.download_error = None
+    mark_document_extraction_pending(session, int(current.id))
+
+
+def _bounded_document_response(
+    client: httpx.Client,
+    source_url: str,
+    *,
+    max_bytes: int,
+) -> httpx.Response:
+    """Stream one document and stop before an untrusted body exceeds its cap."""
+    with client.stream("GET", source_url) as response:
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError:
+                declared_size = -1
+            if declared_size > max_bytes:
+                raise ValueError(
+                    f"document is larger than {settings.auction_v2_document_max_mb} MB"
+                )
+        if response.status_code >= 400:
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                request=response.request,
+            )
+        content = bytearray()
+        for chunk in response.iter_bytes():
+            if len(content) + len(chunk) > max_bytes:
+                raise ValueError(
+                    f"document is larger than {settings.auction_v2_document_max_mb} MB"
+                )
+            content.extend(chunk)
+        headers = httpx.Headers(response.headers)
+        headers.pop("Content-Encoding", None)
+        headers.pop("Content-Length", None)
+        return httpx.Response(
+            response.status_code,
+            headers=headers,
+            content=bytes(content),
+            request=response.request,
+        )
 
 
 def _auction_document_file_name(document: AuctionDocument, digest: str) -> str:
@@ -2328,6 +2625,110 @@ def _auction_document_suffix(document: AuctionDocument) -> str:
     return ".bin"
 
 
+def _validate_downloaded_document_content(document: AuctionDocument, content: bytes) -> None:
+    """Reject HTML/error pages saved under an official document URL."""
+    suffix = _auction_document_suffix(document)
+    if suffix == ".pdf":
+        header = content[:1024]
+        if b"%PDF-" not in header:
+            raise ValueError("downloaded response is not a valid PDF")
+
+
+def _normalize_downloaded_document_content(
+    document: AuctionDocument,
+    content: bytes,
+) -> bytes:
+    """Wrap image bytes mislabeled as PDF by the official source into a real PDF."""
+    if _auction_document_suffix(document) != ".pdf" or b"%PDF-" in content[:1024]:
+        return content
+    is_jpeg = content.startswith(b"\xff\xd8\xff")
+    is_png = content.startswith(bytes.fromhex("89504e470d0a1a0a"))
+    if not (is_jpeg or is_png):
+        return content
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            if image.width <= 0 or image.height <= 0 or image.width * image.height > 50_000_000:
+                raise ValueError("source image dimensions are unsafe")
+            converted = image.convert("RGB")
+            output = BytesIO()
+            converted.save(output, format="PDF", resolution=150.0)
+            return output.getvalue()
+    except (Image.DecompressionBombError, OSError) as exc:
+        raise ValueError("source image cannot be normalized to PDF") from exc
+
+
+def _document_title_key(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _match_refreshed_document_url(
+    document: AuctionDocument,
+    refreshed_documents: list[object],
+) -> str | None:
+    wanted = _document_title_key(document.title)
+    if not wanted:
+        return None
+    for refreshed in refreshed_documents:
+        title = _document_title_key(getattr(refreshed, "title", None))
+        url = str(getattr(refreshed, "source_url", "") or "")
+        if title == wanted and url:
+            return url
+    return None
+
+
+def _refresh_stale_document_url(
+    session: Session,
+    document: AuctionDocument,
+    refreshed_cache: dict[str, list[object] | None],
+) -> bool:
+    if "sauda.e-qazyna.kz" not in str(document.source_url or ""):
+        return False
+    lot = session.get(AuctionLot, document.lot_id)
+    if lot is None or not lot.source_url:
+        return False
+    if lot.id not in refreshed_cache:
+        try:
+            refreshed_cache[lot.id] = list(EqazynaProvider().lot_detail(lot.source_url).documents)
+        except (EqazynaError, httpx.HTTPError, ValueError):
+            refreshed_cache[lot.id] = None
+    refreshed_documents = refreshed_cache.get(lot.id)
+    if not refreshed_documents:
+        return False
+    fresh_url = _match_refreshed_document_url(document, refreshed_documents)
+    if not fresh_url or fresh_url == document.source_url:
+        return False
+    current = session.get(AuctionDocument, document.id)
+    if current is None:
+        return False
+    duplicate = session.scalar(
+        select(AuctionDocument).where(
+            AuctionDocument.lot_id == document.lot_id,
+            AuctionDocument.source_url == fresh_url,
+            AuctionDocument.id != document.id,
+        )
+    )
+    if duplicate is not None:
+        current.storage_status = "failed"
+        current.local_path = None
+        current.content_sha256 = None
+        current.downloaded_at = None
+        current.download_error = f"duplicate_fresh_document_url:{duplicate.id}"
+        session.commit()
+        return True
+    current.source_url = fresh_url
+    current.storage_status = "linked"
+    current.local_path = None
+    current.content_sha256 = None
+    current.downloaded_at = None
+    current.download_error = "stale_document_url_refreshed"
+    session.commit()
+    return True
+
+
 def _safe_document_path_part(value: str | None) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value or "").strip("-")
     return cleaned or "unknown-lot"
@@ -2338,7 +2739,12 @@ def _v2_source_sync_status(source: AuctionSource | None) -> str:
         return "skipped"
     if source.code == "eqazyna_current_lots":
         return "success"
-    if source.parser_kind in {"external_link", "planned_search", "planned_dataset", "planned_market"}:
+    if source.parser_kind in {
+        "external_link",
+        "planned_search",
+        "planned_dataset",
+        "planned_market",
+    }:
         return "query_ready"
     if source.quality_status == "manual_required" or source.parser_kind in {
         "manual_or_api",
@@ -2398,6 +2804,151 @@ def _osm_run_status(*, infrastructure_checked: int, infrastructure_errors: int) 
     return "manual_required"
 
 
+def _lot_analysis_text(lot: AuctionLot) -> str:
+    return " ".join(
+        str(value or "")
+        for value in (
+            lot.land_rights,
+            lot.auction_type,
+            lot.title,
+            lot.description,
+            lot.purpose,
+            lot.use_goal,
+            lot.functional_purpose_level2,
+            lot.functional_purpose_level3,
+            lot.functional_purpose_level4,
+        )
+    ).casefold()
+
+
+def _lease_years(lot: AuctionLot) -> float | None:
+    if lot.lease_term_years is not None:
+        return float(lot.lease_term_years)
+    text = _lot_analysis_text(lot)
+    patterns = (
+        r"срок(?:ом)?\s+(?:аренды\s+)?(?:на\s+)?(\d+(?:[.,]\d+)?)\s*(?:лет|года|год)",
+        r"аренд\w*[^.;]{0,80}?(\d+(?:[.,]\d+)?)\s*(?:лет|года|год)",
+        r"землепользован\w*[^.;]{0,80}?(\d+(?:[.,]\d+)?)\s*(?:лет|года|год)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1).replace(",", "."))
+    return None
+
+
+def _right_type(lot: AuctionLot) -> tuple[str, float | None]:
+    text = _lot_analysis_text(lot)
+    years = _lease_years(lot)
+    if any(
+        token in text
+        for token in ("частная собственность", "в собственность", "продажа земельного участка")
+    ) and not any(
+        token in text
+        for token in ("право аренды", "право землепользования", "временное землепользование")
+    ):
+        return "ownership", None
+    if any(token in text for token in ("аренд", "землепользован", "право временного")):
+        if years is None:
+            return "lease_unknown", None
+        if years <= 3:
+            return "lease_short", years
+        if years <= 10:
+            return "lease_medium", years
+        return "lease_long", years
+    return "unknown", years
+
+
+def _use_scenario(lot: AuctionLot) -> str:
+    return classify_scenario(_lot_analysis_text(lot))
+
+
+def _text_columns_condition(keywords: tuple[str, ...]) -> object:
+    columns = (
+        AuctionLot.title,
+        AuctionLot.description,
+        AuctionLot.purpose,
+        AuctionLot.use_goal,
+        AuctionLot.functional_purpose_level2,
+        AuctionLot.functional_purpose_level3,
+        AuctionLot.functional_purpose_level4,
+    )
+    return or_(*(column.ilike(f"%{keyword}%") for column in columns for keyword in keywords))
+
+
+def _right_type_conditions(value: str | None) -> list[object]:
+    if not value:
+        return []
+    rights_text = func.lower(
+        func.coalesce(AuctionLot.land_rights, "") + " " + func.coalesce(AuctionLot.auction_type, "")
+    )
+    lease = or_(rights_text.like("%аренд%"), rights_text.like("%землепольз%"))
+    ownership = or_(
+        rights_text.like("%собствен%"), rights_text.like("%продажа земельного участка%")
+    )
+    if value == "ownership":
+        return [ownership, ~lease]
+    if value == "lease":
+        return [lease]
+    if value == "unknown":
+        return [~lease, ~ownership]
+    return []
+
+
+def _scenario_conditions(value: str | None) -> list[object]:
+    if not value or value not in SCENARIO_KEYWORDS:
+        return []
+    return [_text_columns_condition(SCENARIO_KEYWORDS[value])]
+
+
+def _lease_duration_conditions(value: str | None) -> list[object]:
+    if not value:
+        return []
+    text = func.lower(
+        func.coalesce(AuctionLot.land_rights, "")
+        + " "
+        + func.coalesce(AuctionLot.description, "")
+        + " "
+        + func.coalesce(AuctionLot.auction_type, "")
+    )
+    lease = or_(text.like("%аренд%"), text.like("%землепольз%"))
+    if value == "short":
+        return [
+            lease,
+            or_(
+                *(text.like(f"%{year} год%") for year in range(1, 4)),
+                *(text.like(f"%{year} лет%") for year in range(1, 4)),
+            ),
+        ]
+    if value == "medium":
+        return [
+            lease,
+            or_(
+                *(text.like(f"%{year} год%") for year in range(4, 11)),
+                *(text.like(f"%{year} лет%") for year in range(4, 11)),
+            ),
+        ]
+    if value == "long":
+        common_terms = (15, 20, 25, 30, 49)
+        return [lease, or_(*(text.like(f"%{year} лет%") for year in common_terms))]
+    if value == "unknown":
+        return [lease, ~or_(*(text.like(f"%{year} %") for year in range(1, 51)))]
+    return []
+
+
+def _verdict_filter_conditions(value: str | None) -> list[object]:
+    if value == "requires_check":
+        return [
+            or_(
+                AuctionDecisionSnapshot.id.is_(None),
+                AuctionDecisionSnapshot.verdict == value,
+            )
+        ]
+    if value in INVESTMENT_VERDICT_LABELS:
+        return [AuctionDecisionSnapshot.verdict == value]
+    return []
+
+
 def list_auction_v2_lots(
     session: Session,
     filters: AuctionV2Filters,
@@ -2405,7 +2956,7 @@ def list_auction_v2_lots(
     account_id: str | None = None,
     offset: int = 0,
     limit: int = 30,
-    prepare_missing: bool = True,
+    prepare_missing: bool = False,
 ) -> tuple[list[AuctionV2LotPayload], int]:
     if prepare_missing:
         ensure_auction_v2_analyses_for_filters(
@@ -2418,6 +2969,27 @@ def list_auction_v2_lots(
     conditions.extend(_lot_scope_conditions(filters.lot_scope))
     conditions.extend(_search_conditions(filters.search_query))
     conditions.extend(_eqazyna_status_conditions(filters.eqazyna_status))
+    conditions.extend(_right_type_conditions(filters.right_type))
+    conditions.extend(_lease_duration_conditions(filters.lease_duration))
+    if filters.use_scenario:
+        legacy_scenario = _scenario_conditions(filters.use_scenario)
+        conditions.append(
+            or_(
+                AuctionDecisionSnapshot.scenario_key == filters.use_scenario,
+                and_(AuctionDecisionSnapshot.id.is_(None), *legacy_scenario),
+            )
+        )
+    conditions.extend(_verdict_filter_conditions(filters.investment_verdict))
+    if filters.bid_limit_status == "calculated":
+        conditions.append(AuctionDecisionSnapshot.bid_ceiling_kzt.is_not(None))
+    elif filters.bid_limit_status == "insufficient_data":
+        conditions.append(AuctionDecisionSnapshot.bid_ceiling_kzt.is_(None))
+    if filters.data_readiness in DATA_READINESS_LABELS:
+        conditions.append(AuctionDecisionSnapshot.data_readiness == filters.data_readiness)
+    if filters.repeat_auction == "repeat":
+        conditions.append(AuctionDecisionSnapshot.has_repeat.is_(True))
+    elif filters.repeat_auction == "first":
+        conditions.append(AuctionDecisionSnapshot.has_repeat.is_(False))
     if filters.min_score is not None:
         conditions.append(AuctionLotV2Analysis.score >= filters.min_score)
     if filters.risk_level:
@@ -2430,8 +3002,17 @@ def list_auction_v2_lots(
         conditions.extend(_deadline_conditions(filters.deadline_status))
 
     query = (
-        select(AuctionLot, AuctionLotV2Analysis)
-        .join(AuctionLotV2Analysis, AuctionLotV2Analysis.lot_id == AuctionLot.id)
+        select(AuctionLot, AuctionLotV2Analysis, AuctionDecisionSnapshot)
+        .outerjoin(AuctionLotV2Analysis, AuctionLotV2Analysis.lot_id == AuctionLot.id)
+        .outerjoin(
+            AuctionDecisionSnapshot,
+            and_(
+                AuctionDecisionSnapshot.lot_id == AuctionLot.id,
+                AuctionDecisionSnapshot.engine_version == DECISION_ENGINE_VERSION,
+                AuctionDecisionSnapshot.rules_version == VERDICT_RULES_VERSION,
+                AuctionDecisionSnapshot.is_current.is_(True),
+            ),
+        )
         .options(selectinload(AuctionLot.documents))
     )
     if filters.geo_status:
@@ -2453,13 +3034,28 @@ def list_auction_v2_lots(
         query = query.where(and_(*conditions))
     query = query.order_by(*_auction_v2_sort_order(filters.sort_by))
     total = session.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
-    rows = session.execute(query.offset(offset).limit(limit)).all()
-    lots = [lot for lot, _analysis in rows]
+    raw_rows = session.execute(query.offset(offset).limit(limit)).all()
+    rows = [
+        (
+            lot,
+            analysis if analysis is not None else _transient_auction_v2_analysis(lot),
+            decision_snapshot,
+        )
+        for lot, analysis, decision_snapshot in raw_rows
+    ]
+    lots = [lot for lot, _analysis, _decision in rows]
     pipelines = _pipeline_by_lot(session, account_id=account_id, lot_ids=[lot.id for lot in lots])
     metrics_by_lot = auction_lots_metrics(session, lots)
-    geo_checks = _get_or_build_geo_checks(session, lots)
+    geo_checks = _read_geo_checks(session, lots)
+    shortlist_by_lot = project_shortlist_results(
+        session,
+        (
+            (lot, decision_snapshot, geo_checks[lot.id])
+            for lot, _analysis, decision_snapshot in rows
+        ),
+    )
     payloads: list[AuctionV2LotPayload] = []
-    for lot, analysis in rows:
+    for lot, analysis, decision_snapshot in rows:
         metrics = metrics_by_lot[lot.id]
         geo_check = geo_checks[lot.id]
         payloads.append(
@@ -2469,6 +3065,8 @@ def list_auction_v2_lots(
                 metrics=metrics,
                 geo_check=geo_check,
                 pipeline=pipelines.get(lot.id),
+                decision_snapshot=decision_snapshot,
+                shortlist_result=shortlist_by_lot[lot.id],
             )
         )
     return payloads, int(total)
@@ -2530,10 +3128,80 @@ def list_auction_v2_map_markers(
     limit: int | None = None,
 ) -> dict[str, object]:
     marker_limit = limit or settings.auction_v2_map_limit
+    # The expensive marker snapshot is global for ordinary map browsing. The
+    # small per-account pipeline stage is overlaid with one bounded query after
+    # the shared snapshot is read. A stage-filtered map is intentionally kept
+    # account-specific because the filter changes membership.
+    personalized_filter = bool(filters.stage and account_id)
+    shared_filters = filters if personalized_filter else replace(filters, stage=None)
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "filters": asdict(shared_filters),
+                "account_id": (account_id or "") if personalized_filter else "",
+                "limit": marker_limit,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    cache_namespace = "auction-map-v2"
+    build_lock_token: str | bool | None = None
+    if settings.auction_cache_enabled:
+        cached = shared_json_cache.get(cache_namespace, cache_key)
+        if isinstance(cached, dict):
+            return _personalize_map_payload(session, cached, account_id=account_id)
+        build_lock_token = shared_json_cache.acquire_build_lock(
+            cache_namespace,
+            cache_key,
+            ttl_seconds=20,
+        )
+        if build_lock_token is False:
+            waited = shared_json_cache.wait_for_value(
+                cache_namespace,
+                cache_key,
+                timeout_seconds=0.5,
+            )
+            if isinstance(waited, dict):
+                return _personalize_map_payload(session, waited, account_id=account_id)
+            # Never let lock waiters fall through into the expensive build.
+            # The UI receives an explicit lightweight state and can retry.
+            return _map_building_payload(marker_limit)
+    if _supports_cold_map_projection(shared_filters):
+        try:
+            payload = _cold_map_projection_payload(
+                session,
+                shared_filters,
+                marker_limit=marker_limit,
+            )
+        except Exception:
+            if settings.auction_cache_enabled and isinstance(build_lock_token, str):
+                shared_json_cache.release_build_lock(
+                    cache_namespace,
+                    cache_key,
+                    build_lock_token,
+                )
+            raise
+        if payload is not None:
+            if settings.auction_cache_enabled:
+                shared_json_cache.set(
+                    cache_namespace,
+                    cache_key,
+                    payload,
+                    ttl_seconds=settings.auction_cache_ttl_seconds,
+                )
+                if isinstance(build_lock_token, str):
+                    shared_json_cache.release_build_lock(
+                        cache_namespace,
+                        cache_key,
+                        build_lock_token,
+                    )
+            return _personalize_map_payload(session, payload, account_id=account_id)
     payloads, total = list_auction_v2_lots(
         session,
-        filters,
-        account_id=account_id,
+        shared_filters,
+        account_id=account_id if personalized_filter else None,
         offset=0,
         limit=marker_limit,
     )
@@ -2638,7 +3306,7 @@ def list_auction_v2_map_markers(
         group["longitude"] = round(longitude_sum / mapped, 7) if mapped else None
         serialized_district_groups.append(group)
     serialized_district_groups.sort(key=lambda row: (-int(row["count"]), str(row["label"])))
-    return {
+    payload = {
         "markers": markers,
         "total": int(total),
         "loaded": len(payloads),
@@ -2653,6 +3321,216 @@ def list_auction_v2_map_markers(
         "scope_counts": scope_counts,
         "district_groups": serialized_district_groups,
     }
+    if settings.auction_cache_enabled:
+        shared_json_cache.set(
+            cache_namespace,
+            cache_key,
+            payload,
+            ttl_seconds=settings.auction_cache_ttl_seconds,
+        )
+        if isinstance(build_lock_token, str):
+            shared_json_cache.release_build_lock(
+                cache_namespace,
+                cache_key,
+                build_lock_token,
+            )
+    return _personalize_map_payload(session, payload, account_id=account_id)
+
+
+def _supports_cold_map_projection(filters: AuctionV2Filters) -> bool:
+    return not any(
+        (
+            filters.search_query,
+            filters.stage,
+            filters.deadline_status,
+            filters.geo_status,
+            filters.right_type,
+            filters.lease_duration,
+            filters.use_scenario,
+            filters.investment_verdict,
+            filters.bid_limit_status,
+            filters.data_readiness,
+            filters.repeat_auction,
+            filters.base.purpose_query,
+        )
+    )
+
+
+def _cold_map_projection_payload(
+    session: Session,
+    filters: AuctionV2Filters,
+    *,
+    marker_limit: int,
+) -> dict[str, object] | None:
+    projection = load_auction_map_projection(
+        session,
+        AuctionMapProjectionFilter(
+            region=filters.base.region,
+            district=filters.base.district,
+            locality=filters.base.locality,
+            lot_scope=filters.lot_scope
+            if filters.lot_scope in {"active", "future", "archive", "all"}
+            else "active",
+            eqazyna_status=filters.eqazyna_status,
+            min_price_kzt=filters.base.min_price_kzt,
+            max_price_kzt=filters.base.max_price_kzt,
+            min_area_ha=filters.base.min_area_ha,
+            max_area_ha=filters.base.max_area_ha,
+            min_score=filters.min_score,
+            risk_level=filters.risk_level,
+            confidence_level=filters.confidence_level,
+            recommended_action=filters.recommended_action,
+            limit=min(marker_limit, 500),
+        ),
+    )
+    # Legacy rows may carry coordinates only inside the raw source payload.
+    # Preserve product correctness until the worker has materialized every geo
+    # check; production backfill makes this fallback disappear.
+    if projection.without_coordinates:
+        return None
+    lot_ids = [item.id for item in projection.items]
+    boundaries = _cadastre_boundary_by_lot(session, lot_ids)
+    context_layers = _egkn_context_layers_for_lots(session, lot_ids)
+    markers: list[dict[str, object]] = []
+    groups: dict[tuple[str, str, str], dict[str, object]] = {}
+    risk_counts = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    scope_counts = {"active": 0, "future": 0, "archive": 0}
+    with_boundaries = 0
+    for item in projection.items:
+        key = (item.region, item.district, item.locality)
+        group = groups.setdefault(
+            key,
+            {
+                "id": "district:" + "|".join(key),
+                "label": item.district or item.locality or item.region or "Район не указан",
+                "region": item.region,
+                "district": item.district,
+                "locality": item.locality,
+                "count": 0,
+                "mapped": 0,
+                "lot_ids": [],
+                "latitude_sum": 0.0,
+                "longitude_sum": 0.0,
+            },
+        )
+        group["count"] = int(group["count"]) + 1
+        group["lot_ids"].append(item.id)
+        if item.latitude is None or item.longitude is None:
+            continue
+        group["mapped"] = int(group["mapped"]) + 1
+        group["latitude_sum"] = float(group["latitude_sum"]) + item.latitude
+        group["longitude_sum"] = float(group["longitude_sum"]) + item.longitude
+        risk = item.risk if item.risk in risk_counts else "unknown"
+        risk_counts[risk] += 1
+        if item.scope in scope_counts:
+            scope_counts[item.scope] += 1
+        boundary = boundaries.get(item.id)
+        if boundary:
+            with_boundaries += 1
+        markers.append(
+            {
+                **item.as_marker(),
+                "risk_label": RISK_LABELS.get(risk, risk),
+                "confidence_label": CONFIDENCE_LABELS.get(item.confidence, item.confidence),
+                "legacy_recommended_action": item.recommended_action,
+                "recommended_action": item.investment_verdict,
+                "action_label": INVESTMENT_VERDICT_LABELS.get(
+                    item.investment_verdict,
+                    INVESTMENT_VERDICT_LABELS["requires_check"],
+                ),
+                "deadline_status": item.scope,
+                "deadline_label": LOT_SCOPE_LABELS.get(item.scope, item.scope),
+                "scope_label": LOT_SCOPE_LABELS.get(item.scope, item.scope),
+                "stage": "",
+                "stage_label": "Не в pipeline",
+                "price_text": _money(item.start_price_kzt),
+                "area_text": _area_text(item.area_ha),
+                "price_per_sotka_text": _money(item.price_per_sotka),
+                "osm_map_url": "",
+                "boundary": boundary,
+            }
+        )
+    district_groups: list[dict[str, object]] = []
+    for group in groups.values():
+        mapped = int(group["mapped"])
+        latitude_sum = float(group.pop("latitude_sum"))
+        longitude_sum = float(group.pop("longitude_sum"))
+        group["without_coordinates"] = int(group["count"]) - mapped
+        group["latitude"] = round(latitude_sum / mapped, 7) if mapped else None
+        group["longitude"] = round(longitude_sum / mapped, 7) if mapped else None
+        district_groups.append(group)
+    district_groups.sort(key=lambda row: (-int(row["count"]), str(row["label"])))
+    return {
+        "markers": markers,
+        "total": projection.total,
+        "loaded": projection.loaded,
+        "mapped": projection.mapped,
+        "without_coordinates": projection.without_coordinates,
+        "with_boundaries": with_boundaries,
+        "egkn_layers": context_layers["features"],
+        "egkn_layer_counts": context_layers["counts"],
+        "egkn_layer_total": len(context_layers["features"]),
+        "limit": marker_limit,
+        "risk_counts": risk_counts,
+        "scope_counts": scope_counts,
+        "district_groups": district_groups,
+        "query_contract": projection.query_contract,
+    }
+
+
+def _map_building_payload(marker_limit: int) -> dict[str, object]:
+    return {
+        "markers": [],
+        "total": 0,
+        "loaded": 0,
+        "mapped": 0,
+        "without_coordinates": 0,
+        "with_boundaries": 0,
+        "egkn_layers": [],
+        "egkn_layer_counts": {
+            "free_lands": 0,
+            "pdp": 0,
+            "functional_zones": 0,
+            "engineering": 0,
+        },
+        "egkn_layer_total": 0,
+        "limit": marker_limit,
+        "risk_counts": {"low": 0, "medium": 0, "high": 0, "unknown": 0},
+        "scope_counts": {"active": 0, "future": 0, "archive": 0},
+        "district_groups": [],
+        "building": True,
+    }
+
+
+def _personalize_map_payload(
+    session: Session,
+    payload: dict[str, object],
+    *,
+    account_id: str | None,
+) -> dict[str, object]:
+    if not account_id:
+        return payload
+    raw_markers = payload.get("markers")
+    if not isinstance(raw_markers, list) or not raw_markers:
+        return payload
+    lot_ids = [
+        str(marker.get("id"))
+        for marker in raw_markers
+        if isinstance(marker, dict) and marker.get("id")
+    ]
+    pipelines = _pipeline_by_lot(session, account_id=account_id, lot_ids=lot_ids)
+    personalized = dict(payload)
+    markers: list[dict[str, object]] = []
+    for raw_marker in raw_markers:
+        if not isinstance(raw_marker, dict):
+            continue
+        marker = dict(raw_marker)
+        pipeline = pipelines.get(str(marker.get("id") or ""))
+        marker["stage"] = pipeline.stage if pipeline else ""
+        marker["stage_label"] = _stage_label(pipeline.stage) if pipeline else "Не в pipeline"
+        markers.append(marker)
+    personalized["markers"] = markers
+    return personalized
 
 
 def _cadastre_boundary_by_lot(
@@ -2692,13 +3570,13 @@ def _safe_geojson_geometry(raw_payload_json: str | None) -> dict[str, object] | 
     geometry = payload.get("geometry_geojson")
     if not isinstance(geometry, dict):
         return None
-    geometry_type = geometry.get("type")
-    coordinates = geometry.get("coordinates")
-    if geometry_type not in {"Polygon", "MultiPolygon"} or not isinstance(coordinates, list):
+    try:
+        validate_parcel_geojson(geometry)
+    except GeometryValidationError:
         return None
     return {
-        "type": geometry_type,
-        "coordinates": coordinates,
+        "type": geometry["type"],
+        "coordinates": geometry["coordinates"],
         "source": "ЕГКН",
     }
 
@@ -2794,16 +3672,18 @@ def get_auction_v2_payload(
     )
     if lot is None:
         return None
-    analysis = build_auction_v2_analysis(session, lot, force=force)
+    analysis = build_auction_v2_analysis(session, lot, force=force, persist=False)
     metrics = auction_lot_metrics(session, lot)
-    geo_check = _get_or_build_geo_check(session, lot)
+    geo_check = _read_geo_check(session, lot)
     pipeline = get_auction_v2_pipeline(session, account_id, lot.id) if account_id else None
+    decision_snapshot = read_current_decision_snapshot(session, lot.id)
     return _payload_from_records(
         lot=lot,
         analysis=analysis,
         metrics=metrics,
         geo_check=geo_check,
         pipeline=pipeline,
+        decision_snapshot=decision_snapshot,
     )
 
 
@@ -2941,11 +3821,19 @@ def build_auction_v2_analysis(
     lot: AuctionLot,
     *,
     force: bool = False,
+    persist: bool = True,
 ) -> AuctionLotV2Analysis:
-    seed_auction_v2_sources(session)
+    if persist:
+        seed_auction_v2_sources(session)
     analysis = session.scalar(
         select(AuctionLotV2Analysis).where(AuctionLotV2Analysis.lot_id == lot.id)
     )
+    if analysis is None and not persist:
+        return _transient_auction_v2_analysis(lot)
+    # A web read must never refresh or dirty an existing ORM row. Stale
+    # analyses are refreshed exclusively by the background pipeline.
+    if analysis is not None and not persist:
+        return analysis
     if analysis is not None and not force:
         cutoff = datetime.now(UTC) - timedelta(minutes=settings.auction_v2_analysis_ttl_minutes)
         if _aware(analysis.checked_at) >= cutoff:
@@ -2953,7 +3841,7 @@ def build_auction_v2_analysis(
 
     metrics = auction_lot_metrics(session, lot)
     geo_metrics = auction_lot_geo_metrics(lot)
-    geo_check = _get_or_build_geo_check(session, lot)
+    geo_check = _get_or_build_geo_check(session, lot) if persist else _read_geo_check(session, lot)
     market_stats = _market_comparable_stats(session, lot)
     source_statuses = _source_statuses(session, lot, metrics, geo_check, market_stats)
     risk_flags = _risk_flags(lot, metrics, geo_check, market_stats)
@@ -2977,7 +3865,8 @@ def build_auction_v2_analysis(
 
     if analysis is None:
         analysis = AuctionLotV2Analysis(lot_id=lot.id)
-        session.add(analysis)
+        if persist:
+            session.add(analysis)
 
     now = datetime.now(UTC)
     analysis.score = score
@@ -3004,14 +3893,48 @@ def build_auction_v2_analysis(
     analysis.checked_at = now
     analysis.updated_at = now
 
+    if not persist:
+        return analysis
     _sync_builtin_evidence(session, lot, source_statuses)
-    sources_by_code = {source.code: source for source in session.scalars(select(AuctionSource)).all()}
+    sources_by_code = {
+        source.code: source for source in session.scalars(select(AuctionSource)).all()
+    }
     _sync_external_query_evidence(session, lot, sources_by_code)
-    if geo_metrics.latitude is not None and geo_check.latitude is None:
+    if (
+        geo_check.coordinate_status == "found"
+        and geo_metrics.latitude is not None
+        and geo_check.latitude is None
+        and _valid_kazakhstan_coordinates(geo_metrics.latitude, geo_metrics.longitude)
+    ):
         geo_check.latitude = geo_metrics.latitude
         geo_check.longitude = geo_metrics.longitude
     session.flush()
     return analysis
+
+
+def _transient_auction_v2_analysis(lot: AuctionLot) -> AuctionLotV2Analysis:
+    """Return a lightweight, non-persistent placeholder for an unanalyzed lot."""
+    area_sotka = float(lot.area_ha or 0) * 100
+    price_per_sotka = (
+        float(lot.start_price_kzt) / area_sotka
+        if lot.start_price_kzt is not None and area_sotka > 0
+        else None
+    )
+    now = datetime.now(UTC)
+    return AuctionLotV2Analysis(
+        lot_id=lot.id,
+        score=0,
+        risk_level="unknown",
+        confidence_level="low",
+        recommended_action="inspect",
+        summary="Фоновый анализ ещё не завершён; вывод и предел цены не рассчитаны.",
+        readiness_json="[]",
+        risk_flags_json="[]",
+        source_status_json="[]",
+        price_per_sotka=price_per_sotka,
+        checked_at=now,
+        updated_at=now,
+    )
 
 
 def get_auction_v2_pipeline(
@@ -3118,6 +4041,15 @@ def auction_v2_calendar_payload(
     )
     events: list[dict[str, object]] = []
 
+    def readiness_label(pipeline: AuctionUserLotPipeline) -> str:
+        inspection = _load_pipeline_json(pipeline, "inspection_json")
+        manual_checks = inspection.get("manual_checks")
+        if not isinstance(manual_checks, dict) or not manual_checks:
+            return "Проверки ещё не заполнены"
+        checks = [item for item in manual_checks.values() if isinstance(item, dict)]
+        completed = sum(str(item.get("status") or "") in {"done", "verified"} for item in checks)
+        return f"{completed} из {len(checks)} проверок закрыто"
+
     def append_event(
         *,
         pipeline: AuctionUserLotPipeline,
@@ -3142,6 +4074,7 @@ def auction_v2_calendar_payload(
         events.append(
             {
                 "at": aware_at,
+                "local_at": aware_at.astimezone(timezone(timedelta(hours=5))),
                 "kind": kind,
                 "status": status,
                 "title": title,
@@ -3149,6 +4082,9 @@ def auction_v2_calendar_payload(
                 "lot": lot,
                 "pipeline": pipeline,
                 "stage_label": _stage_label(pipeline.stage) or "В работе",
+                "guarantee_kzt": getattr(lot, "guarantee_kzt", None),
+                "personal_stop_kzt": getattr(pipeline, "max_bid_kzt", None),
+                "readiness_label": readiness_label(pipeline),
                 "url": f"/cabinet/auctions-v2/{lot.id}",
             }
         )
@@ -3202,8 +4138,7 @@ def auction_v2_calendar_payload(
             "overdue": len(overdue),
             "today": sum(row["status"] == "today" for row in events),
             "next_7_days": sum(
-                0 <= (row["at"] - current).total_seconds() <= 7 * 86400
-                for row in events
+                0 <= (row["at"] - current).total_seconds() <= 7 * 86400 for row in events
             ),
         },
     }
@@ -3235,6 +4170,9 @@ INSPECTION_BOOLEAN_FIELDS = {
     "no_flood_signs",
     "boundaries_visible",
 }
+
+MANUAL_CHECK_STATUS_LABELS = dict(MANUAL_CHECK_STATUS_OPTIONS)
+MANUAL_CHECK_LABELS = dict(MANUAL_CHECK_TYPES)
 
 
 def _normalize_pipeline_costs(value: dict[str, float | int | str | None]) -> dict[str, float]:
@@ -3301,20 +4239,128 @@ def _normalize_investment_inputs(
 
 
 def _normalize_field_inspection(
-    value: dict[str, str | bool | None],
-) -> dict[str, str | bool]:
+    value: dict[str, object],
+) -> dict[str, object]:
     statuses = {key for key, _label in FIELD_INSPECTION_OPTIONS}
     status = str(value.get("status") or "not_planned").strip()
     if status not in statuses:
         raise ValueError("Неизвестный статус выезда")
-    normalized: dict[str, str | bool] = {"status": status}
+    normalized: dict[str, object] = {"status": status}
     for key in INSPECTION_BOOLEAN_FIELDS:
         normalized[key] = value.get(key) in {True, "true", "1", "on", "yes"}
-    for key in ("planned_at", "inspected_at", "road_note", "utilities_note", "terrain_note", "surroundings_note", "conclusion"):
+    for key in (
+        "planned_at",
+        "inspected_at",
+        "road_note",
+        "utilities_note",
+        "terrain_note",
+        "surroundings_note",
+        "conclusion",
+    ):
         text = str(value.get(key) or "").strip()
         if text:
             normalized[key] = text[:2000]
+    manual_checks = value.get("manual_checks")
+    if isinstance(manual_checks, dict):
+        normalized["manual_checks"] = _normalize_manual_checks(manual_checks)
     return normalized
+
+
+def _normalize_manual_checks(value: dict[object, object]) -> dict[str, dict[str, object]]:
+    statuses = {key for key, _label in MANUAL_CHECK_STATUS_OPTIONS}
+    allowed = {key for key, _label in MANUAL_CHECK_TYPES}
+    normalized: dict[str, dict[str, object]] = {}
+    for raw_code, raw_item in value.items():
+        code = str(raw_code)
+        if code not in allowed or not isinstance(raw_item, dict):
+            continue
+        status = str(raw_item.get("status") or "no_data")
+        if status not in statuses:
+            status = "no_data"
+        item: dict[str, object] = {
+            "code": code,
+            "label": MANUAL_CHECK_LABELS[code],
+            "status": status,
+            "status_label": MANUAL_CHECK_STATUS_LABELS[status],
+            "note": str(raw_item.get("note") or "").strip()[:2000],
+        }
+        documents: list[dict[str, object]] = []
+        raw_documents = raw_item.get("documents")
+        if isinstance(raw_documents, list):
+            for document in raw_documents[-20:]:
+                if not isinstance(document, dict):
+                    continue
+                document_id = str(document.get("id") or "").strip()
+                path = str(document.get("path") or "").strip()
+                title = str(document.get("title") or "Документ").strip()[:240]
+                if not document_id or not path:
+                    continue
+                documents.append(
+                    {
+                        "id": document_id[:80],
+                        "title": title or "Документ",
+                        "path": path[:1000],
+                        "content_type": str(document.get("content_type") or "")[:120],
+                        "size_bytes": int(document.get("size_bytes") or 0),
+                        "uploaded_at": str(document.get("uploaded_at") or "")[:40],
+                    }
+                )
+        item["documents"] = documents
+        normalized[code] = item
+    return normalized
+
+
+def _manual_check_rows(data: dict[str, object]) -> dict[str, dict[str, object]]:
+    raw = data.get("manual_checks")
+    checks = _normalize_manual_checks(raw) if isinstance(raw, dict) else {}
+    rows: dict[str, dict[str, object]] = {}
+    for code, label in MANUAL_CHECK_TYPES:
+        item = checks.get(code) or {
+            "code": code,
+            "label": label,
+            "status": "no_data",
+            "status_label": MANUAL_CHECK_STATUS_LABELS["no_data"],
+            "note": "",
+            "documents": [],
+        }
+        rows[code] = item
+    return rows
+
+
+def update_auction_v2_manual_check(
+    session: Session,
+    *,
+    account_id: str,
+    lot_id: str,
+    check_code: str,
+    status: str,
+    note: str | None = None,
+    document: dict[str, object] | None = None,
+) -> AuctionUserLotPipeline:
+    if check_code not in MANUAL_CHECK_LABELS:
+        raise ValueError("Неизвестная проверка")
+    if status not in MANUAL_CHECK_STATUS_LABELS:
+        raise ValueError("Неизвестный статус проверки")
+    pipeline = get_auction_v2_pipeline(session, account_id, lot_id, create=True)
+    if pipeline is None:
+        raise ValueError("account is required")
+    raw = _load_pipeline_json(pipeline, "inspection_json")
+    data = _normalize_field_inspection(raw) if raw else {"status": "not_planned"}
+    checks = _manual_check_rows(data)
+    current = dict(checks[check_code])
+    current["status"] = status
+    current["status_label"] = MANUAL_CHECK_STATUS_LABELS[status]
+    current["note"] = str(note or "").strip()[:2000]
+    documents = list(current.get("documents") or [])
+    if document:
+        documents.append(document)
+    current["documents"] = documents[-20:]
+    checks[check_code] = current
+    data["manual_checks"] = checks
+    pipeline.inspection_json = json.dumps(data, ensure_ascii=False)
+    pipeline.updated_at = datetime.now(UTC)
+    session.flush()
+    return pipeline
 
 
 def _investment_case(
@@ -3354,7 +4400,11 @@ def _investment_case(
         verdict = "Доходность ниже запаса риска"
         verdict_status = "warning"
     else:
-        verdict = "Экономика требует проверки рисков" if roi is not None and roi < 25 else "Сценарий выглядит привлекательным"
+        verdict = (
+            "Экономика требует проверки рисков"
+            if roi is not None and roi < 25
+            else "Сценарий выглядит привлекательным"
+        )
         verdict_status = "positive"
     return {
         "inputs": inputs,
@@ -3384,6 +4434,7 @@ def _field_inspection(pipeline: AuctionUserLotPipeline | None) -> dict[str, obje
     data = _normalize_field_inspection(raw) if raw else {"status": "not_planned"}
     status = str(data.get("status") or "not_planned")
     checked = sum(bool(data.get(key)) for key in INSPECTION_BOOLEAN_FIELDS)
+    manual_checks = _manual_check_rows(data)
     return {
         "data": data,
         "status": status,
@@ -3391,6 +4442,7 @@ def _field_inspection(pipeline: AuctionUserLotPipeline | None) -> dict[str, obje
         "checked_count": checked,
         "total_checks": len(INSPECTION_BOOLEAN_FIELDS),
         "completed": status == "completed",
+        "manual_checks": manual_checks,
     }
 
 
@@ -3472,10 +4524,7 @@ def _deal_room(pipeline: AuctionUserLotPipeline | None) -> dict[str, object]:
     return {
         "rows": rows,
         "count": len(rows),
-        "types": [
-            {"value": value, "label": label}
-            for value, label in AUCTION_ACTIVITY_TYPES
-        ],
+        "types": [{"value": value, "label": label} for value, label in AUCTION_ACTIVITY_TYPES],
         "has_expert_requests": any(row["kind"] == "expert_request" for row in rows),
     }
 
@@ -3537,7 +4586,17 @@ def auction_v2_portfolio_payload(
             "blocked_capital_kzt": round(blocked_capital, 2) or None,
             "expected_profit_kzt": round(expected_profit, 2) if profit_count else None,
             "with_economics": profit_count,
-            "won": sum(stage_counts.get(stage, 0) for stage in {"won", "contract_signed", "rights_registered", "development", "listed_for_sale", "sold"}),
+            "won": sum(
+                stage_counts.get(stage, 0)
+                for stage in {
+                    "won",
+                    "contract_signed",
+                    "rights_registered",
+                    "development",
+                    "listed_for_sale",
+                    "sold",
+                }
+            ),
             "closed": stage_counts.get("sold", 0),
         },
         "stages": [
@@ -3553,7 +4612,14 @@ def _cost_estimate(
     pipeline: AuctionUserLotPipeline | None,
 ) -> dict[str, object]:
     costs = _pipeline_costs(pipeline)
-    known_extra = round(sum(costs.values()), 2)
+    investment_inputs = _load_pipeline_json(pipeline, "investment_json")
+    holding_months = float(investment_inputs.get("holding_months") or 0)
+    mandatory_payment = float(lot.additional_payment_kzt or 0)
+    lease_payments = (
+        round(float(lot.annual_rent_kzt or 0) * holding_months / 12, 2) if holding_months else 0
+    )
+    mandatory_total = mandatory_payment + lease_payments
+    known_extra = round(sum(costs.values()) + mandatory_total, 2)
     start_price = float(lot.start_price_kzt or 0)
     guarantee = float(lot.guarantee_kzt or 0)
     unknown = [label for key, label in PIPELINE_COST_FIELDS if key not in costs]
@@ -3566,6 +4632,25 @@ def _cost_estimate(
         "start_price_kzt": start_price or None,
         "guarantee_kzt": guarantee or None,
         "known_extra_costs_kzt": known_extra or None,
+        "mandatory_costs_kzt": mandatory_total or None,
+        "mandatory_items": [
+            item
+            for item in (
+                {
+                    "label": "Обязательный дополнительный платеж",
+                    "value_kzt": mandatory_payment,
+                }
+                if mandatory_payment
+                else None,
+                {
+                    "label": f"Арендная плата за {holding_months:g} мес.",
+                    "value_kzt": lease_payments,
+                }
+                if lease_payments
+                else None,
+            )
+            if item is not None
+        ],
         "planned_purchase_price_kzt": acquisition or None,
         "known_total_cost_kzt": round(acquisition + known_extra, 2) or None,
         "cash_before_auction_kzt": guarantee or None,
@@ -3599,6 +4684,108 @@ def list_auction_v2_market_comparables(
             )
         ).all()
     )
+
+
+def market_comparable_cards(comparables: list[AuctionMarketComparable]) -> list[dict[str, object]]:
+    values = [
+        float(item.price_per_sotka)
+        for item in comparables
+        if item.price_per_sotka is not None and math.isfinite(float(item.price_per_sotka))
+    ]
+    ordered = sorted(values)
+    median = ordered[len(ordered) // 2] if ordered else None
+    if ordered and len(ordered) % 2 == 0:
+        median = (ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2]) / 2
+    deviations = [abs(value - median) for value in values] if median is not None else []
+    mad = sorted(deviations)[len(deviations) // 2] if deviations else None
+    cards: list[dict[str, object]] = []
+    for item in comparables:
+        sale = str(item.listing_status or "").casefold() in {
+            "verified_sale",
+            "sold",
+            "successprotocolsigned",
+        }
+        value = float(item.price_per_sotka) if item.price_per_sotka is not None else None
+        outlier = bool(
+            value is not None
+            and median is not None
+            and len(values) >= 4
+            and (
+                abs(value - median) > max(1.0, median * 0.25)
+                if not mad
+                else abs(value - median) / mad > 3.5
+            )
+        )
+        cards.append(
+            {
+                "id": item.id,
+                "title": item.title,
+                "source_name": item.source_name,
+                "source_url": item.source_url,
+                "area_ha": item.area_ha,
+                "price_kzt": item.price_kzt,
+                "price_per_sotka": item.price_per_sotka,
+                "kind_label": "Подтверждённая продажа" if sale else "Объявление",
+                "quality": "outlier" if outlier else ("verified" if sale else "listing"),
+                "reason": (
+                    "Исключён как ценовой выброс"
+                    if outlier
+                    else "Учитывается как подтверждённая продажа"
+                    if sale
+                    else "Учитывается как ориентир; не подтверждает факт сделки"
+                ),
+            }
+        )
+    return cards
+
+
+def decision_price_card(snapshot: AuctionDecisionSnapshot | None) -> dict[str, object]:
+    if snapshot is None:
+        return {
+            "status": "unknown",
+            "fair_value_low_kzt": None,
+            "fair_value_high_kzt": None,
+            "stop_kzt": None,
+            "data_readiness": "insufficient",
+            "formula_version": None,
+            "reasons": ["Итоговый расчёт ещё не выполнен"],
+        }
+    try:
+        payload = json.loads(snapshot.payload_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    price_analysis = payload.get("price_analysis") if isinstance(payload, dict) else None
+    if not isinstance(price_analysis, dict):
+        price_analysis = {}
+    reasons: list[str] = []
+    for key in ("missing_reasons", "blocker_reasons"):
+        values = price_analysis.get(key)
+        if isinstance(values, list):
+            reasons.extend(str(item).strip()[:240] for item in values if str(item).strip())
+    try:
+        stale = json.loads(snapshot.stale_reasons_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        stale = []
+    stale_labels = {
+        "module_incomplete:market_estimate": "Рыночная оценка неполна",
+        "module_incomplete:history_reference": "История торгов неполна",
+        "module_incomplete:document_coverage": "Документы обработаны не полностью",
+    }
+    if isinstance(stale, list):
+        reasons.extend(stale_labels.get(str(item), str(item)) for item in stale)
+    reasons = list(dict.fromkeys(reason for reason in reasons if reason))[:12]
+    status = str(price_analysis.get("status") or "insufficient")
+    if not reasons and snapshot.bid_ceiling_kzt is None:
+        reasons.append("Не подтверждены все критические входные данные")
+    return {
+        "status": status,
+        "fair_value_low_kzt": snapshot.fair_value_low_kzt,
+        "fair_value_high_kzt": snapshot.fair_value_high_kzt,
+        "stop_kzt": snapshot.bid_ceiling_kzt,
+        "data_readiness": snapshot.data_readiness,
+        "formula_version": snapshot.formula_version,
+        "reasons": reasons,
+    }
 
 
 def create_auction_v2_market_comparable(
@@ -3754,10 +4941,7 @@ def list_auction_v2_watchlists(
             .join(AuctionLotV2Analysis, AuctionLotV2Analysis.lot_id == AuctionLot.id),
             watchlist,
         )
-        match_count = (
-            session.scalar(count_query.where(and_(*conditions)))
-            or 0
-        )
+        match_count = session.scalar(count_query.where(and_(*conditions))) or 0
         top_score_query = _apply_watchlist_joins(
             select(func.max(AuctionLotV2Analysis.score))
             .select_from(AuctionLot)
@@ -3911,8 +5095,7 @@ def auction_v2_watchlist_matches(
             watchlist,
         )
         query = (
-            query
-            .where(and_(*_watchlist_conditions(watchlist)))
+            query.where(and_(*_watchlist_conditions(watchlist)))
             .order_by(
                 AuctionLotV2Analysis.score.desc(),
                 AuctionLot.auction_starts_at.is_(None),
@@ -4285,7 +5468,9 @@ def _risk_notification_events(analysis: AuctionLotV2Analysis) -> list[AuctionV2N
             continue
         code = str(flag.get("code") or "unknown")[:80]
         label = str(flag.get("label") or "Высокий риск")
-        detail = str(flag.get("detail") or "Нужна ручная проверка перед переходом на официальный портал.")
+        detail = str(
+            flag.get("detail") or "Нужна ручная проверка перед переходом на официальный портал."
+        )
         events.append(
             AuctionV2NotificationEvent(
                 event_type="high_risk",
@@ -4457,13 +5642,13 @@ def auction_v2_search_diagnostics(
     elif future_count > 0 and active_count == 0:
         reason = "future_only"
         title = "Номер найден в будущих торгах"
-        summary = (
-            "В текущем списке совпадений нет, но есть будущие торги. Откройте список будущих или режим “Все”."
-        )
+        summary = "В текущем списке совпадений нет, но есть будущие торги. Откройте список будущих или режим “Все”."
     elif active_count > 0:
         reason = "active_elsewhere"
         title = "Номер найден в активных"
-        summary = "Совпадение есть в активных торгах. Вернитесь в список “Активные” или сбросьте фильтры."
+        summary = (
+            "Совпадение есть в активных торгах. Вернитесь в список “Активные” или сбросьте фильтры."
+        )
     else:
         reason = "other_scope"
         title = "Номер найден в другом списке"
@@ -4565,7 +5750,9 @@ def _eqazyna_status_note(lot: AuctionLot) -> str:
     if lot.status:
         return "Статус взят из официальной карточки E-Qazyna; перед участием его нужно сверить на портале."
     if lot.active:
-        return "Лот считается активным в базе Zhertap; официальный статус нужно сверить перед заявкой."
+        return (
+            "Лот считается активным в базе Zhertap; официальный статус нужно сверить перед заявкой."
+        )
     return "Официальный статус не распознан, нужна ручная проверка E-Qazyna."
 
 
@@ -4620,6 +5807,16 @@ def _eqazyna_status_conditions(status: str | None) -> list[object]:
                 AuctionLot.source_search_status == "",
             )
         ]
+    if status_value == "ApplicationsAccept":
+        # Do not let a stale source-list label keep an already-started auction
+        # in the user-facing application-acceptance queue.
+        return [
+            AuctionLot.source_search_status == status_value,
+            or_(
+                AuctionLot.auction_starts_at.is_(None),
+                AuctionLot.auction_starts_at > datetime.now(UTC),
+            ),
+        ]
     if status_value in EQAZYNA_SEARCH_STATUS_LABELS:
         return [AuctionLot.source_search_status == status_value]
     return []
@@ -4634,6 +5831,7 @@ def _search_conditions(search_query: str | None) -> list[object]:
         AuctionLot.auction_number.ilike(pattern),
         AuctionLot.source_lot_id.ilike(pattern),
         AuctionLot.cadastre_number.ilike(pattern),
+        AuctionLot.land_object_id.ilike(pattern),
         AuctionLot.title.ilike(pattern),
         AuctionLot.region.ilike(pattern),
         AuctionLot.district.ilike(pattern),
@@ -4649,6 +5847,7 @@ def _search_conditions(search_query: str | None) -> list[object]:
         comparisons.extend(
             [
                 _sql_digits_only(AuctionLot.cadastre_number).like(digit_pattern),
+                _sql_digits_only(AuctionLot.land_object_id).like(digit_pattern),
                 _sql_digits_only(AuctionLot.source_lot_id).like(digit_pattern),
                 _sql_digits_only(AuctionLot.auction_number).like(digit_pattern),
             ]
@@ -4817,8 +6016,7 @@ def _watchlist_filter_description(watchlist: AuctionWatchlist) -> str:
         )
     if watchlist.geo_status:
         parts.append(
-            "гео: "
-            + GEO_STATUS_LABELS.get(watchlist.geo_status, watchlist.geo_status).lower()
+            "гео: " + GEO_STATUS_LABELS.get(watchlist.geo_status, watchlist.geo_status).lower()
         )
     if watchlist.stage:
         parts.append(f"статус: {_stage_label(watchlist.stage).lower()}")
@@ -4847,9 +6045,7 @@ def _watchlist_conditions(watchlist: AuctionWatchlist) -> list[object]:
     if watchlist.risk_level:
         conditions.append(AuctionLotV2Analysis.risk_level == watchlist.risk_level)
     if watchlist.confidence_level:
-        conditions.append(
-            AuctionLotV2Analysis.confidence_level == watchlist.confidence_level
-        )
+        conditions.append(AuctionLotV2Analysis.confidence_level == watchlist.confidence_level)
     if watchlist.deadline_status:
         conditions.extend(_deadline_conditions(watchlist.deadline_status))
     if watchlist.geo_status:
@@ -4866,6 +6062,8 @@ def _payload_from_records(
     metrics: AuctionLotMetrics,
     geo_check: AuctionLotGeoCheck,
     pipeline: AuctionUserLotPipeline | None,
+    decision_snapshot: AuctionDecisionSnapshot | None = None,
+    shortlist_result: ShortlistResult | None = None,
 ) -> AuctionV2LotPayload:
     deadline_label, deadline_status = _deadline_payload(lot)
     readiness = _json_list(analysis.readiness_json)
@@ -4923,13 +6121,32 @@ def _payload_from_records(
     )
     field_inspection = _field_inspection(pipeline)
     deal_room = _deal_room(pipeline)
+    planning_status = _planning_status_from_snapshot(decision_snapshot)
     lot_scope = _lot_search_scope(lot)
+    right_type, lease_years = _right_type(lot)
+    use_scenario = (
+        decision_snapshot.scenario_key if decision_snapshot is not None else _use_scenario(lot)
+    )
+    if use_scenario not in USE_SCENARIO_LABELS:
+        use_scenario = "unknown"
+    investment_verdict = (
+        decision_snapshot.verdict if decision_snapshot is not None else "requires_check"
+    )
+    if investment_verdict not in INVESTMENT_VERDICT_LABELS:
+        investment_verdict = "requires_check"
+    bid_limit_status = (
+        "calculated"
+        if decision_snapshot is not None and decision_snapshot.bid_ceiling_kzt is not None
+        else "insufficient_data"
+    )
     return AuctionV2LotPayload(
         lot=lot,
         analysis=analysis,
         metrics=metrics,
         geo_check=geo_check,
         pipeline=pipeline,
+        decision_snapshot=decision_snapshot,
+        shortlist_result=shortlist_result,
         map_embed_url=_osm_embed_url(geo_check),
         osm_map_url=_osm_map_url(geo_check),
         readiness=readiness,
@@ -4946,16 +6163,20 @@ def _payload_from_records(
         investment_case=investment_case,
         field_inspection=field_inspection,
         deal_room=deal_room,
-        decision_summary=_lot_decision_summary(
-            lot=lot,
-            analysis=analysis,
-            metrics=metrics,
-            geo_check=geo_check,
-            pipeline=pipeline,
-            review_steps=review_steps,
-            risk_flags=risk_flags,
-            next_actions=next_actions,
+        decision_summary=_snapshot_decision_summary(
+            decision_snapshot,
+            _lot_decision_summary(
+                lot=lot,
+                analysis=analysis,
+                metrics=metrics,
+                geo_check=geo_check,
+                pipeline=pipeline,
+                review_steps=review_steps,
+                risk_flags=risk_flags,
+                next_actions=next_actions,
+            ),
         ),
+        planning_status=planning_status,
         risk_label=RISK_LABELS.get(analysis.risk_level, analysis.risk_level),
         confidence_label=CONFIDENCE_LABELS.get(
             analysis.confidence_level,
@@ -4973,6 +6194,7 @@ def _payload_from_records(
             geo_check.coordinate_status,
             geo_check.coordinate_status,
         ),
+        coordinate_source_label=_coordinate_source_label(geo_check),
         cadastre_label=CADASTRE_STATUS_LABELS.get(
             geo_check.cadastre_status,
             geo_check.cadastre_status,
@@ -4990,7 +6212,133 @@ def _payload_from_records(
             geo_check.engineering_status,
             geo_check.engineering_status,
         ),
+        right_type=right_type,
+        right_type_label=RIGHT_TYPE_LABELS[right_type],
+        lease_years=lease_years,
+        use_scenario=use_scenario,
+        use_scenario_label=USE_SCENARIO_LABELS[use_scenario],
+        investment_verdict=investment_verdict,
+        investment_verdict_label=INVESTMENT_VERDICT_LABELS[investment_verdict],
+        bid_limit_status=bid_limit_status,
+        bid_limit_status_label=BID_LIMIT_STATUS_LABELS[bid_limit_status],
+        bid_limit_reason=(
+            "Предел рассчитан строгим движком и сохранён с версией формулы."
+            if bid_limit_status == "calculated"
+            else _bid_limit_reason(lot, analysis, metrics)
+            if decision_snapshot is None
+            else "Предел не рассчитан: критичные входные данные ещё не подтверждены."
+        ),
     )
+
+
+def _snapshot_decision_summary(
+    snapshot: AuctionDecisionSnapshot | None,
+    legacy: dict[str, object],
+) -> dict[str, object]:
+    if snapshot is None:
+        return {
+            **legacy,
+            "status": "checking",
+            "title": "Требует проверки",
+            "detail": "Итоговый анализ ещё не рассчитан фоновым процессом.",
+        }
+    status_by_verdict = {
+        "participate": "ready",
+        "participate_up_to": "ready",
+        "requires_check": "checking",
+        "high_risk": "warning",
+        "do_not_participate": "blocked",
+    }
+    detail_by_verdict = {
+        "participate": "Проверки завершены, цена находится в допустимом диапазоне.",
+        "participate_up_to": "Участвовать можно только до сохранённого рекомендуемого предела.",
+        "requires_check": "Не хватает критичных юридических, пространственных или рыночных данных.",
+        "high_risk": "Обнаружены существенные риски, требующие отдельного решения инвестора.",
+        "do_not_participate": "Критичный фактор или цена делают участие нецелесообразным.",
+    }
+    return {
+        **legacy,
+        "status": status_by_verdict.get(snapshot.verdict, "checking"),
+        "title": INVESTMENT_VERDICT_LABELS.get(snapshot.verdict, "Требует проверки"),
+        "detail": detail_by_verdict.get(
+            snapshot.verdict,
+            "Итог требует дополнительной проверки.",
+        ),
+    }
+
+
+def _planning_status_from_snapshot(snapshot: AuctionDecisionSnapshot | None) -> dict[str, object]:
+    fallback = {
+        "status": "manual_required",
+        "tone": "warning",
+        "label": "Нет генплана в Жертапе, нужна ручная сверка",
+        "pdp_label": "Нет генплана в Жертапе",
+        "red_line_label": "Нужна ручная сверка",
+        "detail": "В Жертапе нет подтвержденного цифрового слоя генплана/ПДП для этого лота.",
+    }
+    if snapshot is None or not snapshot.payload_json:
+        return fallback
+    try:
+        payload = json.loads(snapshot.payload_json)
+    except json.JSONDecodeError:
+        return fallback
+    if not isinstance(payload, dict):
+        return fallback
+    scenario_input = payload.get("scenario_input")
+    if not isinstance(scenario_input, dict):
+        return fallback
+    planning = scenario_input.get("planning_context")
+    if not isinstance(planning, dict):
+        return fallback
+
+    status = planning.get("status")
+    pdp_complete = planning.get("pdp_complete") is True
+    future_adverse_raw = planning.get("future_adverse")
+    future_adverse = (
+        [str(item) for item in future_adverse_raw if isinstance(item, str)]
+        if isinstance(future_adverse_raw, list)
+        else []
+    )
+    current_use_allowed = planning.get("current_use_allowed")
+    has_provenance = bool(planning.get("provenance_refs"))
+    if status == "clear" and pdp_complete and not future_adverse:
+        return {
+            "status": "clear",
+            "tone": "done",
+            "label": "Генплан и ПДП сверены",
+            "pdp_label": "Слой найден, пересечение проверено",
+            "red_line_label": "Пересечений не найдено",
+            "detail": "Цифровые слои Жертапа не показали красные линии или будущие ограничения по участку.",
+        }
+    if status == "conflict" or future_adverse or current_use_allowed is False:
+        adverse_label = ", ".join(_planning_adverse_label(item) for item in future_adverse)
+        return {
+            "status": "conflict",
+            "tone": "warning",
+            "label": "Есть градостроительный риск",
+            "pdp_label": "Найдено пересечение или запрет",
+            "red_line_label": adverse_label or "Нужно разобрать конфликт",
+            "detail": "Перед ставкой нужно вручную открыть слой и понять, мешает ли он использованию участка.",
+        }
+    if status in {"partial", "unknown"} or not pdp_complete or not has_provenance:
+        return fallback
+    if status == "error":
+        return {
+            **fallback,
+            "label": "Ошибка проверки генплана, нужна ручная сверка",
+            "detail": "Система не смогла корректно обработать пространственные слои по этому лоту.",
+        }
+    return fallback
+
+
+def _planning_adverse_label(kind: str) -> str:
+    labels = {
+        "planned_road": "планируемая дорога",
+        "red_line": "красная линия",
+        "engineering_corridor": "инженерный коридор",
+        "szz": "санитарная зона",
+    }
+    return labels.get(kind, kind)
 
 
 def _json_list(value: str | None) -> list[dict[str, object]]:
@@ -5140,6 +6488,79 @@ def _get_or_build_geo_check(session: Session, lot: AuctionLot) -> AuctionLotGeoC
     return geo_check
 
 
+def _read_geo_check(session: Session, lot: AuctionLot) -> AuctionLotGeoCheck:
+    geo_check = session.scalar(
+        select(AuctionLotGeoCheck).where(AuctionLotGeoCheck.lot_id == lot.id)
+    )
+    if geo_check is not None:
+        return _geo_check_display_fallback(lot, geo_check)
+    transient = AuctionLotGeoCheck(lot_id=lot.id)
+    _refresh_geo_check(session, lot, transient)
+    return _geo_check_display_fallback(lot, transient)
+
+
+def _read_geo_checks(
+    session: Session,
+    lots: list[AuctionLot],
+) -> dict[str, AuctionLotGeoCheck]:
+    if not lots:
+        return {}
+    lot_ids = [lot.id for lot in lots]
+    checks = {
+        geo_check.lot_id: geo_check
+        for geo_check in session.scalars(
+            select(AuctionLotGeoCheck).where(AuctionLotGeoCheck.lot_id.in_(lot_ids))
+        ).all()
+    }
+    for lot in lots:
+        if lot.id not in checks:
+            transient = AuctionLotGeoCheck(lot_id=lot.id)
+            _refresh_geo_check(session, lot, transient)
+            checks[lot.id] = transient
+        checks[lot.id] = _geo_check_display_fallback(lot, checks[lot.id])
+    return checks
+
+
+def _geo_check_display_fallback(lot: AuctionLot, geo_check: AuctionLotGeoCheck) -> AuctionLotGeoCheck:
+    if geo_check.latitude is not None and geo_check.longitude is not None:
+        if _valid_kazakhstan_coordinates(geo_check.latitude, geo_check.longitude):
+            return geo_check
+        display = AuctionLotGeoCheck(lot_id=lot.id)
+        display.cadastre_status = geo_check.cadastre_status
+        display.boundary_status = geo_check.boundary_status
+        display.urban_plan_status = geo_check.urban_plan_status
+        display.osm_status = geo_check.osm_status
+        display.engineering_status = geo_check.engineering_status
+        display.market_status = geo_check.market_status
+        display.coordinate_status = "unconfirmed"
+        display.egkn_url = geo_check.egkn_url or _egkn_lot_url(lot)
+        display.notes = "Сохраненные координаты вне допустимых границ Казахстана."
+        return display
+    coordinates = auction_lot_coordinates(lot)
+    if coordinates is None:
+        return geo_check
+    latitude, longitude = coordinates
+    if not _valid_kazakhstan_coordinates(latitude, longitude):
+        return geo_check
+    display = AuctionLotGeoCheck(lot_id=lot.id)
+    display.cadastre_status = geo_check.cadastre_status
+    display.boundary_status = geo_check.boundary_status
+    display.urban_plan_status = geo_check.urban_plan_status
+    display.osm_status = geo_check.osm_status
+    display.engineering_status = geo_check.engineering_status
+    display.market_status = geo_check.market_status
+    display.latitude = latitude
+    display.longitude = longitude
+    display.coordinate_status = "found"
+    display.google_maps_url = _google_maps_url(lot, latitude, longitude)
+    display.egkn_url = geo_check.egkn_url or _egkn_lot_url(lot)
+    display.notes = (
+        "Координаты найдены в данных лота. Перед ставкой нужно сверить границы "
+        "по ЕГКН или официальной схеме."
+    )
+    return display
+
+
 def _data_quality_summary(
     *,
     lot: AuctionLot,
@@ -5183,9 +6604,7 @@ def _data_quality_summary(
             "official_lot",
             "Официальный лот",
             "Есть" if lot.source_url else "Нет",
-            "Ссылка на карточку E-Qazyna"
-            if lot.source_url
-            else "Нужна официальная ссылка на лот",
+            "Ссылка на карточку E-Qazyna" if lot.source_url else "Нужна официальная ссылка на лот",
             status="done" if lot.source_url else "missing",
             anchor="#auction-v2-decision-form",
         ),
@@ -5202,17 +6621,11 @@ def _data_quality_summary(
         row(
             "cadastre",
             "Кадастровый номер",
-            "Сверено"
-            if geo_check.cadastre_status == "verified"
-            else "Проверить",
+            "Сверено" if geo_check.cadastre_status == "verified" else "Проверить",
             "Номер и координаты подтверждены ЕГКН"
             if geo_check.cadastre_status == "verified"
             else "Сверить номер, границу и площадь в ЕГКН",
-            status=(
-                "done"
-                if geo_check.cadastre_status == "verified"
-                else "manual"
-            ),
+            status=("done" if geo_check.cadastre_status == "verified" else "manual"),
             anchor="#auction-v2-map-panel",
         ),
         row(
@@ -5318,6 +6731,15 @@ def _refresh_geo_check(
     geo_metrics = auction_lot_geo_metrics(lot)
     previous_latitude = geo_check.latitude
     previous_longitude = geo_check.longitude
+    stored_coordinates_valid = (
+        geo_check.latitude is not None
+        and geo_check.longitude is not None
+        and _valid_kazakhstan_coordinates(geo_check.latitude, geo_check.longitude)
+    )
+    authoritative_boundary_source = geo_check.boundary_source in {
+        "egkn:u_view",
+        "jerler:source_object",
+    }
     now = datetime.now(UTC)
     if not lot.cadastre_number:
         geo_check.cadastre_status = "missing"
@@ -5326,13 +6748,17 @@ def _refresh_geo_check(
 
     if geo_metrics.latitude is not None and geo_metrics.longitude is not None:
         if not _valid_kazakhstan_coordinates(geo_metrics.latitude, geo_metrics.longitude):
-            geo_check.coordinate_status = "unconfirmed"
-            geo_check.latitude = None
-            geo_check.longitude = None
+            if stored_coordinates_valid:
+                geo_check.coordinate_status = "found"
+            else:
+                geo_check.coordinate_status = "unconfirmed"
+                geo_check.latitude = None
+                geo_check.longitude = None
         else:
             geo_check.coordinate_status = "found"
-            geo_check.latitude = geo_metrics.latitude
-            geo_check.longitude = geo_metrics.longitude
+            if not (authoritative_boundary_source and stored_coordinates_valid):
+                geo_check.latitude = geo_metrics.latitude
+                geo_check.longitude = geo_metrics.longitude
     elif geo_check.latitude is not None and geo_check.longitude is not None:
         if not _valid_kazakhstan_coordinates(geo_check.latitude, geo_check.longitude):
             geo_check.coordinate_status = "unconfirmed"
@@ -5400,6 +6826,9 @@ def _refresh_auction_v2_infrastructure_batch(
     if not candidates:
         return 0, 0
 
+    # Candidate discovery may create/refresh ORM state. Close that transaction
+    # before the bounded Overpass call; persistence resumes only after I/O.
+    session.commit()
     osm_provider = provider or OsmProvider()
     points = [(row.latitude, row.longitude) for row in candidates]
     try:
@@ -5438,31 +6867,52 @@ def _refresh_auction_v2_egkn_batch(
     provider: EgknProvider | None = None,
     force: bool = False,
 ) -> tuple[int, int, int]:
-    candidates: list[tuple[AuctionLot, AuctionLotGeoCheck]] = []
+    candidates: list[
+        tuple[AuctionLot, AuctionLotGeoCheck, str, str | None, str | None, str | None]
+    ] = []
     for lot in lots[: settings.auction_v2_egkn_batch_size]:
         if not lot.cadastre_number:
             continue
         geo_check = _get_or_build_geo_check(session, lot)
         if force or _egkn_check_due(geo_check):
-            candidates.append((lot, geo_check))
+            candidates.append(
+                (
+                    lot,
+                    geo_check,
+                    lot.cadastre_number,
+                    lot.region,
+                    lot.district,
+                    lot.locality,
+                )
+            )
     if not candidates:
         return 0, 0, 0
 
+    session.commit()
     egkn_provider = provider or EgknProvider()
     checked = 0
     verified = 0
     errors = 0
-    for lot, geo_check in candidates:
+    outcomes: list[
+        tuple[AuctionLot, AuctionLotGeoCheck, CadastreLookupResult | None, Exception | None]
+    ] = []
+    for lot, geo_check, cadastre, region, district, locality in candidates:
         checked += 1
         try:
             result = egkn_provider.lookup_cadastre(
-                lot.cadastre_number or "",
-                region=lot.region,
-                district=lot.district,
-                locality=lot.locality,
+                cadastre,
+                region=region,
+                district=district,
+                locality=locality,
             )
-        except (EgknProviderError, OSError) as exc:
-            _mark_egkn_unavailable(geo_check, exc)
+        except (ProviderCallDeferred, EgknProviderError, OSError) as exc:
+            outcomes.append((lot, geo_check, None, exc))
+            continue
+        outcomes.append((lot, geo_check, result, None))
+
+    for lot, geo_check, result, error in outcomes:
+        if error is not None:
+            _mark_egkn_unavailable(geo_check, error)
             _upsert_evidence(
                 session,
                 lot=lot,
@@ -5470,12 +6920,13 @@ def _refresh_auction_v2_egkn_batch(
                 evidence_type="cadastre_boundary",
                 title=f"ЕГКН: {lot.cadastre_number}",
                 status="unavailable",
-                value_text=str(exc)[:1000],
+                value_text=str(error)[:1000],
                 source_url=geo_check.egkn_url or source.base_url,
                 confidence=0.2,
             )
             errors += 1
             continue
+        assert result is not None
         _apply_egkn_lookup_result(session, lot, geo_check, source, result)
         if result.found:
             verified += 1
@@ -5493,53 +6944,71 @@ def _refresh_auction_v2_egkn_context_batch(
 ) -> tuple[int, int, int]:
     if not _auction_v2_egkn_context_enabled():
         return 0, 0, 0
-    candidates: list[tuple[AuctionLot, AuctionLotGeoCheck]] = []
+    candidates: list[tuple[AuctionLot, AuctionLotGeoCheck, float, float]] = []
     for lot in lots[: settings.auction_v2_egkn_context_batch_size]:
         geo_check = _get_or_build_geo_check(session, lot)
         if geo_check.latitude is None or geo_check.longitude is None:
             continue
         if force or _egkn_context_check_due(session, lot):
-            candidates.append((lot, geo_check))
+            candidates.append(
+                (lot, geo_check, float(geo_check.latitude), float(geo_check.longitude))
+            )
     if not candidates:
         return 0, 0, 0
 
+    session.commit()
     egkn_provider = provider or EgknProvider()
     checked = 0
     features_seen = 0
     errors = 0
-    for lot, geo_check in candidates:
+    outcomes: list[
+        tuple[
+            AuctionLot,
+            dict[str, str],
+            list[EgknContextFeature] | None,
+            Exception | None,
+        ]
+    ] = []
+    for lot, _geo_check, latitude, longitude in candidates:
         checked += 1
         for layer_meta in EGKN_CONTEXT_LAYERS:
             try:
                 features = egkn_provider.features_around(
                     layer=layer_meta["layer"],
-                    latitude=float(geo_check.latitude),
-                    longitude=float(geo_check.longitude),
+                    latitude=latitude,
+                    longitude=longitude,
                     radius_m=settings.auction_v2_egkn_context_radius_m,
                     max_features=settings.auction_v2_egkn_context_max_features_per_layer,
                 )
-            except (EgknProviderError, OSError) as exc:
-                errors += 1
-                _upsert_egkn_context_layer_evidence(
-                    session,
-                    lot=lot,
-                    source=source,
-                    layer_meta=layer_meta,
-                    status="unavailable",
-                    features=[],
-                    message=f"ЕГКН слой временно недоступен: {exc}",
-                )
+            except (ProviderCallDeferred, EgknProviderError, OSError) as exc:
+                outcomes.append((lot, layer_meta, None, exc))
                 continue
-            features_seen += len(features)
+            outcomes.append((lot, layer_meta, features, None))
+
+    for lot, layer_meta, features, error in outcomes:
+        if error is not None:
+            errors += 1
             _upsert_egkn_context_layer_evidence(
                 session,
                 lot=lot,
                 source=source,
                 layer_meta=layer_meta,
-                status="found" if features else "missing",
-                features=features,
-                message=None,
+                status="unavailable",
+                features=[],
+                message=f"ЕГКН слой временно недоступен: {error}",
             )
+            continue
+        assert features is not None
+        features_seen += len(features)
+        _upsert_egkn_context_layer_evidence(
+            session,
+            lot=lot,
+            source=source,
+            layer_meta=layer_meta,
+            status="found" if features else "missing",
+            features=features,
+            message=None,
+        )
     session.flush()
     return checked, features_seen, errors
 
@@ -5582,9 +7051,7 @@ def _egkn_context_check_due(session: Session, lot: AuctionLot) -> bool:
     )
     if latest is None:
         return True
-    cutoff = datetime.now(UTC) - timedelta(
-        minutes=settings.auction_v2_egkn_context_ttl_minutes
-    )
+    cutoff = datetime.now(UTC) - timedelta(minutes=settings.auction_v2_egkn_context_ttl_minutes)
     return _aware(latest) < cutoff
 
 
@@ -5842,10 +7309,10 @@ def _egkn_geometry_geojson(result: CadastreLookupResult) -> dict[str, object] | 
     return dict(geometry)
 
 
-def _egkn_lot_url(lot: AuctionLot) -> str:
-    if lot.cadastre_number:
-        return "https://map.gov4c.kz/egkn/?cadastre=" + quote_plus(lot.cadastre_number)
-    return "https://map.gov4c.kz/egkn/"
+def _egkn_lot_url(lot: AuctionLot) -> str | None:
+    if lot.land_object_id:
+        return "https://map.gov4c.kz/egkn/?id=" + quote_plus(lot.land_object_id)
+    return None
 
 
 def _csv_settings(value: str | None) -> list[str]:
@@ -5906,7 +7373,10 @@ def _gov_kz_lot_match(
     cadastre = (lot.cadastre_number or "").strip()
     if cadastre:
         cadastre_key = cadastre.casefold()
-        if cadastre_key in {item.casefold() for item in announcement.cadastre_numbers} or cadastre_key in text:
+        if (
+            cadastre_key in {item.casefold() for item in announcement.cadastre_numbers}
+            or cadastre_key in text
+        ):
             score += 0.55
             strong_match = True
             reasons.append(f"кадастр {cadastre}")
@@ -6032,7 +7502,14 @@ def _coordinates_changed(
 
 
 def _osm_check_due(geo_check: AuctionLotGeoCheck) -> bool:
-    if geo_check.osm_status in {None, "", "not_checked", "stale", "unavailable"}:
+    if geo_check.osm_status in {
+        None,
+        "",
+        "not_checked",
+        "stale",
+        "unavailable",
+        "missing_coordinates",
+    }:
         return True
     checked_at = _aware(geo_check.osm_checked_at)
     if checked_at is None:
@@ -6150,22 +7627,13 @@ def _market_comparable_stats(
     lot: AuctionLot,
 ) -> AuctionV2MarketStats:
     comparables = list_auction_v2_market_comparables(session, lot.id)
-    active_comparables = [
-        item for item in comparables if item.listing_status != "removed"
-    ]
+    active_comparables = [item for item in comparables if item.listing_status != "removed"]
     prices = [
         item.price_per_sotka
         for item in active_comparables
-        if item.price_per_sotka is not None
-        and item.price_per_sotka > 0
+        if item.price_per_sotka is not None and item.price_per_sotka > 0
     ]
-    source_names = sorted(
-        {
-            item.source_name
-            for item in active_comparables
-            if item.source_name
-        }
-    )
+    source_names = sorted({item.source_name for item in active_comparables if item.source_name})
     if not prices:
         return AuctionV2MarketStats(
             comparable_count=len(active_comparables),
@@ -6191,9 +7659,7 @@ def _market_status_detail(market_stats: AuctionV2MarketStats) -> str:
             f"Средняя цена аналогов: {_money(market_stats.average_price_per_sotka)} за сотку."
         )
     if market_stats.median_price_per_sotka is not None:
-        parts.append(
-            f"Медиана: {_money(market_stats.median_price_per_sotka)} за сотку."
-        )
+        parts.append(f"Медиана: {_money(market_stats.median_price_per_sotka)} за сотку.")
     if market_stats.source_names:
         parts.append("Источники: " + ", ".join(market_stats.source_names[:4]) + ".")
     return " ".join(parts)
@@ -6380,7 +7846,11 @@ def _gov_kz_status_url(session: Session, lot: AuctionLot) -> str:
         "gov_kz_akimat_announcements",
         "akimat_announcement",
     )
-    return evidence.source_url if evidence is not None and evidence.source_url else "https://www.gov.kz/memleket/entities?lang=ru"
+    return (
+        evidence.source_url
+        if evidence is not None and evidence.source_url
+        else "https://www.gov.kz/memleket/entities?lang=ru"
+    )
 
 
 def _latest_lot_evidence(
@@ -6427,7 +7897,9 @@ def _osm_status_detail(geo_check: AuctionLotGeoCheck) -> str:
             f"объект {_format_distance_m(geo_check.object_distance_m)}."
         )
     if geo_check.osm_status == "unavailable":
-        return "Overpass/OSM не ответил во время синхронизации; инфраструктуру надо сверить вручную."
+        return (
+            "Overpass/OSM не ответил во время синхронизации; инфраструктуру надо сверить вручную."
+        )
     if geo_check.osm_status == "stale":
         return "Координаты изменились после последней OSM-проверки; нужен повторный пересчет."
     return "Координаты есть, но OSM-инфраструктура еще не проверена синхронизацией v2."
@@ -6462,6 +7934,18 @@ def _egkn_status_detail(lot: AuctionLot, geo_check: AuctionLotGeoCheck) -> str:
     else:
         parts.append("координаты не найдены автоматически")
     return "; ".join(parts) + "."
+
+
+def _coordinate_source_label(geo_check: AuctionLotGeoCheck) -> str:
+    if geo_check.coordinate_status != "found":
+        return "Источник координат не подтвержден"
+    if geo_check.boundary_source == "jerler:source_object":
+        return "Координаты из Jerler / E-Qazyna"
+    if geo_check.boundary_source == "egkn:u_view":
+        return "Координаты из ЕГКН"
+    if geo_check.boundary_source:
+        return f"Координаты: {geo_check.boundary_source}"
+    return "Координаты из карточки лота"
 
 
 def _risk_flags(
@@ -6586,10 +8070,7 @@ def _risk_flags(
                 "detail": f"OSM показывает энергетическую инфраструктуру примерно в {_format_distance_m(geo_check.power_distance_m)}; проверьте охранные зоны и красные линии.",
             }
         )
-    if (
-        geo_check.osm_status == "checked"
-        and geo_check.road_distance_m is None
-    ):
+    if geo_check.osm_status == "checked" and geo_check.road_distance_m is None:
         flags.append(
             {
                 "code": "no_road_nearby_osm",
@@ -6616,7 +8097,10 @@ def _risk_flags(
                 "detail": "Нужно понять: продажа участка, аренда, срок аренды и ограничения использования.",
             }
         )
-    if metrics.district_difference_percent is not None and metrics.district_difference_percent >= 35:
+    if (
+        metrics.district_difference_percent is not None
+        and metrics.district_difference_percent >= 35
+    ):
         flags.append(
             {
                 "code": "price_above_history",
@@ -6698,7 +8182,9 @@ def _readiness(
             "code": "official_card",
             "label": "Официальная карточка найдена",
             "status": "done" if lot.source_url else "missing",
-            "detail": "Есть ссылка на лот E-Qazyna." if lot.source_url else "Нет ссылки на официальный лот.",
+            "detail": "Есть ссылка на лот E-Qazyna."
+            if lot.source_url
+            else "Нет ссылки на официальный лот.",
             "url": lot.source_url,
         },
         {
@@ -6791,7 +8277,9 @@ def _official_readiness(
             "code": "official_lot",
             "label": "Официальный лот открыт",
             "status": "done" if lot.source_url else "manual",
-            "detail": "Есть ссылка на карточку E-Qazyna." if lot.source_url else "Нужна ссылка на официальный лот E-Qazyna.",
+            "detail": "Есть ссылка на карточку E-Qazyna."
+            if lot.source_url
+            else "Нужна ссылка на официальный лот E-Qazyna.",
             "url": lot.source_url,
         },
         {
@@ -6836,7 +8324,9 @@ def _official_readiness(
             "code": "urban_plan",
             "label": "Генплан и ограничения отмечены",
             "status": "done" if geo_check.urban_plan_status == "checked" else "manual",
-            "detail": "Автоматическая проверка генплана отмечена как выполненная." if geo_check.urban_plan_status == "checked" else "Нужна ручная сверка генплана, ПДП, красных линий и ограничений.",
+            "detail": "Автоматическая проверка генплана отмечена как выполненная."
+            if geo_check.urban_plan_status == "checked"
+            else "Нужна ручная сверка генплана, ПДП, красных линий и ограничений.",
             "url": "https://gov.ggk.kz/",
         },
         {
@@ -7246,7 +8736,9 @@ def _lot_review_steps(
             code="official_handoff",
             title="Можно ли идти на официальный портал",
             source="E-Qazyna / eGov",
-            status="done" if ready_for_portal else ("warning" if analysis.risk_level == "high" else "manual"),
+            status="done"
+            if ready_for_portal
+            else ("warning" if analysis.risk_level == "high" else "manual"),
             system_result=f"Рекомендация: {ACTION_LABELS.get(analysis.recommended_action, analysis.recommended_action)}. Решение сохранено: {'да' if decision_saved else 'нет'}.",
             manual_action=(
                 "Открыть E-Qazyna/eGov и выполнять заявку, ЭЦП, гарантийный взнос и торги только на официальном портале."
@@ -7326,9 +8818,16 @@ def _manual_process_map(
             site="E-Qazyna",
             role="Официальный источник торгов",
             importance="required",
-            status=str((reviews.get("official_lot") or {}).get("status") or ("done" if lot.source_url else "missing")),
+            status=str(
+                (reviews.get("official_lot") or {}).get("status")
+                or ("done" if lot.source_url else "missing")
+            ),
             system_result=(reviews.get("official_lot") or {}).get("system_result")
-            or (f"Лот {lot.auction_number or lot.source_lot_id} найден." if lot.source_url else "Официальная карточка пока не найдена."),
+            or (
+                f"Лот {lot.auction_number or lot.source_lot_id} найден."
+                if lot.source_url
+                else "Официальная карточка пока не найдена."
+            ),
             manual_action="Сверить статус приема заявок, дату торгов, продавца, цену, гарантийный взнос и открыть официальный путь участия.",
             url=lot.source_url,
             url_label="Открыть лот",
@@ -7339,8 +8838,13 @@ def _manual_process_map(
             site="PDF и приложения",
             role="Условия участия и схема участка",
             importance="required",
-            status=str((reviews.get("documents") or {}).get("status") or ("done" if metrics.document_count else "missing")),
-            system_result=f"Найдено документов: {metrics.document_count}." if metrics.document_count else "Документы пока не извлечены автоматически.",
+            status=str(
+                (reviews.get("documents") or {}).get("status")
+                or ("done" if metrics.document_count else "missing")
+            ),
+            system_result=f"Найдено документов: {metrics.document_count}."
+            if metrics.document_count
+            else "Документы пока не извлечены автоматически.",
             manual_action="Открыть файлы, проверить схему, назначение, ограничения, сроки регистрации и требования к участнику.",
             url=lot.source_url,
             url_label="Открыть документы",
@@ -7352,7 +8856,10 @@ def _manual_process_map(
             site="gov.kz и сайты акиматов",
             role="Ранние объявления, изменения, вложения",
             importance="required",
-            status=str((reviews.get("akimat") or {}).get("status") or _review_status_from_source(gov_source)),
+            status=str(
+                (reviews.get("akimat") or {}).get("status")
+                or _review_status_from_source(gov_source)
+            ),
             system_result=(gov_source or {}).get("detail")
             or "Zhertap ищет совпадения по номеру лота, кадастру, ссылке, региону и названию.",
             manual_action="Проверить извещения, протоколы, изменения сроков и дополнительные документы акимата.",
@@ -7379,7 +8886,10 @@ def _manual_process_map(
             site="ГГК / Smart Geohub / геопорталы",
             role="Генплан, ПДП, красные линии, ограничения",
             importance="required",
-            status=str((reviews.get("urban_plan") or {}).get("status") or _review_status_from_source(urban_source)),
+            status=str(
+                (reviews.get("urban_plan") or {}).get("status")
+                or _review_status_from_source(urban_source)
+            ),
             system_result=(urban_source or {}).get("detail")
             or (
                 "Проверка градостроительных слоев отмечена как выполненная."
@@ -7397,7 +8907,10 @@ def _manual_process_map(
             site="OSM / Google Maps / спутник",
             role="Окружение и инфраструктура",
             importance="support",
-            status=str((reviews.get("surroundings") or {}).get("status") or _review_status_from_source(osm_source)),
+            status=str(
+                (reviews.get("surroundings") or {}).get("status")
+                or _review_status_from_source(osm_source)
+            ),
             system_result=(osm_source or {}).get("detail") or _osm_status_detail(geo_check),
             manual_action="Посмотреть подъезд, воду, ЛЭП, соседние объекты, санитарные риски и реальное окружение.",
             url=geo_check.google_maps_url,
@@ -7512,13 +9025,9 @@ def _manual_process_counts(rows: list[dict[str, object]]) -> dict[str, int]:
         "required": len(required_rows),
         "required_done": sum(1 for row in required_rows if row.get("status") == "done"),
         "required_open": sum(
-            1
-            for row in required_rows
-            if row.get("status") in {"manual", "warning"}
+            1 for row in required_rows if row.get("status") in {"manual", "warning"}
         ),
-        "required_missing": sum(
-            1 for row in required_rows if row.get("status") == "missing"
-        ),
+        "required_missing": sum(1 for row in required_rows if row.get("status") == "missing"),
         "external": sum(1 for row in rows if row.get("status") == "external"),
         "optional": sum(1 for row in rows if not bool(row.get("required"))),
     }
@@ -7540,16 +9049,13 @@ def _lot_next_actions(review_steps: list[dict[str, object]]) -> list[dict[str, o
     selected = [step for _index, step in unresolved[:5]]
     if not selected:
         handoff = next(
-            (
-                step
-                for step in review_steps
-                if step.get("code") == "official_handoff"
-            ),
+            (step for step in review_steps if step.get("code") == "official_handoff"),
             None,
         )
         return [
             _next_action_from_review_step(
-                handoff or {
+                handoff
+                or {
                     "title": "Проверка закрыта",
                     "status": "external",
                     "status_label": WORKFLOW_STATUS_LABELS["external"],
@@ -7598,39 +9104,53 @@ def _lot_decision_summary(
     }
     personal_limit_saved = pipeline is not None and pipeline.max_bid_kzt is not None
     hard_blocker_codes = {
-        "no_coordinates",
-        "coordinates_unconfirmed",
         "boundary_area_mismatch",
-        "boundary_not_confirmed",
-        "no_documents",
         "auction_started_or_finished",
     }
-    blockers = [
-        item for item in risk_flags if str(item.get("code") or "") in hard_blocker_codes
-    ]
+    blockers = [item for item in risk_flags if str(item.get("code") or "") in hard_blocker_codes]
+    verdict = _investment_verdict(lot, analysis, risk_flags)
 
     primary_blocker = blockers[0] if blockers else None
-    if blockers:
+    if verdict == "do_not_participate":
         status = "blocked"
-        title = "Пока не рекомендуем участвовать"
+        title = "Не участвовать"
+        detail = (
+            f"{primary_blocker.get('label')}: {primary_blocker.get('detail')}"
+            if primary_blocker
+            else "Обнаружен критичный фактор или торги уже завершены."
+        )
+    elif verdict == "high_risk":
+        status = "warning"
+        title = "Высокий риск"
+        detail = "До участия необходимо устранить существенные юридические, кадастровые или пространственные риски."
+    elif blockers:
+        status = "blocked"
+        title = "Требует проверки"
         detail = (
             f"{primary_blocker.get('label')}: {primary_blocker.get('detail')}"
             if primary_blocker
             else "Нужно подтвердить границы, документы и ключевые условия участка."
         )
-    elif missing_count:
+    elif verdict == "requires_check" or missing_count:
         status = "blocked"
-        title = "Данных недостаточно для решения"
+        title = "Требует проверки"
         detail = (
-            f"По {missing_count} обязательным проверкам официальный источник не дал данных. "
-            "Без них нельзя надёжно оценить участок."
+            _bid_limit_reason(lot, analysis, metrics)
+            if analysis.max_bid_conservative_kzt is None
+            else f"По {missing_count} обязательным проверкам официальный источник не дал данных. Без них нельзя надёжно оценить участок."
         )
     elif warning_count or analysis.risk_level == "high":
         status = "warning"
         title = "Участвовать только после уточнения рисков"
-        detail = (
-            "Лот может быть выгодным по цене, но остаются вопросы по документам, границам или окружению."
-        )
+        detail = "Лот может быть выгодным по цене, но остаются вопросы по документам, границам или окружению."
+    elif verdict == "participate":
+        status = "ready"
+        title = "Участвовать"
+        detail = f"По доступным данным цена привлекательна. Не превышайте рекомендуемый предел {_money(analysis.max_bid_conservative_kzt)}."
+    elif verdict == "participate_up_to":
+        status = "ready"
+        title = f"Участвовать до {_money(analysis.max_bid_conservative_kzt)}"
+        detail = "Выше этого предварительного предела запас к рынку и риску становится недостаточным. Уточните расходы и целевую доходность."
     elif ready_for_portal and decision_saved and personal_limit_saved:
         status = "ready"
         title = "Критических препятствий не найдено"
@@ -7653,6 +9173,8 @@ def _lot_decision_summary(
     return {
         "status": status,
         "fit_status": "blocked" if blockers else "not_confirmed" if status != "ready" else "ready",
+        "verdict": verdict,
+        "verdict_label": INVESTMENT_VERDICT_LABELS[verdict],
         "blockers": blockers[:6],
         "title": title,
         "detail": detail,
@@ -7837,13 +9359,13 @@ def _recommended_action(
     confidence_level: str,
     risk_flags: list[dict[str, object]],
 ) -> str:
-    if risk_level == "high" and score < 50:
-        return "skip"
     if confidence_level == "low" or any(
         item.get("code") in {"no_cadastre", "no_coordinates", "coordinates_unconfirmed"}
         for item in risk_flags
     ):
         return "manual_check"
+    if risk_level == "high" and score < 50:
+        return "do_not_participate"
     if score >= 75 and risk_level != "high":
         return "prepare_official_review"
     if score >= 55:
@@ -7859,40 +9381,74 @@ def _bid_limits(
     score: int,
     risk_level: str,
 ) -> dict[str, float | None]:
-    if not lot.start_price_kzt:
-        return {"conservative": None, "market": None, "aggressive": None}
-    market_anchor = None
-    if market_stats.median_price_per_sotka and lot.area_ha:
-        market_anchor = market_stats.median_price_per_sotka * lot.area_ha * 100
-    elif (
-        metrics.district_average_price_per_sotka
-        and metrics.district_lot_count >= 3
-        and lot.area_ha
-    ):
-        market_anchor = metrics.district_average_price_per_sotka * lot.area_ha * 100
+    # Legacy district averages and unverified listing medians are not a safe
+    # basis for a financially consequential bid ceiling. The versioned W9–W11
+    # decision pipeline will populate limits only after strict comparables,
+    # full costs and a scenario-specific return target are all available.
+    del lot, metrics, market_stats, score, risk_level
+    empty = {"conservative": None, "market": None, "aggressive": None}
+    return empty
 
-    base = float(lot.start_price_kzt)
-    if risk_level == "high":
-        conservative_multiplier = 1.0
-        aggressive_multiplier = 1.03
-    elif score >= 75:
-        conservative_multiplier = 1.08
-        aggressive_multiplier = 1.18
-    else:
-        conservative_multiplier = 1.04
-        aggressive_multiplier = 1.10
 
-    conservative = base * conservative_multiplier
-    market = market_anchor
-    aggressive = max(base, market_anchor) * aggressive_multiplier if market_anchor is not None else None
-    if market_anchor is not None:
-        conservative = min(conservative, max(base, market_anchor * 0.9))
-        aggressive = min(aggressive, max(base, market_anchor * 1.08)) if aggressive is not None else None
-    return {
-        "conservative": round(conservative),
-        "market": round(market) if market is not None else None,
-        "aggressive": round(aggressive) if aggressive is not None else None,
+def _bid_limit_reason(
+    lot: AuctionLot,
+    analysis: AuctionLotV2Analysis,
+    metrics: AuctionLotMetrics,
+) -> str:
+    if analysis.max_bid_conservative_kzt is not None:
+        return "Предварительный предел рассчитан по сопоставимым рыночным данным с дисконтом за риск. Расходы и целевую доходность уточните в сценарии сделки."
+    right_type, years = _right_type(lot)
+    if right_type == "unknown":
+        return "Не определено, приобретается земля или право аренды. Без этого предел цены недостоверен."
+    if right_type == "lease_short":
+        return f"Краткосрочная аренда{f' на {years:g} года' if years else ''} требует расчёта бизнеса и условий продления; по цене земли предел не считается."
+    if analysis.risk_level == "high":
+        return "Есть существенный риск. Сначала нужно устранить блокирующие вопросы по документам, границам или ограничениям."
+    if not lot.area_ha:
+        return "Не указана площадь участка."
+    if metrics.district_lot_count < 3:
+        return "Недостаточно сопоставимых продаж и истории похожих торгов."
+    return "Строгая оценка, полная стоимость и сценарная доходность ещё не подтверждены; предельная цена намеренно не показывается."
+
+
+def _investment_verdict(
+    lot: AuctionLot,
+    analysis: AuctionLotV2Analysis,
+    risk_flags: list[dict[str, object]],
+) -> str:
+    blocker_codes = {
+        "auction_started_or_finished",
+        "cadastre_not_found",
+        "boundary_area_mismatch",
     }
+    missing_input_codes = {
+        "no_cadastre",
+        "no_coordinates",
+        "coordinates_unconfirmed",
+        "boundary_not_confirmed",
+        "no_documents",
+    }
+    # ``recommended_action`` belongs to the legacy score-based analysis.  Old
+    # rows may contain ``skip`` merely because coordinates or other inputs were
+    # missing.  Missing data must fail closed as ``requires_check``; it is not
+    # evidence of a financially or legally critical blocker.
+    if any(str(item.get("code") or "") in blocker_codes for item in risk_flags):
+        return "do_not_participate"
+    if any(str(item.get("code") or "") in missing_input_codes for item in risk_flags):
+        return "requires_check"
+    if analysis.risk_level == "high":
+        return "high_risk"
+    limit = analysis.max_bid_conservative_kzt
+    if limit is None:
+        return "requires_check"
+    if (
+        lot.start_price_kzt is not None
+        and analysis.confidence_level == "high"
+        and analysis.risk_level == "low"
+        and lot.start_price_kzt <= limit * 0.7
+    ):
+        return "participate"
+    return "participate_up_to"
 
 
 def _summary(
@@ -7920,7 +9476,9 @@ def _summary(
     if geo_check.coordinate_status == "found":
         parts.append("Координаты найдены; можно быстро открыть карту и сверить окружение.")
     elif geo_check.coordinate_status == "unconfirmed":
-        parts.append("Координаты не подтверждены как точка в Казахстане, поэтому маркер скрыт до ручной геосверки.")
+        parts.append(
+            "Координаты не подтверждены как точка в Казахстане, поэтому маркер скрыт до ручной геосверки."
+        )
     else:
         parts.append("Координаты не найдены, поэтому перед решением нужна ручная геосверка.")
     if geo_check.osm_status == "checked":
@@ -8007,9 +9565,10 @@ def format_auction_v2_telegram_card(payload: AuctionV2LotPayload) -> str:
         if isinstance(item, dict) and item.get("status") in {"manual", "missing"}
     ]
     open_checks_text = ", ".join(open_checks[:3]) or "критичных пробелов не найдено"
-    location = " · ".join(
-        str(value) for value in (lot.region, lot.district, lot.locality) if value
-    ) or "местоположение не указано"
+    location = (
+        " · ".join(str(value) for value in (lot.region, lot.district, lot.locality) if value)
+        or "местоположение не указано"
+    )
     decision = payload.decision_summary
     summary = str(decision.get("title") or payload.action_label)
     detail = str(decision.get("detail") or "")
@@ -8041,7 +9600,7 @@ def _coordinate_text(latitude: float | None, longitude: float | None) -> str:
 
 
 def _osm_map_url(geo_check: AuctionLotGeoCheck) -> str | None:
-    if geo_check.latitude is None or geo_check.longitude is None:
+    if not _valid_kazakhstan_coordinates(geo_check.latitude, geo_check.longitude):
         return None
     return (
         "https://www.openstreetmap.org/"
@@ -8051,18 +9610,11 @@ def _osm_map_url(geo_check: AuctionLotGeoCheck) -> str | None:
 
 
 def _osm_embed_url(geo_check: AuctionLotGeoCheck) -> str | None:
-    if geo_check.latitude is None or geo_check.longitude is None:
+    if not _valid_kazakhstan_coordinates(geo_check.latitude, geo_check.longitude):
         return None
-    latitude = geo_check.latitude
-    longitude = geo_check.longitude
-    delta = 0.004
-    bbox = (
-        f"{longitude - delta:.6f},{latitude - delta:.6f},"
-        f"{longitude + delta:.6f},{latitude + delta:.6f}"
-    )
     return (
-        "https://www.openstreetmap.org/export/embed.html"
-        f"?bbox={bbox}&layer=mapnik&marker={latitude:.6f},{longitude:.6f}"
+        "https://www.google.com/maps"
+        f"?q={geo_check.latitude:.6f},{geo_check.longitude:.6f}&z=17&output=embed"
     )
 
 
@@ -8143,7 +9695,9 @@ def _dossier_market_comparable_lines(
     comparables: list[AuctionMarketComparable],
 ) -> list[str]:
     if not comparables:
-        return ["- Рыночные аналоги еще не добавлены; используйте ссылки Krisha/OLX в источниках и внесите подходящие объявления вручную."]
+        return [
+            "- Рыночные аналоги еще не добавлены; используйте ссылки Krisha/OLX в источниках и внесите подходящие объявления вручную."
+        ]
     return [
         _clean_line(
             "- "
@@ -8505,7 +10059,7 @@ def _upsert_evidence(
 
 
 def _google_maps_url(lot: AuctionLot, latitude: float | None, longitude: float | None) -> str:
-    if latitude is not None and longitude is not None:
+    if _valid_kazakhstan_coordinates(latitude, longitude):
         return f"https://www.google.com/maps?q={latitude:.6f},{longitude:.6f}"
     query = " ".join(
         part

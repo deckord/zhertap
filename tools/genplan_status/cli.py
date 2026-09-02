@@ -135,6 +135,10 @@ def _status_for_record(
     has_review = review is not None
     has_geotiff = geotiff is not None
     has_vector_manifest = vector_manifest is not None
+    qa_submitted = (
+        _artifact_workflow_status(gcps) == "qa_pending"
+        and _artifact_workflow_status(qa) == "qa_pending"
+    )
 
     status, next_action = _classify(
         has_manual_file=source_path is not None and source_path.exists(),
@@ -142,6 +146,7 @@ def _status_for_record(
         autoreg_status=autoreg[1],
         has_gcps=has_gcps,
         has_qa=has_qa,
+        qa_submitted=qa_submitted,
         has_review=has_review,
         has_geotiff=has_geotiff,
         has_vector_manifest=has_vector_manifest,
@@ -181,6 +186,7 @@ def _classify(
     autoreg_status: str,
     has_gcps: bool,
     has_qa: bool,
+    qa_submitted: bool,
     has_review: bool,
     has_geotiff: bool,
     has_vector_manifest: bool,
@@ -201,8 +207,10 @@ def _classify(
         return "georeferenced_export", "configure_colors_and_vectorize"
     if has_gcps and has_qa and has_review:
         return "reviewed_gcps", "export_geotiff"
-    if has_gcps and has_qa:
+    if has_gcps and has_qa and qa_submitted:
         return "qa_pending", "independent_georef_review"
+    if has_gcps:
+        return "gcp_draft", "verify_or_move_diagnostic_points_then_submit"
     if has_autoreg_attempt and autoreg_status not in {"", "needs_manual"}:
         return "autoreg_candidate", "open_workbench_and_review_points"
     if has_autoreg_attempt:
@@ -217,6 +225,16 @@ def _source_path(record: dict[str, Any], root: Path | None) -> Path | None:
     if not relative:
         return None
     return root / "extracted" / Path(relative)
+
+
+def _artifact_workflow_status(path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        payload = _read_json(path)
+    except ValueError:
+        return ""
+    return str(payload.get("workflow_status") or "")
 
 
 def _autoreg_status(root: Path | None, asset_id: str) -> tuple[bool, str]:

@@ -71,8 +71,51 @@ def test_recovery_does_not_redeliver_old_or_already_notified_requests(monkeypatc
         fresh_pending_id = fresh_pending.id
         fresh_ready_id = fresh_ready.id
 
-    stale_ids, pending_free_ids, ready_delivery_ids = tasks._recover_stale_searches()
+    stale_ids, lost_queued_ids, pending_free_ids, ready_delivery_ids = tasks._recover_stale_searches()
 
     assert stale_ids == []
+    assert lost_queued_ids == []
     assert pending_free_ids == [fresh_pending_id]
     assert ready_delivery_ids == [fresh_ready_id]
+
+
+def test_recovery_redispatches_old_queued_searches(monkeypatch) -> None:
+    factory = _session_factory()
+    monkeypatch.setattr(tasks, "SessionLocal", factory)
+    now = datetime.now(UTC)
+
+    with factory() as session:
+        fresh_queued = _request(
+            status=SearchStatus.queued.value,
+            preview_status=FreePreviewStatus.not_requested.value,
+            updated_at=now,
+        )
+        old_queued = _request(
+            status=SearchStatus.queued.value,
+            preview_status=FreePreviewStatus.not_requested.value,
+            updated_at=now - timedelta(minutes=6),
+        )
+        deferred_queued = _request(
+            status=SearchStatus.queued.value,
+            preview_status=FreePreviewStatus.not_requested.value,
+            updated_at=now - timedelta(minutes=30),
+        )
+        deferred_queued.error_message = (
+            "Публичный сервис osm_overpass временно ограничил запросы; повтор через 215 сек."
+        )
+        old_processing = _request(
+            status=SearchStatus.processing.value,
+            preview_status=FreePreviewStatus.not_requested.value,
+            updated_at=now - timedelta(minutes=16),
+        )
+        session.add_all([fresh_queued, old_queued, deferred_queued, old_processing])
+        session.commit()
+        old_queued_id = old_queued.id
+        old_processing_id = old_processing.id
+
+    stale_ids, lost_queued_ids, pending_free_ids, ready_delivery_ids = tasks._recover_stale_searches()
+
+    assert stale_ids == [old_processing_id]
+    assert lost_queued_ids == [old_queued_id]
+    assert pending_free_ids == []
+    assert ready_delivery_ids == []

@@ -23,7 +23,8 @@ def test_postgres_engine_uses_pool_settings() -> None:
     assert kwargs["max_overflow"] >= 0
     assert kwargs["pool_timeout"] >= 1
     assert kwargs["pool_recycle"] >= 60
-    assert "connect_args" not in kwargs
+    assert "statement_timeout=" in kwargs["connect_args"]["options"]
+    assert "lock_timeout=" in kwargs["connect_args"]["options"]
 
 
 def test_production_settings_require_hardening() -> None:
@@ -54,6 +55,7 @@ def test_production_settings_allow_strong_values() -> None:
         eqazyna_verify_tls=True,
         gov_kz_verify_tls=True,
         egkn_verify_tls=True,
+        auction_cache_enabled=True,
     )
     assert configured.app_env == "production"
 
@@ -72,6 +74,7 @@ def test_production_admin_password_minimum_is_separate_from_web_password() -> No
         eqazyna_verify_tls=True,
         gov_kz_verify_tls=True,
         egkn_verify_tls=True,
+        auction_cache_enabled=True,
     )
 
     assert configured.admin_password == "Vtqgzz9g!@#"

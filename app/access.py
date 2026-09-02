@@ -54,13 +54,14 @@ def next_platform_access_expiry(
     current_expires_at: datetime | None = None,
     *,
     now: datetime | None = None,
+    months: int | None = None,
 ) -> datetime:
     current = _as_aware(now or datetime.now(UTC)) or datetime.now(UTC)
     current_expires_at = _as_aware(current_expires_at)
     base = current
     if current_expires_at and current_expires_at > current:
         base = current_expires_at
-    return add_months(base, settings.platform_access_months)
+    return add_months(base, months or settings.platform_access_months)
 
 
 def account_has_paid_access(account: Account, *, now: datetime | None = None) -> bool:
@@ -69,11 +70,20 @@ def account_has_paid_access(account: Account, *, now: datetime | None = None) ->
     )
 
 
-def grant_account_paid_access(account: Account, *, now: datetime | None = None) -> datetime:
+def grant_account_paid_access(
+    account: Account,
+    *,
+    now: datetime | None = None,
+    months: int | None = None,
+) -> datetime:
     current = now or datetime.now(UTC)
     account.paid_access = True
     account.access_granted_at = account.access_granted_at or current
-    account.access_expires_at = next_platform_access_expiry(account.access_expires_at, now=current)
+    account.access_expires_at = next_platform_access_expiry(
+        account.access_expires_at,
+        now=current,
+        months=months,
+    )
     return account.access_expires_at
 
 

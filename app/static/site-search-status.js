@@ -25,6 +25,8 @@
   const explanationBody = document.querySelector("#search-explanation-body");
   const explanationNextTitle = document.querySelector("#search-explanation-next-title");
   const explanationNext = document.querySelector("#search-explanation-next");
+  let lastPayload = null;
+  let showWithoutGenplan = false;
 
   const paymentLabels = {
     not_requested: "Полный отчет еще не запрошен",
@@ -64,6 +66,9 @@
   function statusMessageFor(payload) {
     if (payload.is_failed) return payload.message || "Анализ не завершился. Попробуйте запустить проверку еще раз.";
     if (payload.is_running) return payload.message || "Система выполняет многоэтапную проверку территории.";
+    if (showWithoutGenplan && (payload.genplan_preview_candidate_count || 0) > 0) {
+      return `Показаны ${payload.genplan_preview_candidate_count} мест без фильтра генплана/ПДП. Они нужны только для сверки причины отказа.`;
+    }
     if ((payload.candidate_count || 0) > 0) {
       return `Готово: найдено подходящих мест ${payload.candidate_count}. Откройте карточки ниже и проверьте отчет.`;
     }
@@ -72,7 +77,9 @@
 
   function candidateCard(candidate) {
     const card = document.createElement("article");
-    card.className = "candidate-live-card";
+    card.className = showWithoutGenplan
+      ? "candidate-live-card is-genplan-preview"
+      : "candidate-live-card";
     const locality = escapeHtml(candidate.locality || "Населенный пункт не указан");
     const locked = Boolean(candidate.locked);
     const nearbyCadastre = locked
@@ -89,6 +96,7 @@
     const actionHtml = locked
       ? `
         <button class="locked-action" type="button" disabled>Карта после оплаты</button>
+        <button class="locked-action" type="button" disabled>Генплан после оплаты</button>
         <button class="locked-action" type="button" disabled>ЕГКН после оплаты</button>
       `
       : `
@@ -99,10 +107,14 @@
     const urbanStatus = genplanBadgeHtml(candidate.urban_plan_badge);
     const urbanZone = candidate.urban_plan_zone ? `<p>${escapeHtml(candidate.urban_plan_zone)}</p>` : "";
     const riskNotes = candidate.risk_notes ? `<p>${escapeHtml(candidate.risk_notes)}</p>` : "";
+    const previewNotice = showWithoutGenplan
+      ? `<p class="candidate-preview-warning">Показано без фильтра генплана/ПДП: место не подтверждено официальным цифровым слоем для выбранной цели.</p>`
+      : "";
     card.innerHTML = `
       <div>
         <strong>#${escapeHtml(candidate.rank)} · ${locality}</strong>
         <span>Перспективность ${formatNumber(candidate.score, 0)}/100 · ${coordinateText}</span>
+        ${previewNotice}
         <dl class="candidate-live-facts">
           <div><dt>Кадастровый ориентир</dt><dd>${nearbyCadastre}</dd></div>
           <div><dt>До соседнего участка</dt><dd>${formatDistance(candidate.nearby_distance_m)}</dd></div>
@@ -120,6 +132,34 @@
     return card;
   }
 
+  function hasGenplanPreview(payload) {
+    return Boolean(
+      payload &&
+      payload.report_unlocked &&
+      (payload.genplan_preview_candidate_count || 0) > 0
+    );
+  }
+
+  function selectedCandidates(payload) {
+    if (showWithoutGenplan && hasGenplanPreview(payload)) {
+      return payload.genplan_preview_candidates || [];
+    }
+    return payload.candidates || [];
+  }
+
+  function updateShowWithoutGenplanControls(payload) {
+    const canShow = hasGenplanPreview(payload);
+    document.querySelectorAll("[data-show-without-genplan]").forEach((button) => {
+      button.classList.toggle("is-hidden", !canShow);
+      button.disabled = !canShow;
+      if (canShow) {
+        button.textContent = showWithoutGenplan
+          ? "Показаны без проверки генплана"
+          : "Показать без проверки генплана";
+      }
+    });
+  }
+
   function emptyCandidateHtml(payload) {
     if (payload && payload.is_running) {
       return `
@@ -128,9 +168,13 @@
       `;
     }
     if (payload && payload.urban_plan_status === "blocked") {
+      const previewAction = hasGenplanPreview(payload)
+        ? `<button class="secondary-action compact" type="button" data-show-without-genplan>Показать без проверки генплана</button>`
+        : "";
       return `
         <strong>Подходящих мест по генплану не осталось</strong>
         <span>Кадастровая карта дала предварительные промежутки, но подключенный генплан/ПДП не подтвердил их для выбранной цели. Эти места не показываем как варианты для подачи.</span>
+        ${previewAction}
       `;
     }
     return `
@@ -166,6 +210,8 @@
   }
 
   function applyStatus(payload) {
+    lastPayload = payload;
+    if (showWithoutGenplan && !hasGenplanPreview(payload)) showWithoutGenplan = false;
     const progress = Math.max(0, Math.min(100, Number(payload.progress || 0)));
     const label = payload.is_running ? "Выполняется анализ" : payload.status_label;
     if (statusLine) statusLine.textContent = `${label} · прогресс ${progress}%`;
@@ -173,7 +219,7 @@
     if (statusMessage) statusMessage.textContent = statusMessageFor(payload);
     if (progressBar) progressBar.style.width = `${progress}%`;
     if (progressValue) progressValue.textContent = `${progress}%`;
-    if (candidateCount) candidateCount.textContent = String(payload.candidate_count || 0);
+    if (candidateCount) candidateCount.textContent = String(selectedCandidates(payload).length);
     if (payload.urban_plan_badge) {
       if (urbanPlanStatusCard) {
         urbanPlanStatusCard.className = `genplan-status-card genplan-status-${payload.urban_plan_badge.tone || "neutral"}`;
@@ -223,8 +269,9 @@
         ? "анализ обновляется автоматически"
         : "анализ завершен";
     }
+    updateShowWithoutGenplanControls(payload);
     updateStages(progress, payload.is_failed);
-    renderCandidates(payload.candidates || [], payload);
+    renderCandidates(selectedCandidates(payload), payload);
     return Boolean(payload.is_running);
   }
 
@@ -249,6 +296,22 @@
       window.setTimeout(tick, 5000);
     }
   }
+
+  root.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-show-without-genplan]");
+    if (!button) return;
+    event.preventDefault();
+    showWithoutGenplan = true;
+    if (lastPayload) {
+      applyStatus(lastPayload);
+      return;
+    }
+    try {
+      applyStatus(await fetchStatus());
+    } catch (error) {
+      if (statusMessage) statusMessage.textContent = "Не удалось загрузить места без проверки генплана. Попробуйте еще раз.";
+    }
+  });
 
   tick();
 })();

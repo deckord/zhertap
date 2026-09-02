@@ -59,13 +59,17 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   const query = new URLSearchParams(window.location.search);
-  if (document.querySelector(".verify.is-ready") || query.has("invalid")) {
+  const initialMode = document.querySelector(".auth-panel")?.dataset.authInitial;
+  if (["login", "register", "reset"].includes(initialMode)) {
+    setMode(initialMode);
+  } else if (document.querySelector(".verify.is-ready") || query.has("invalid")) {
     setMode("register");
   }
   if (
-    document.querySelector("[data-auth-mode='reset'].verify.is-ready") ||
-    query.has("reset_invalid") ||
-    query.has("reset_missing")
+    initialMode !== "register" &&
+    (document.querySelector("[data-auth-mode='reset'].verify.is-ready") ||
+      query.has("reset_invalid") ||
+      query.has("reset_missing"))
   ) {
     setMode("reset");
   }

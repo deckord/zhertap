@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -16,6 +16,7 @@ from app.auction_documents import (
     unique_auction_documents,
 )
 from app.auction_geo import AuctionGeoMetrics, auction_geo_metrics
+from app.auction_land_identity import reconcile_lot_land_object
 from app.i18n import normalize_language
 from app.models import (
     AuctionAccess,
@@ -26,8 +27,9 @@ from app.models import (
     AuctionLotHistory,
     AuctionNotification,
     AuctionSubscription,
+    ProviderWorkflowState,
 )
-from app.providers.eqazyna import AuctionLotData, EqazynaProvider
+from app.providers.eqazyna import AuctionLotData, EqazynaError, EqazynaProvider
 
 logger = logging.getLogger(__name__)
 ACTIVE_AUCTION_STATUSES = {
@@ -40,6 +42,24 @@ ACTIVE_EQAZYNA_SEARCH_STATUSES = {
     "Pending",
     "Running",
 }
+EQAZYNA_DUE_REFRESH_WORKFLOW_KEY = "eqazyna:due-status-refresh:v1"
+EQAZYNA_DUE_REFRESH_POLICY_VERSION = "due-status-cursor-v1"
+
+
+def _is_active_land_status(detail_status: str | None, search_status: str | None) -> bool:
+    if detail_status in ACTIVE_AUCTION_STATUSES:
+        return True
+    if search_status not in ACTIVE_EQAZYNA_SEARCH_STATUSES:
+        return False
+    detail = (detail_status or "").casefold()
+    terminal_markers = (
+        "состоялся",
+        "не состоялся",
+        "отменен",
+        "отменён",
+        "результат торга отмен",
+    )
+    return not any(marker in detail for marker in terminal_markers)
 
 
 @dataclass(slots=True)
@@ -90,11 +110,17 @@ CHANGE_TRACKED_FIELDS = (
     "status",
     "source_search_status",
     "start_price_kzt",
+    "guarantee_kzt",
     "sale_price_kzt",
     "auction_starts_at",
     "area_ha",
     "land_rights",
+    "land_object_id",
+    "lease_term_years",
+    "additional_payment_kzt",
+    "annual_rent_kzt",
     "purpose",
+    "description",
 )
 
 
@@ -104,8 +130,10 @@ def _history_changed(lot: AuctionLot, data: AuctionLotData) -> bool:
             lot.status != data.status,
             lot.source_search_status != data.source_search_status,
             lot.start_price_kzt != data.start_price_kzt,
+            lot.guarantee_kzt != data.guarantee_kzt,
             lot.sale_price_kzt != data.sale_price_kzt,
             lot.auction_starts_at != data.auction_starts_at,
+            lot.description != data.description,
         )
     )
 
@@ -115,6 +143,8 @@ def _stringify_change_value(value: object) -> str | None:
         return None
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
     return str(value)
 
 
@@ -207,6 +237,7 @@ def upsert_auction_lot(session: Session, data: AuctionLotData) -> tuple[AuctionL
     for name in (
         "auction_number",
         "source_search_status",
+        "object_type",
         "auction_type",
         "status",
         "title",
@@ -216,8 +247,13 @@ def upsert_auction_lot(session: Session, data: AuctionLotData) -> tuple[AuctionL
         "locality",
         "location_text",
         "cadastre_number",
+        "land_object_id",
         "area_ha",
         "land_rights",
+        "lease_term_years",
+        "divisible",
+        "additional_payment_kzt",
+        "annual_rent_kzt",
         "functional_purpose_level2",
         "functional_purpose_level3",
         "functional_purpose_level4",
@@ -236,10 +272,11 @@ def upsert_auction_lot(session: Session, data: AuctionLotData) -> tuple[AuctionL
         setattr(lot, name, getattr(data, name))
     lot.raw_payload_json = json.dumps(data.as_dict(), ensure_ascii=False, default=str)
     lot.last_seen_at = datetime.now(UTC)
-    lot.active = (
-        data.status in ACTIVE_AUCTION_STATUSES
-        if data.status
-        else data.source_search_status in ACTIVE_EQAZYNA_SEARCH_STATUSES
+    # E-Qazyna list filtering can leak transport/other assets. A non-land
+    # source item may be retained for diagnostics, but can never be active in
+    # the land-auction catalog or consume live land workflows.
+    lot.active = data.object_type == "land" and _is_active_land_status(
+        data.status, data.source_search_status
     )
     document_changes = _upsert_documents(lot, data)
     if not created and document_changes:
@@ -256,6 +293,7 @@ def upsert_auction_lot(session: Session, data: AuctionLotData) -> tuple[AuctionL
         )
     for change in changes:
         lot.changes.append(change)
+    reconcile_lot_land_object(session, lot)
     session.flush()
     return lot, created, changed
 
@@ -1384,6 +1422,11 @@ def sync_current_auctions(
     deactivate_missing: bool = True,
     send_notifications: bool = True,
 ) -> AuctionSyncResult:
+    # This worker service performs its bounded crawl before any persistence.
+    # Close a caller's implicit read transaction so no pool connection is held
+    # while E-Qazyna is responding.
+    if session.in_transaction():
+        session.commit()
     provider = provider or EqazynaProvider()
     crawl = provider.current_lots_with_report(
         max_pages=max_pages,
@@ -1468,6 +1511,126 @@ def sync_current_auctions(
         pages_scanned=crawl.pages_scanned,
         status_counts=dict(crawl.status_counts),
     )
+
+
+def refresh_due_eqazyna_lot_statuses(
+    session: Session,
+    *,
+    provider: EqazynaProvider | None = None,
+    limit: int = 5,
+) -> dict[str, int]:
+    """Refresh a bounded batch of active lots whose auction date has passed.
+
+    E-Qazyna removes terminal lots from its current-list pages, so list crawling
+    alone cannot transition an old Running lot to its final detail-page status.
+    This direct-detail sweep keeps active catalog truth aligned without a large
+    provider burst.
+    """
+    # List status may disappear from a detail-only refresh while the detailed
+    # status remains live. Recheck both representations shortly after start so
+    # a running lot cannot stay active forever merely because its list code is
+    # absent. Newest overdue lots are most urgent for current-catalog truth.
+    cutoff = datetime.now(UTC) - timedelta(minutes=15)
+    batch_limit = max(1, min(int(limit), 20))
+    state = session.get(ProviderWorkflowState, EQAZYNA_DUE_REFRESH_WORKFLOW_KEY)
+    if state is None:
+        state = ProviderWorkflowState(
+            workflow_key=EQAZYNA_DUE_REFRESH_WORKFLOW_KEY,
+            provider="eqazyna",
+            workflow_kind="due_status_refresh",
+            status="pending",
+            policy_version=EQAZYNA_DUE_REFRESH_POLICY_VERSION,
+        )
+        session.add(state)
+
+    cursor_time: datetime | None = None
+    cursor_id: str | None = None
+    try:
+        cursor = json.loads(state.cursor_json or "{}")
+        raw_time = cursor.get("auction_starts_at") if isinstance(cursor, dict) else None
+        raw_id = cursor.get("id") if isinstance(cursor, dict) else None
+        if isinstance(raw_time, str) and isinstance(raw_id, str):
+            cursor_time = datetime.fromisoformat(raw_time)
+            cursor_id = raw_id
+    except (TypeError, ValueError, json.JSONDecodeError):
+        cursor_time = None
+        cursor_id = None
+
+    eligibility = (
+        AuctionLot.source == "e-qazyna",
+        AuctionLot.active.is_(True),
+        or_(
+            AuctionLot.source_search_status.in_(ACTIVE_EQAZYNA_SEARCH_STATUSES),
+            AuctionLot.status.in_(ACTIVE_AUCTION_STATUSES),
+        ),
+        AuctionLot.auction_starts_at.is_not(None),
+        AuctionLot.auction_starts_at < cutoff,
+    )
+
+    def _select_batch(*, after_cursor: bool) -> list[AuctionLot]:
+        query = select(AuctionLot).where(*eligibility)
+        if after_cursor and cursor_time is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    AuctionLot.auction_starts_at < cursor_time,
+                    and_(
+                        AuctionLot.auction_starts_at == cursor_time,
+                        AuctionLot.id > cursor_id,
+                    ),
+                )
+            )
+        return list(
+            session.scalars(
+                query.order_by(AuctionLot.auction_starts_at.desc(), AuctionLot.id.asc()).limit(
+                    batch_limit
+                )
+            ).all()
+        )
+
+    lots = _select_batch(after_cursor=True)
+    if not lots and cursor_time is not None:
+        # One complete pass is exhausted. Wrap only after every older eligible
+        # row had a chance, so repeatedly broken newest cards cannot starve it.
+        lots = _select_batch(after_cursor=False)
+    if lots:
+        last_lot = lots[-1]
+        assert last_lot.auction_starts_at is not None
+        state.cursor_json = json.dumps(
+            {
+                "auction_starts_at": last_lot.auction_starts_at.isoformat(),
+                "id": last_lot.id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    else:
+        state.cursor_json = "{}"
+    state.policy_version = EQAZYNA_DUE_REFRESH_POLICY_VERSION
+    state.updated_at = datetime.now(UTC)
+    # Persist progress before provider I/O. A crash may defer this batch until
+    # the next cursor wrap, but can never pin the sweep to the same failed rows.
+    session.commit()
+    provider = provider or EqazynaProvider()
+    changed = 0
+    terminal = 0
+    errors = 0
+    for lot in lots:
+        try:
+            data = provider.lot_detail(lot.source_url)
+            refreshed, _created, lot_changed = upsert_auction_lot(session, data)
+            session.commit()
+            changed += int(lot_changed)
+            terminal += int(not refreshed.active)
+        except EqazynaError:
+            session.rollback()
+            errors += 1
+            logger.warning("Could not refresh overdue E-Qazyna lot %s", lot.id)
+    return {
+        "selected": len(lots),
+        "changed": changed,
+        "terminal": terminal,
+        "errors": errors,
+    }
 
 
 def auction_stats(

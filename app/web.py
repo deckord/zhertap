@@ -2,20 +2,23 @@
 
 import base64
 import binascii
+from copy import copy
 import hashlib
 import hmac
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import UTC, datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 from re import sub
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import qrcode
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from qrcode.image.svg import SvgPathImage
 from sqlalchemy import func, or_, select
@@ -28,6 +31,9 @@ from app.access import (
     ensure_account_trial,
 )
 from app.account_payments import (
+    LITE_PLAN,
+    PRO_PLAN,
+    PRO_YEAR_PLAN,
     TERMINAL_PROVIDER_STATUSES,
     latest_account_payment,
     refresh_account_payment,
@@ -49,7 +55,16 @@ from app.auction_commercial import (
     list_workspace_members,
 )
 from app.auction_documents import unique_auction_documents
+from app.auction_due_diligence import (
+    build_due_diligence_checklist,
+    due_diligence_attachment_cards,
+    list_due_diligence_requests,
+    update_due_diligence_request,
+)
 from app.auction_exports import auction_lot_publication_history
+from app.auction_history import auction_object_history
+from app.auction_legal_passport import cached_auction_legal_passport
+from app.auction_llm import candidate_is_grounded
 from app.auction_service import (
     AuctionFilters,
     auction_lot_changes,
@@ -63,7 +78,9 @@ from app.auction_v2 import (
     ACTION_LABELS,
     ARCHIVED_EQAZYNA_SEARCH_STATUSES,
     AUCTION_V2_SORT_LABELS,
+    BID_LIMIT_STATUS_LABELS,
     CONFIDENCE_LABELS,
+    DATA_READINESS_LABELS,
     DEADLINE_STATUS_LABELS,
     EQAZYNA_STATUS_FILTER_LABELS,
     EVIDENCE_STATUS_LABELS,
@@ -71,8 +88,15 @@ from app.auction_v2 import (
     FIELD_INSPECTION_OPTIONS,
     GEO_STATUS_LABELS,
     INVESTMENT_STRATEGIES,
+    INVESTMENT_VERDICT_LABELS,
+    LEASE_DURATION_LABELS,
     LOT_SCOPE_LABELS,
+    MANUAL_CHECK_STATUS_OPTIONS,
+    MANUAL_CHECK_TYPES,
+    REPEAT_AUCTION_LABELS,
+    RIGHT_TYPE_LABELS,
     RISK_LABELS,
+    USE_SCENARIO_LABELS,
     AuctionV2Filters,
     add_auction_v2_activity,
     auction_v2_analytics_payload,
@@ -85,7 +109,7 @@ from app.auction_v2 import (
     cached_auction_v2_dashboard,
     create_auction_v2_market_comparable,
     create_auction_v2_watchlist,
-    ensure_default_auction_v2_watchlist,
+    decision_price_card,
     get_auction_v2_payload,
     list_auction_v2_lots,
     list_auction_v2_map_markers,
@@ -93,15 +117,19 @@ from app.auction_v2 import (
     list_auction_v2_watchlists,
     list_auction_v2_web_notifications,
     mark_auction_v2_web_notifications_seen,
+    market_comparable_cards,
     pipeline_stage_options,
     seed_auction_v2_sources,
     set_auction_v2_watchlist_active,
     sync_auction_v2_eqazyna_history_backfill,
     sync_auction_v2_full_cycle,
+    update_auction_v2_manual_check,
     update_auction_v2_pipeline,
 )
+from app.auction_history_read import annual_history_cohorts
 from app.config import settings
 from app.db import get_db
+from app.email_delivery import send_password_reset_email
 from app.feedback import (
     get_or_create_feedback_conversation,
     record_client_feedback,
@@ -112,11 +140,17 @@ from app.map_links import google_maps_place_url
 from app.models import (
     Account,
     AccountPayment,
+    AuctionDecisionSnapshot,
+    AuctionDocument,
+    AuctionDocumentExtractionState,
+    AuctionDueDiligenceAttachment,
+    AuctionDueDiligenceRequest,
     AuctionEvidence,
     AuctionFavorite,
     AuctionLot,
     AuctionSubscription,
     Candidate,
+    PasswordResetToken,
     PaymentStatus,
     SearchRequest,
     TelegramLinkToken,
@@ -144,7 +178,7 @@ from app.services import (
     get_request_with_candidates,
     telegram_request,
 )
-from app.sms import send_login_code
+from app.sms import login_code_message, send_login_code
 from app.urban_plan_labels import urban_plan_badge_payload
 
 router = APIRouter()
@@ -152,6 +186,464 @@ templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
 catalog_provider = EgknProvider()
 ALMATY_TZ = timezone(timedelta(hours=5))
+
+DOCUMENT_EXTRACTION_STATUS_LABELS = {
+    "linked": "Не скачан",
+    "download_failed": "Ошибка скачивания",
+    "pending": "В очереди",
+    "processing": "Распознается",
+    "ready": "Распознавание готово",
+    "retryable": "Повторим",
+    "terminal": "Ошибка анализа",
+}
+
+DOCUMENT_EXTRACTION_STATUS_TONES = {
+    "linked": "neutral",
+    "pending": "pending",
+    "processing": "pending",
+    "ready": "ready",
+    "retryable": "warning",
+    "terminal": "failed",
+}
+
+DOCUMENT_FACT_LABELS = {
+    "annual_payment_kzt": "Ежегодный платёж",
+    "area_hectares": "Площадь",
+    "arrest_status": "Аресты",
+    "cadastral_number": "Кадастровый номер",
+    "development_deadline": "Срок освоения",
+    "development_obligation": "Обязанность по освоению",
+    "divisibility": "Делимость участка",
+    "encumbrances": "Обременения",
+    "genplan_text_mention": "Упоминание генплана",
+    "guarantee_payment_kzt": "Гарантийный взнос",
+    "intended_use": "Предполагаемое использование",
+    "lease_term_years": "Срок аренды",
+    "one_time_payment_kzt": "Разовый платёж",
+    "red_lines_text_mention": "Упоминание красных линий",
+    "responsibility_penalty": "Ответственность и неустойка",
+    "responsible_authority": "Ответственный орган",
+    "restrictions": "Ограничения",
+    "right_type": "Вид права",
+    "target_purpose": "Целевое назначение",
+    "termination_ground": "Основание расторжения",
+}
+
+DOCUMENT_FACT_STATUS_LABELS = {
+    "candidate": "Найдено автоматически",
+    "confirmed": "Подтверждено текстом",
+    "preliminary": "Предварительный вывод",
+    "conflict": "Есть противоречие",
+    "requires_check": "Нужна ручная проверка",
+}
+
+DOCUMENT_FACT_ACTIONS = {
+    "annual_payment_kzt": "Проверить ежегодные платежи в финансовой модели",
+    "arrest_status": "Проверить аресты по официальному реестру",
+    "development_deadline": "Проверить срок освоения и последствия его нарушения",
+    "development_obligation": "Проверить обязанность и срок освоения",
+    "encumbrances": "Проверить обременения до участия",
+    "guarantee_payment_kzt": "Сверить гарантийный взнос с карточкой торгов",
+    "one_time_payment_kzt": "Учесть разовый платёж в полной стоимости сделки",
+    "responsibility_penalty": "Проверить размер неустойки и условия её начисления",
+    "restrictions": "Проверить ограничения и допустимый сценарий использования",
+    "termination_ground": "Проверить основания досрочного расторжения",
+    "transfer_right": "Проверить возможность переуступки или субаренды",
+}
+
+
+def _document_fact_value(field: str, value: object) -> str:
+    if value is None:
+        return "Не указано"
+    if field == "right_type":
+        return {"lease": "Аренда", "ownership": "Собственность"}.get(str(value), str(value))
+    if field == "lease_term_years" and isinstance(value, (int, float)):
+        return f"{value:g} лет"
+    if field == "area_hectares" and isinstance(value, (int, float)):
+        return f"{value:g} га"
+    if field.endswith("_kzt") and isinstance(value, (int, float)):
+        return f"{value:,.0f} ₸".replace(",", " ")
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    if isinstance(value, dict):
+        obligation = str(value.get("obligation") or "").strip()
+        deadline = str(value.get("deadline") or "").strip()
+        if obligation and deadline:
+            return f"{obligation}. Срок: {deadline}"
+        if obligation:
+            return obligation
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _document_conflict_cards(
+    candidates: object,
+    conflicts: object,
+) -> list[dict[str, object]]:
+    """Build a bounded manual-review view without resolving document contradictions."""
+    if not isinstance(candidates, list) or not isinstance(conflicts, list):
+        return []
+    # Only scalar, mutually exclusive facts can be presented as a conflict.
+    # Generic fragments about penalties, force majeure or headings are separate
+    # clauses, not competing answers to the same question.
+    actionable_fields = {
+        "right_type",
+        "lease_term_years",
+        "annual_payment_kzt",
+        "one_time_payment_kzt",
+        "guarantee_payment_kzt",
+        "other_payment_kzt",
+        "area_hectares",
+        "cadastral_number",
+    }
+    cards: list[dict[str, object]] = []
+    for conflict in conflicts[:8]:
+        if not isinstance(conflict, dict):
+            continue
+        field = str(conflict.get("field") or "").strip()[:100]
+        raw_indexes = conflict.get("candidate_indexes")
+        if field not in actionable_fields or not isinstance(raw_indexes, list):
+            continue
+        values: list[dict[str, str]] = []
+        lot_context_value = conflict.get("lot_context_value")
+        # Evidence produced before the explicit context field was introduced
+        # already stores the official value in ``values``. Recover only a value
+        # which is absent from every indexed document candidate, so ordinary
+        # document-versus-document conflicts are not relabelled as lot-card data.
+        if lot_context_value is None and isinstance(conflict.get("values"), list):
+            document_values = [
+                candidates[index].get("value")
+                for index in raw_indexes
+                if isinstance(index, int)
+                and not isinstance(index, bool)
+                and 0 <= index < len(candidates)
+                and isinstance(candidates[index], dict)
+                and str(candidates[index].get("field") or "").strip() == field
+            ]
+            lot_context_value = next(
+                (
+                    value
+                    for value in conflict["values"]
+                    if not any(value == document_value for document_value in document_values)
+                ),
+                None,
+            )
+        if lot_context_value is not None:
+            values.append(
+                {
+                    "value": _document_fact_value(field, lot_context_value)[:500],
+                    "evidence": "Официальная карточка лота E-Qazyna",
+                    "provenance": "карточка лота",
+                }
+            )
+        for raw_index in raw_indexes:
+            if len(values) >= 4 or not isinstance(raw_index, int) or isinstance(raw_index, bool):
+                continue
+            if raw_index < 0 or raw_index >= len(candidates):
+                continue
+            candidate = candidates[raw_index]
+            if not isinstance(candidate, dict):
+                continue
+            candidate_field = str(candidate.get("field") or "").strip()
+            if candidate_field != field:
+                continue
+            page = candidate.get("page")
+            section = str(candidate.get("section") or "").strip()[:200]
+            if section.startswith("ocr-line:"):
+                section = f"OCR строка {section.removeprefix('ocr-line:')}"
+            elif section.startswith("line:"):
+                section = f"строка {section.removeprefix('line:')}"
+            provenance = " · ".join(
+                part
+                for part in (
+                    f"стр. {page}" if isinstance(page, int) and not isinstance(page, bool) else "",
+                    section,
+                )
+                if part
+            )
+            values.append(
+                {
+                    "value": _document_fact_value(field, candidate.get("value"))[:500],
+                    "evidence": str(candidate.get("evidence_excerpt") or "")[:500],
+                    "provenance": provenance,
+                }
+            )
+        if len(values) < 2:
+            continue
+        cards.append(
+            {
+                "field": field,
+                "label": DOCUMENT_FACT_LABELS.get(field, field),
+                "values": values,
+            }
+        )
+    return cards
+
+
+def _document_decision_brief(
+    candidates: list[dict[str, object]],
+    *,
+    summary: str,
+    risks: list[str],
+    unknowns: list[str],
+) -> dict[str, object]:
+    material = [
+        item
+        for item in candidates
+        if item.get("is_llm") is True
+        and item.get("is_grounded") is True
+        and str(item.get("field")) in DOCUMENT_FACT_ACTIONS
+    ]
+    actions = list(
+        dict.fromkeys(
+            DOCUMENT_FACT_ACTIONS[str(item["field"])]
+            for item in material
+            if str(item.get("field")) in DOCUMENT_FACT_ACTIONS
+        )
+    )[:6]
+    meaningful_summary = summary.strip() if summary.strip() else (
+        f"ИИ нашёл {len(material)} новых существенных условий с цитатами из документа."
+        if material
+        else "ИИ не добавил новых существенных выводов сверх данных карточки лота."
+    )
+    return {
+        "summary": meaningful_summary[:600],
+        "findings": material[:6],
+        "risks": list(dict.fromkeys(risk.strip() for risk in risks if risk.strip()))[:4],
+        "unknowns": list(dict.fromkeys(item.strip() for item in unknowns if item.strip()))[:4],
+        "actions": actions,
+        "basis": "В brief попадают только LLM-факты с точной цитатой и provenance.",
+    }
+
+
+def _auction_document_extraction_cards(
+    session: Session,
+    documents: list[object],
+) -> dict[int, dict[str, object]]:
+    document_ids = [int(document.id) for document in documents if getattr(document, "id", None)]
+    if not document_ids:
+        return {}
+    states = {
+        state.document_id: state
+        for state in session.scalars(
+            select(AuctionDocumentExtractionState).where(
+                AuctionDocumentExtractionState.document_id.in_(document_ids)
+            )
+        )
+    }
+    evidence_ids = [
+        int(state.current_evidence_id)
+        for state in states.values()
+        if state.current_evidence_id is not None
+    ]
+    evidences = (
+        {
+            evidence.id: evidence
+            for evidence in session.scalars(
+                select(AuctionEvidence).where(AuctionEvidence.id.in_(evidence_ids))
+            )
+        }
+        if evidence_ids
+        else {}
+    )
+    cards: dict[int, dict[str, object]] = {}
+    for document in documents:
+        document_id = getattr(document, "id", None)
+        if document_id is None:
+            continue
+        status = "download_failed" if document.storage_status == "failed" else "linked"
+        detail = (
+            document.download_error
+            if status == "download_failed" and document.download_error
+            else "Файл еще не скачан на сервер для распознавания."
+        )
+        fact_count = 0
+        conflict_count = 0
+        pages_processed = None
+        text_chars_processed = None
+        evidence_id = None
+        analysis_engine = "base_extractor"
+        candidates_preview: list[dict[str, object]] = []
+        candidate_indexes: dict[str, int] = {}
+        conflict_cards: list[dict[str, object]] = []
+        llm_summary = ""
+        llm_risks: list[str] = []
+        llm_unknowns: list[str] = []
+        state = states.get(int(document_id))
+        if state is not None and document.storage_status == "downloaded":
+            status = state.status
+            detail = state.last_error_message or ""
+            evidence_id = state.current_evidence_id
+            evidence = evidences.get(int(evidence_id)) if evidence_id is not None else None
+            if evidence and evidence.raw_payload_json:
+                try:
+                    raw = json.loads(evidence.raw_payload_json)
+                except json.JSONDecodeError:
+                    raw = {}
+                result = raw.get("result") if isinstance(raw, dict) else None
+                if isinstance(result, dict):
+                    candidates = result.get("candidates")
+                    conflicts = result.get("conflicts")
+                    fact_count = len(candidates) if isinstance(candidates, list) else 0
+                    if isinstance(candidates, list):
+                        for candidate in candidates[:64]:
+                            if not isinstance(candidate, dict):
+                                continue
+                            field_code = str(candidate.get("field") or "fact")[:100]
+                            existing_index = candidate_indexes.get(field_code)
+                            if existing_index is not None:
+                                candidates_preview[existing_index]["mentions"] = int(
+                                    candidates_preview[existing_index]["mentions"]
+                                ) + 1
+                                if "+llm" in str(
+                                    candidate.get("extractor_version") or ""
+                                ).casefold():
+                                    candidates_preview[existing_index]["is_llm"] = True
+                                    candidates_preview[existing_index]["is_grounded"] = (
+                                        candidate_is_grounded(
+                                            field_code,
+                                            candidate.get("value"),
+                                            str(candidate.get("evidence_excerpt") or ""),
+                                        )
+                                    )
+                                continue
+                            if len(candidates_preview) >= 8:
+                                continue
+                            value_text = _document_fact_value(field_code, candidate.get("value"))
+                            page = candidate.get("page")
+                            section = str(candidate.get("section") or "").strip()
+                            if section.startswith("ocr-line:"):
+                                section = f"OCR строка {section.removeprefix('ocr-line:')}"
+                            elif section.startswith("line:"):
+                                section = f"строка {section.removeprefix('line:')}"
+                            provenance = " · ".join(
+                                part
+                                for part in (
+                                    f"стр. {page}" if page is not None else "",
+                                    section,
+                                )
+                                if part
+                            )
+                            candidates_preview.append(
+                                {
+                                    "field": field_code,
+                                    "label": DOCUMENT_FACT_LABELS.get(field_code, field_code),
+                                    "value": value_text[:500],
+                                    "status": DOCUMENT_FACT_STATUS_LABELS.get(
+                                        str(candidate.get("status") or "candidate"),
+                                        "Найдено автоматически",
+                                    ),
+                                    "evidence": str(
+                                        candidate.get("evidence_excerpt") or ""
+                                    )[:500],
+                                    "provenance": provenance,
+                                    "confidence": candidate.get("confidence"),
+                                    "mentions": 1,
+                                    "is_llm": "+llm"
+                                    in str(candidate.get("extractor_version") or "").casefold(),
+                                    "is_grounded": candidate_is_grounded(
+                                        field_code,
+                                        candidate.get("value"),
+                                        str(candidate.get("evidence_excerpt") or ""),
+                                    ),
+                                }
+                            )
+                            candidate_indexes[field_code] = len(candidates_preview) - 1
+                    conflict_count = len(conflicts) if isinstance(conflicts, list) else 0
+                    conflict_cards = _document_conflict_cards(candidates, conflicts)
+                    pages_processed = result.get("pages_processed")
+                    text_chars_processed = result.get("text_chars_processed")
+                    extractor_version = str(result.get("extractor_version") or "")
+                    if "llm" in extractor_version.casefold():
+                        analysis_engine = "llm"
+                    llm_summary = str(result.get("summary") or "").strip()
+                    raw_risks = result.get("risks")
+                    if isinstance(raw_risks, list):
+                        llm_risks = [str(item).strip() for item in raw_risks if str(item).strip()]
+                    raw_unknowns = result.get("unknowns")
+                    if isinstance(raw_unknowns, list):
+                        llm_unknowns = [
+                            str(item).strip() for item in raw_unknowns if str(item).strip()
+                        ]
+                    detail = str(result.get("detail") or detail or "").strip()
+            if not detail:
+                if status == "ready":
+                    detail = (
+                        f"Извлечено фактов: {fact_count}."
+                        if fact_count
+                        else "Текст обработан, ключевые факты не найдены."
+                    )
+                elif status == "pending":
+                    detail = "Документ скачан и ожидает очереди распознавания."
+                elif status == "processing":
+                    detail = "Документ сейчас обрабатывается агентом распознавания."
+                elif status == "retryable":
+                    detail = "Предыдущая попытка не завершилась, агент попробует еще раз."
+                elif status == "terminal":
+                    detail = "Документ не удалось распознать автоматически."
+        decision_brief = (
+            _document_decision_brief(
+                candidates_preview,
+                summary=llm_summary,
+                risks=llm_risks,
+                unknowns=llm_unknowns,
+            )
+            if candidates_preview
+            else None
+        )
+        decision_count = (
+            len(decision_brief.get("findings", [])) if isinstance(decision_brief, dict) else 0
+        )
+        cards[int(document_id)] = {
+            "status": status,
+            "tone": DOCUMENT_EXTRACTION_STATUS_TONES.get(status, "neutral"),
+            "detail": detail,
+            "fact_count": fact_count,
+            "conflict_count": conflict_count,
+            "conflicts": conflict_cards,
+            "pages_processed": pages_processed,
+            "text_chars_processed": text_chars_processed,
+            "evidence_id": evidence_id,
+            "analysis_engine": analysis_engine,
+            "candidates": candidates_preview,
+            "decision_brief": decision_brief,
+            "decision_count": decision_count,
+            "label": (
+                "ИИ-анализ: найдено важное"
+                if status == "ready" and analysis_engine == "llm" and decision_count
+                else "ИИ проверил · новых условий нет"
+                if status == "ready" and analysis_engine == "llm"
+                else DOCUMENT_EXTRACTION_STATUS_LABELS.get(status, status)
+            ),
+        }
+    return cards
+
+
+def _auction_document_file_response(document: AuctionDocument) -> FileResponse:
+    if document.storage_status != "downloaded" or not document.local_path:
+        raise HTTPException(status_code=404, detail="Документ еще не скачан")
+    storage_root = Path(settings.auction_v2_document_storage_dir).resolve()
+    file_path = Path(document.local_path)
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+    file_path = file_path.resolve()
+    if file_path != storage_root and storage_root not in file_path.parents:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    media_type = (
+        "application/pdf"
+        if (document.file_type or "").lower() == "pdf"
+        else "application/octet-stream"
+    )
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=document.title or file_path.name,
+    )
+
 
 KAZAKHSTAN_REGION_FALLBACKS = (
     "Область Абай",
@@ -177,6 +669,8 @@ KAZAKHSTAN_REGION_FALLBACKS = (
 )
 
 SESSION_COOKIE = "zhertap_session"
+GUEST_SEARCH_COOKIE = "zhertap_guest_search"
+GUEST_SEARCH_COOKIE_MAX_AGE = 24 * 60 * 60
 CODE_TTL_MINUTES = 10
 SESSION_DAYS = 30
 LOCK_MINUTES = 5
@@ -275,6 +769,27 @@ def csrf_token(request: Request) -> str:
 
 
 templates.env.globals["csrf_token"] = csrf_token
+
+
+@router.get("/set-language")
+def set_language(lang: str = "ru", next: str = "/") -> RedirectResponse:
+    selected = lang.lower().strip()
+    if selected not in {"ru", "kz"}:
+        selected = "ru"
+    response = _redirect_with_query(next or "/")
+    response.set_cookie(
+        "zhertap_lang",
+        selected,
+        max_age=365 * 24 * 60 * 60,
+        httponly=False,
+        secure=settings.app_base_url.startswith("https://"),
+        samesite="lax",
+    )
+    return response
+
+
+def _selected_language(request: Request) -> str:
+    return "kz" if request.cookies.get("zhertap_lang", "ru") == "kz" else "ru"
 
 
 def _legacy_hash(value: str) -> str:
@@ -418,6 +933,34 @@ def normalize_phone(phone: str) -> str:
     return "+" + digits
 
 
+def _normalize_email(email: str) -> str:
+    normalized = email.strip().casefold()
+    if len(normalized) > 320 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        raise ValueError("Введите корректный email")
+    return normalized
+
+
+def _mask_email(email: str) -> str:
+    local, domain = email.split("@", 1)
+    visible = local[:1]
+    return f"{visible}***@{domain}"
+
+
+def _valid_password_reset_token(
+    session: Session,
+    raw_token: str,
+) -> PasswordResetToken | None:
+    if not raw_token:
+        return None
+    return session.scalar(
+        select(PasswordResetToken).where(
+            PasswordResetToken.token_hash == _hash(raw_token),
+            PasswordResetToken.consumed_at.is_(None),
+            PasswordResetToken.expires_at > _now(),
+        )
+    )
+
+
 def _admin_web_phones() -> set[str]:
     phones: set[str] = set()
     for raw_phone in settings.admin_web_phones.split(","):
@@ -460,6 +1003,51 @@ def _login_context(request: Request, **extra: object) -> dict:
     }
     context.update(extra)
     return context
+
+
+def _send_login_code_with_telegram_fallback(
+    account: Account,
+    phone: str,
+    code: str,
+) -> None:
+    try:
+        send_login_code(phone, code)
+        return
+    except Exception:
+        if not account.telegram_chat_id:
+            raise
+        logger.warning("WhatsApp and SMS login-code delivery failed; trying Telegram")
+    result = telegram_request(
+        "sendMessage",
+        {
+            "chat_id": account.telegram_chat_id,
+            "text": login_code_message(code),
+        },
+    )
+    if not result.get("ok"):
+        raise RuntimeError("Telegram login-code delivery failed")
+
+
+def _russian_count_form(value: int, one: str, few: str, many: str) -> str:
+    last_two = value % 100
+    if 11 <= last_two <= 14:
+        return many
+    last = value % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def _retry_after_message(retry_after_seconds: int) -> str:
+    seconds = max(1, int(retry_after_seconds))
+    if seconds < 60:
+        unit = _russian_count_form(seconds, "секунду", "секунды", "секунд")
+        return f"Повторите через {seconds} {unit}."
+    minutes = max(1, (seconds + 59) // 60)
+    unit = _russian_count_form(minutes, "минуту", "минуты", "минут")
+    return f"Повторите через {minutes} {unit}."
 
 
 def _trial_access_label(days: int) -> str:
@@ -585,7 +1173,9 @@ def _payment_context(payment: AccountPayment | None) -> dict[str, object]:
         "payment_id": payment.id if payment else None,
         "payment_url": payment_url,
         "payment_qr_image_url": payment_qr_image_url,
-        "payment_qr": None if payment_qr_image_url else _qr_data_uri(payment_url),
+        # Always build a local QR from the Kaspi token URL. ApiPay's hosted PNG
+        # can be unreachable from a user's browser even when it works server-side.
+        "payment_qr": _qr_data_uri(payment_url),
         "payment_status": payment.payment_status if payment else PaymentStatus.not_requested.value,
         "payment_amount": (
             payment.payment_amount_kzt if payment and payment.payment_amount_kzt else settings.platform_access_price_kzt
@@ -619,11 +1209,7 @@ def _can_access_search(account: Account, search: SearchRequest) -> bool:
         return True
     if account.telegram_user_id and search.telegram_user_id == account.telegram_user_id:
         return True
-    return (
-        search.web_account_id is None
-        and search.telegram_user_id is None
-        and (search.raw_query or "").startswith("web-cabinet")
-    )
+    return False
 
 
 def _get_accessible_search(
@@ -699,18 +1285,28 @@ def _search_status_label(status: str) -> str:
 
 
 def _search_status_message(search: SearchRequest) -> str:
+    if search.status == "queued":
+        if search.error_message and "временно ограничил запросы" in search.error_message:
+            return (
+                f"{search.error_message} Заявка остается в очереди, "
+                "повтор запустится автоматически."
+            )
+        return "Заявка принята. Скоро начнется проверка ЕГКН, OSM и градостроительных слоев."
+    if search.status == "processing":
+        if search.error_message and "временно ограничил запросы" in search.error_message:
+            return (
+                f"{search.error_message} Анализ не остановлен, "
+                "следующая попытка запланирована автоматически."
+            )
+        return "Идет поиск расчетных мест. Страница обновит результат сама, закрывать ее не нужно."
+    if search.status == "review":
+        return "Кандидаты найдены и проходят финальную проверку."
     if (
         search.error_message
         or search.search_outcome in {"no_candidates", "filtered_out"}
         or search.urban_plan_status in {"unavailable", "blocked"}
     ):
         return explain_search_result(search).text
-    if search.status == "queued":
-        return "Заявка принята. Скоро начнется проверка ЕГКН, OSM и градостроительных слоев."
-    if search.status == "processing":
-        return "Идет поиск расчетных мест. Страница обновит результат сама, закрывать ее не нужно."
-    if search.status == "review":
-        return "Кандидаты найдены и проходят финальную проверку."
     if search.status in {"ready", "delivered"}:
         visible_count = len(_visible_search_candidates(search))
         if visible_count:
@@ -722,6 +1318,8 @@ def _search_status_message(search: SearchRequest) -> str:
 
 
 def _search_explanation_payload(search: SearchRequest) -> dict[str, str] | None:
+    if search.status in {"queued", "processing", "review"}:
+        return None
     if not (
         search.error_message
         or search.search_outcome in {"no_candidates", "filtered_out"}
@@ -737,7 +1335,21 @@ def _search_explanation_payload(search: SearchRequest) -> dict[str, str] | None:
     }
 
 
-def _candidate_payload(candidate: Candidate, *, unlocked: bool) -> dict[str, object]:
+def _search_report_unlocked(session: Session, account: Account) -> bool:
+    return account_has_permanent_access(session, account)
+
+
+def _require_paid_search_report_access(session: Session, account: Account) -> None:
+    if not _search_report_unlocked(session, account):
+        raise HTTPException(
+            status_code=403,
+            detail="Карта, генплан и ЕГКН доступны после оплаты.",
+        )
+
+
+def _candidate_payload(
+    candidate: Candidate, *, unlocked: bool, free_preview: bool = False
+) -> dict[str, object]:
     return {
         "rank": candidate.rank,
         "locality": candidate.locality,
@@ -745,7 +1357,9 @@ def _candidate_payload(candidate: Candidate, *, unlocked: bool) -> dict[str, obj
         "latitude": candidate.latitude if unlocked else None,
         "longitude": candidate.longitude if unlocked else None,
         "score": candidate.score,
-        "nearby_cadastre": candidate.nearby_cadastre if unlocked else None,
+        "nearby_cadastre": (
+            candidate.nearby_cadastre if unlocked and not free_preview else None
+        ),
         "nearby_distance_m": candidate.nearby_distance_m,
         "nearby_land_use": candidate.nearby_land_use,
         "road_distance_m": candidate.road_distance_m,
@@ -761,12 +1375,26 @@ def _candidate_payload(candidate: Candidate, *, unlocked: bool) -> dict[str, obj
         ),
         "egkn_url": candidate.egkn_url if unlocked else None,
         "risk_notes": candidate.risk_notes,
+        "free_preview": free_preview,
         "locked": not unlocked,
     }
 
 
 def _visible_search_candidates(search: SearchRequest) -> list[Candidate]:
     return sorted(approved_candidates(search), key=lambda item: item.rank)
+
+
+def _genplan_preview_candidates(search: SearchRequest) -> list[Candidate]:
+    if search.urban_plan_status != "blocked":
+        return []
+    return sorted(
+        (
+            candidate
+            for candidate in search.candidates
+            if candidate.urban_plan_status == "blocked"
+        ),
+        key=lambda item: item.rank,
+    )
 
 
 def _auction_user_key(account: Account) -> str:
@@ -831,6 +1459,66 @@ def _optional_float(value: str | float | None) -> float | None:
     return float(value)
 
 
+_MANUAL_CHECK_ALLOWED_CONTENT_TYPES = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+}
+_MANUAL_CHECK_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _safe_upload_suffix(upload: UploadFile) -> str:
+    content_type = (upload.content_type or "").split(";")[0].strip().lower()
+    if content_type in _MANUAL_CHECK_ALLOWED_CONTENT_TYPES:
+        return _MANUAL_CHECK_ALLOWED_CONTENT_TYPES[content_type]
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix in {".pdf", ".jpg", ".jpeg", ".png"}:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    raise ValueError("Можно приложить только PDF, JPEG или PNG")
+
+
+async def _store_manual_check_upload(
+    *,
+    account_id: str,
+    lot_id: str,
+    check_code: str,
+    upload: UploadFile | None,
+) -> dict[str, object] | None:
+    if upload is None or not upload.filename:
+        return None
+    suffix = _safe_upload_suffix(upload)
+    content = await upload.read()
+    if len(content) > _MANUAL_CHECK_MAX_BYTES:
+        raise ValueError("Файл проверки не должен превышать 20 МБ")
+    if not _upload_content_matches_suffix(content, suffix):
+        raise ValueError("Содержимое файла не соответствует заявленному типу")
+    document_id = secrets.token_urlsafe(18)
+    relative_path = Path("manual-checks") / account_id / lot_id / check_code / f"{document_id}{suffix}"
+    storage_root = Path(settings.auction_v2_document_storage_dir)
+    file_path = storage_root / relative_path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(content)
+    return {
+        "id": document_id,
+        "title": Path(upload.filename).name[:240] or f"Документ {check_code}",
+        "path": relative_path.as_posix(),
+        "content_type": upload.content_type or "",
+        "content_sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+        "uploaded_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _upload_content_matches_suffix(content: bytes, suffix: str) -> bool:
+    if suffix == ".pdf":
+        return b"%PDF-" in content[:1024]
+    if suffix == ".png":
+        return content.startswith(bytes.fromhex("89504e470d0a1a0a"))
+    if suffix == ".jpg":
+        return content.startswith(b"\xff\xd8\xff")
+    return False
+
+
 def _optional_score(value: str | int | None) -> int | None:
     if value is None:
         return None
@@ -867,6 +1555,13 @@ def _auction_v2_filter_values(
     stage: str = "",
     deadline_status: str = "",
     geo_status: str = "",
+    right_type: str = "",
+    lease_duration: str = "",
+    use_scenario: str = "",
+    investment_verdict: str = "",
+    bid_limit_status: str = "",
+    data_readiness: str = "",
+    repeat_auction: str = "",
 ) -> dict[str, str]:
     lot_scope_value = lot_scope.strip() if lot_scope else "active"
     if lot_scope_value not in LOT_SCOPE_LABELS:
@@ -897,11 +1592,42 @@ def _auction_v2_filter_values(
         "stage": stage.strip() if stage else "",
         "deadline_status": deadline_status.strip() if deadline_status else "",
         "geo_status": geo_status.strip() if geo_status else "",
+        "right_type": right_type.strip() if right_type else "",
+        "lease_duration": lease_duration.strip() if lease_duration else "",
+        "use_scenario": use_scenario.strip() if use_scenario else "",
+        "investment_verdict": investment_verdict.strip() if investment_verdict else "",
+        "bid_limit_status": bid_limit_status.strip() if bid_limit_status else "",
+        "data_readiness": data_readiness.strip() if data_readiness else "",
+        "repeat_auction": repeat_auction.strip() if repeat_auction else "",
     }
 
 
 def _auction_v2_filter_query(filter_values: dict[str, str]) -> str:
     return urlencode({key: value for key, value in filter_values.items() if value})
+
+
+def _auction_v2_scenario_counts(
+    session: Session,
+    filters: AuctionV2Filters,
+    *,
+    account_id: str | None,
+) -> dict[str, int]:
+    """Counts each declared-use profile under the other active filters."""
+    counts: dict[str, int] = {}
+    for scenario in USE_SCENARIO_LABELS:
+        if scenario in {"other", "unknown"}:
+            continue
+        probe = copy(filters)
+        probe.use_scenario = scenario
+        _rows, total = list_auction_v2_lots(
+            session,
+            probe,
+            account_id=account_id,
+            limit=0,
+            prepare_missing=False,
+        )
+        counts[scenario] = total
+    return counts
 
 
 def _auction_v2_query_with(
@@ -945,6 +1671,13 @@ def _auction_v2_filters_from_values(filter_values: dict[str, str]) -> AuctionV2F
         stage=filter_values["stage"] or None,
         deadline_status=filter_values["deadline_status"] or None,
         geo_status=filter_values["geo_status"] or None,
+        right_type=filter_values["right_type"] or None,
+        lease_duration=filter_values["lease_duration"] or None,
+        use_scenario=filter_values["use_scenario"] or None,
+        investment_verdict=filter_values["investment_verdict"] or None,
+        bid_limit_status=filter_values["bid_limit_status"] or None,
+        data_readiness=filter_values["data_readiness"] or None,
+        repeat_auction=filter_values["repeat_auction"] or None,
     )
 
 
@@ -955,12 +1688,14 @@ def _search_payload(
     account: Account,
 ) -> dict[str, object]:
     candidates = _visible_search_candidates(search)
+    genplan_preview_candidates = _genplan_preview_candidates(search)
     genplan_reference = genplan_reference_payload(
         search,
         language=search.language,
         manual_files_root=settings.manual_genplan_files_root,
     )
-    unlocked = account_access_kind(session, account) in {"paid", "trial"}
+    unlocked = _search_report_unlocked(session, account)
+    free_preview_index = 0 if candidates and not unlocked else -1
     return {
         "id": search.id,
         "status": search.status,
@@ -979,12 +1714,26 @@ def _search_payload(
             reference_source_kind=genplan_reference.get("source_kind"),
         ),
         "urban_plan_message": search.urban_plan_message,
-        "urban_plan_reference": genplan_reference,
-        "genplan_map_url": _search_genplan_map_url(search),
+        "urban_plan_reference": genplan_reference if unlocked else None,
+        "genplan_map_url": _search_genplan_map_url(search) if unlocked else None,
         "payment_status": search.payment_status,
         "can_request_next_batch": _can_request_next_batch(session, account, search),
         "report_unlocked": unlocked,
-        "candidates": [_candidate_payload(candidate, unlocked=unlocked) for candidate in candidates],
+        "candidates": [
+            _candidate_payload(
+                candidate,
+                unlocked=unlocked,
+                free_preview=index == free_preview_index,
+            )
+            for index, candidate in enumerate(candidates)
+        ],
+        "can_show_without_genplan": unlocked and bool(genplan_preview_candidates),
+        "genplan_preview_candidate_count": len(genplan_preview_candidates) if unlocked else 0,
+        "genplan_preview_candidates": (
+            [_candidate_payload(candidate, unlocked=True) for candidate in genplan_preview_candidates]
+            if unlocked
+            else []
+        ),
     }
 
 
@@ -999,6 +1748,37 @@ def require_web_account(request: Request, session: Session = Depends(get_db)) ->
     if account is None:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     return account
+
+
+def _auction_region_catalog_rows(
+    official_rows: list[dict[str, object]],
+    auction_rows: list[tuple[str, int]],
+) -> list[dict[str, str]]:
+    """All official regions, with counts only from E-Qazyna lots."""
+    counts_by_key = {_auction_catalog_key(value): count for value, count in auction_rows}
+    result: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    for row in official_rows:
+        official_value = str(row.get("value") or row.get("label") or "")
+        key = _auction_catalog_key(official_value)
+        if not key or key in seen_keys:
+            continue
+        matches = [
+            (value, count)
+            for value, count in auction_rows
+            if _catalog_keys_match(_auction_catalog_key(value), key)
+        ]
+        value = matches[0][0] if matches else official_value
+        count = sum(count for _value, count in matches)
+        label = re.sub(r"\s*\(\d+\)\s*$", "", official_value).strip()
+        result.append({"value": value, "label": f"{label} ({count})"})
+        seen_keys.add(key)
+    for value, count in auction_rows:
+        key = _auction_catalog_key(value)
+        if key and not any(_catalog_keys_match(key, seen) for seen in seen_keys):
+            result.append({"value": value, "label": f"{value} ({count})"})
+            seen_keys.add(key)
+    return result
 
 
 def _auction_catalog_rows(
@@ -1257,6 +2037,46 @@ def _merge_official_catalog_with_auction_counts(
     return result
 
 
+def _guest_search_for_request(
+    request: Request,
+    session: Session,
+    search_id: str,
+) -> SearchRequest | None:
+    token = request.cookies.get(GUEST_SEARCH_COOKIE, "")
+    if not token:
+        return None
+    search = session.get(SearchRequest, search_id)
+    if search is None or search.web_account_id is not None:
+        return None
+    expected_owner = f"web-guest:{_hash(token)}"
+    if not hmac.compare_digest(search.raw_query or "", expected_owner):
+        return None
+    return search
+
+
+def _claim_guest_search(
+    request: Request,
+    session: Session,
+    account: Account,
+) -> SearchRequest | None:
+    token = request.cookies.get(GUEST_SEARCH_COOKIE, "")
+    if not token:
+        return None
+    search = session.scalar(
+        select(SearchRequest)
+        .where(
+            SearchRequest.web_account_id.is_(None),
+            SearchRequest.raw_query == f"web-guest:{_hash(token)}",
+        )
+        .order_by(SearchRequest.created_at.desc())
+    )
+    if search is None:
+        return None
+    search.web_account_id = account.id
+    search.raw_query = f"web-cabinet:{account.id}:claimed-guest"
+    return search
+
+
 def _start_web_session(request: Request, session: Session, account: Account) -> RedirectResponse:
     token = secrets.token_urlsafe(48)
     web_session = WebSession(
@@ -1267,8 +2087,10 @@ def _start_web_session(request: Request, session: Session, account: Account) -> 
         expires_at=_now() + timedelta(days=SESSION_DAYS),
     )
     session.add(web_session)
+    claimed_search = _claim_guest_search(request, session, account)
     session.commit()
-    response = RedirectResponse("/cabinet", status_code=303)
+    target = f"/cabinet/searches/{claimed_search.id}" if claimed_search else "/cabinet"
+    response = RedirectResponse(target, status_code=303)
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -1277,6 +2099,8 @@ def _start_web_session(request: Request, session: Session, account: Account) -> 
         samesite="lax",
         max_age=SESSION_DAYS * 24 * 60 * 60,
     )
+    if claimed_search:
+        response.delete_cookie(GUEST_SEARCH_COOKIE, samesite="lax")
     return response
 
 
@@ -1355,7 +2179,7 @@ def landing(request: Request, session: Session = Depends(get_db)):
         context={
             "app_name": settings.app_name,
             "account": account,
-            "price_kzt": settings.platform_access_price_kzt,
+            "price_kzt": settings.lite_plan_price_kzt,
             "trial_days": settings.trial_access_days,
             "trial_label": _trial_access_label(settings.trial_access_days),
             "active_lots": active_lots or 0,
@@ -1364,6 +2188,145 @@ def landing(request: Request, session: Session = Depends(get_db)):
             "market": market,
         },
     )
+
+
+@router.get("/catalog/regions")
+def public_catalog_regions(request: Request) -> list[dict[str, str]]:
+    state = consume_rate_limit(
+        f"web:public_catalog:ip:{_client_ip(request)}", limit=60, window_seconds=60
+    )
+    if not state.allowed:
+        raise HTTPException(status_code=429, detail="Слишком много запросов к справочнику.")
+    try:
+        return _egkn_region_rows()
+    except Exception as exc:
+        fallback = _fallback_region_rows()
+        if fallback:
+            return fallback
+        raise HTTPException(status_code=502, detail="Справочник областей временно недоступен") from exc
+
+
+@router.get("/catalog/districts")
+def public_catalog_districts(
+    request: Request,
+    region: str,
+) -> list[dict[str, str | int]]:
+    state = consume_rate_limit(
+        f"web:public_catalog:ip:{_client_ip(request)}", limit=60, window_seconds=60
+    )
+    if not state.allowed:
+        raise HTTPException(status_code=429, detail="Слишком много запросов к справочнику.")
+    try:
+        return _egkn_district_rows(region)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Справочник районов временно недоступен") from exc
+
+
+@router.get("/catalog/settlements")
+def public_catalog_settlements(
+    request: Request,
+    district_id: int,
+) -> list[dict[str, str]]:
+    state = consume_rate_limit(
+        f"web:public_catalog:ip:{_client_ip(request)}", limit=60, window_seconds=60
+    )
+    if not state.allowed:
+        raise HTTPException(status_code=429, detail="Слишком много запросов к справочнику.")
+    try:
+        return _egkn_settlement_rows(district_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Справочник населенных пунктов временно недоступен",
+        ) from exc
+
+
+@router.post("/guest-search")
+def submit_guest_search(
+    request: Request,
+    region: str = Form(""),
+    district: str = Form(""),
+    locality: str = Form(""),
+    purpose: str = Form(LPH_NEW),
+    irrigation_type: str = Form(""),
+    area_ha: float = Form(0.12),
+    session: Session = Depends(get_db),
+):
+    region = region.strip()
+    district = district.strip()
+    if not region or not district:
+        return RedirectResponse("/?search_error=location#search", status_code=303)
+    state = consume_rate_limit(
+        f"web:guest_search:ip:{_client_ip(request)}", limit=3, window_seconds=60
+    )
+    if not state.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Слишком много запусков поиска. Попробуйте через минуту.",
+        )
+    token = secrets.token_urlsafe(32)
+    payload = SearchCreate(
+        language=_selected_language(request),
+        region=region,
+        district=district,
+        locality=locality or None,
+        purpose=purpose,
+        irrigation_type=irrigation_type or None,
+        area_ha=area_ha,
+        raw_query=f"web-guest:{_hash(token)}",
+    )
+    search, _ = create_search(session, payload)
+    dispatch_search(search.id)
+    response = RedirectResponse(f"/guest-searches/{search.id}", status_code=303)
+    response.set_cookie(
+        GUEST_SEARCH_COOKIE,
+        token,
+        httponly=True,
+        secure=settings.app_base_url.startswith("https://"),
+        samesite="lax",
+        max_age=GUEST_SEARCH_COOKIE_MAX_AGE,
+    )
+    return response
+
+
+@router.get("/guest-searches/{search_id}", response_class=HTMLResponse)
+def guest_search_detail(
+    request: Request,
+    search_id: str,
+    session: Session = Depends(get_db),
+):
+    search = _guest_search_for_request(request, session, search_id)
+    if search is None:
+        raise HTTPException(status_code=404, detail="Поиск не найден")
+    return templates.TemplateResponse(
+        request=request,
+        name="site_guest_search.html",
+        context={
+            "app_name": settings.app_name,
+            "account": None,
+            "search": search,
+            "candidate_count": len(_visible_search_candidates(search)),
+            "price_kzt": settings.lite_plan_price_kzt,
+        },
+    )
+
+
+@router.get("/guest-searches/{search_id}/status")
+def guest_search_status(
+    request: Request,
+    search_id: str,
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    search = _guest_search_for_request(request, session, search_id)
+    if search is None:
+        raise HTTPException(status_code=404, detail="Поиск не найден")
+    return {
+        "id": search.id,
+        "status": search.status,
+        "progress": search.progress,
+        "candidate_count": len(_visible_search_candidates(search)),
+        "message": search.error_message or "",
+    }
 
 
 @router.get("/offer", response_class=HTMLResponse)
@@ -1575,6 +2538,111 @@ def password_login(
     return _start_web_session(request, session, account)
 
 
+@router.post("/register")
+def register_with_password(
+    request: Request,
+    phone: str = Form(""),
+    email: str = Form(""),
+    password: str = Form(""),
+    password_confirm: str = Form(""),
+    offer_accepted: str | None = Form(None),
+    session: Session = Depends(get_db),
+):
+    if not phone.strip() or not email.strip() or not password:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                register_error="Введите телефон, email и пароль.",
+                register_phone=phone,
+                register_email=email,
+            ),
+            status_code=400,
+        )
+    try:
+        normalized_phone = normalize_phone(phone)
+        normalized_email = _normalize_email(email)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                register_error=str(exc),
+                register_phone=phone,
+                register_email=email,
+            ),
+            status_code=400,
+        )
+    password_error = _password_error(password, password_confirm)
+    if password_error:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                register_error=password_error,
+                register_phone=normalized_phone,
+                register_email=normalized_email,
+            ),
+            status_code=400,
+        )
+    if offer_accepted != "yes":
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                register_error="Для регистрации нужно принять оферту и условия сервиса.",
+                register_phone=normalized_phone,
+                register_email=normalized_email,
+            ),
+            status_code=400,
+        )
+    existing_phone = session.scalar(select(Account).where(Account.phone == normalized_phone))
+    if existing_phone is not None:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                existing_account_phone=normalized_phone,
+                phone=normalized_phone,
+            ),
+            status_code=200,
+        )
+    existing_email = session.scalar(select(Account).where(Account.email == normalized_email))
+    if existing_email is not None:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                register_error="Этот email уже используется другим аккаунтом.",
+                register_phone=normalized_phone,
+                register_email=normalized_email,
+            ),
+            status_code=200,
+        )
+    account = Account(
+        phone=normalized_phone,
+        email=normalized_email,
+        password_hash=_hash_password(password),
+        password_set_at=_now(),
+        offer_version=OFFER_VERSION,
+        offer_accepted_at=_now(),
+        offer_accepted_ip=_client_ip(request),
+        offer_accepted_user_agent=_user_agent(request),
+        onboarding_tour_available_at=_now(),
+    )
+    ensure_account_trial(account)
+    session.add(account)
+    session.flush()
+    _notify_admin_web_registration(account, request)
+    return _start_web_session(request, session, account)
+
+
 @router.post("/register/request-code", response_class=HTMLResponse)
 def request_registration_code(
     request: Request,
@@ -1603,10 +2671,14 @@ def request_registration_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                error="Слишком много неуспешных запросов с вашего IP. Попробуйте позже.",
+                error=(
+                    "Слишком много запросов кода с вашего IP. "
+                    f"{_retry_after_message(sms_ip_state.retry_after_seconds)}"
+                ),
                 register_phone=normalized,
             ),
             status_code=429,
+            headers={"Retry-After": str(sms_ip_state.retry_after_seconds)},
         )
     sms_phone_state = consume_rate_limit(
         f"web:register:phone:{normalized}",
@@ -1619,10 +2691,14 @@ def request_registration_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                error="Слишком много SMS-кодов на этот номер. Попробуйте позже.",
+                error=(
+                    "Слишком много кодов подтверждения для этого номера. "
+                    f"{_retry_after_message(sms_phone_state.retry_after_seconds)}"
+                ),
                 register_phone=normalized,
             ),
             status_code=429,
+            headers={"Retry-After": str(sms_phone_state.retry_after_seconds)},
         )
     if offer_accepted != "yes":
         return templates.TemplateResponse(
@@ -1653,8 +2729,8 @@ def request_registration_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                error="Не удалось отправить SMS-код. Проверьте номер и повторите позже.",
-                register_phone=normalized,
+                existing_account_phone=normalized,
+                phone=normalized,
             ),
             status_code=200,
         )
@@ -1668,7 +2744,7 @@ def request_registration_code(
     account.offer_accepted_user_agent = _user_agent(request)
     _, code = _create_sms_code(session, phone=normalized, purpose="register")
     try:
-        send_login_code(normalized, code)
+        _send_login_code_with_telegram_fallback(account, normalized, code)
     except Exception as exc:
         logger.warning("Could not send web login SMS to %s: %s", normalized, exc)
         session.rollback()
@@ -1758,9 +2834,11 @@ def verify_registration_code(
         expires_at=_now() + timedelta(days=SESSION_DAYS),
     )
     session.add(web_session)
+    claimed_search = _claim_guest_search(request, session, account)
     session.commit()
     _notify_admin_web_registration(account, request)
-    response = RedirectResponse("/cabinet", status_code=303)
+    target = f"/cabinet/searches/{claimed_search.id}" if claimed_search else "/cabinet"
+    response = RedirectResponse(target, status_code=303)
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -1769,7 +2847,281 @@ def verify_registration_code(
         samesite="lax",
         max_age=SESSION_DAYS * 24 * 60 * 60,
     )
+    if claimed_search:
+        response.delete_cookie(GUEST_SEARCH_COOKIE, samesite="lax")
     return response
+
+
+@router.post("/password/reset/request-email", response_class=HTMLResponse)
+def request_password_reset_email(
+    request: Request,
+    phone: str = Form(""),
+    session: Session = Depends(get_db),
+):
+    try:
+        normalized = normalize_phone(phone)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(request, reset_error=str(exc), reset_phone=phone),
+            status_code=400,
+        )
+    ip = _client_ip(request)
+    ip_state = consume_rate_limit(
+        f"web:password_reset_email:ip:{ip}",
+        limit=SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR,
+        window_seconds=SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not ip_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error=(
+                    "Слишком много запросов восстановления с вашего IP. "
+                    f"{_retry_after_message(ip_state.retry_after_seconds)}"
+                ),
+                reset_phone=normalized,
+            ),
+            status_code=429,
+            headers={"Retry-After": str(ip_state.retry_after_seconds)},
+        )
+    phone_state = consume_rate_limit(
+        f"web:password_reset_email:phone:{normalized}",
+        limit=SMS_REQUEST_RATE_LIMIT_PER_PHONE_PER_HOUR,
+        window_seconds=SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not phone_state.allowed:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error=(
+                    "Слишком много запросов восстановления для этого номера. "
+                    f"{_retry_after_message(phone_state.retry_after_seconds)}"
+                ),
+                reset_phone=normalized,
+            ),
+            status_code=429,
+            headers={"Retry-After": str(phone_state.retry_after_seconds)},
+        )
+    account = session.scalar(select(Account).where(Account.phone == normalized))
+    if account is None or not account.password_hash:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error="Аккаунт с таким номером не найден.",
+                reset_phone=normalized,
+            ),
+            status_code=400,
+        )
+    if not account.email:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error="Для этого номера email не указан. Обратитесь в поддержку Жертап.",
+                reset_phone=normalized,
+            ),
+            status_code=400,
+        )
+    now = _now()
+    for previous in session.scalars(
+        select(PasswordResetToken).where(
+            PasswordResetToken.account_id == account.id,
+            PasswordResetToken.consumed_at.is_(None),
+        )
+    ):
+        previous.consumed_at = now
+    temporary_password = (
+        f"{secrets.randbelow(1000):03d}-{secrets.randbelow(1000):03d}"
+    )
+    token_row = PasswordResetToken(
+        account_id=account.id,
+        token_hash=_hash(temporary_password),
+        request_ip=ip,
+        expires_at=now + timedelta(minutes=settings.password_reset_token_minutes),
+    )
+    session.add(token_row)
+    try:
+        send_password_reset_email(account.email, temporary_password)
+    except Exception:
+        logger.exception("Could not send password reset email")
+        session.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error="Не удалось отправить письмо. Попробуйте позже.",
+                reset_phone=normalized,
+            ),
+            status_code=502,
+        )
+    session.commit()
+    return templates.TemplateResponse(
+        request=request,
+        name="site_login.html",
+        context=_login_context(
+            request,
+            reset_phone=normalized,
+            email_reset_sent=True,
+            reset_code_requested=True,
+            masked_reset_email=_mask_email(account.email),
+        ),
+    )
+
+
+@router.post("/password/reset/email/code")
+def complete_password_reset_email_code(
+    request: Request,
+    phone: str = Form(""),
+    temporary_password: str = Form(""),
+    password: str = Form(""),
+    password_confirm: str = Form(""),
+    session: Session = Depends(get_db),
+):
+    try:
+        normalized = normalize_phone(phone)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error=str(exc),
+                reset_phone=phone,
+                reset_code_requested=True,
+            ),
+            status_code=400,
+        )
+    account = session.scalar(
+        select(Account).where(
+            Account.phone == normalized,
+            Account.email.is_not(None),
+            Account.password_hash.is_not(None),
+        )
+    )
+    token_row = None
+    normalized_temporary_password = temporary_password.strip()
+    if account is not None and re.fullmatch(r"\d{3}-\d{3}", normalized_temporary_password):
+        token_row = session.scalar(
+            select(PasswordResetToken).where(
+                PasswordResetToken.account_id == account.id,
+                PasswordResetToken.token_hash == _hash(normalized_temporary_password),
+                PasswordResetToken.consumed_at.is_(None),
+                PasswordResetToken.expires_at > _now(),
+            )
+        )
+    if token_row is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error="Временный пароль неверен или срок его действия истёк.",
+                reset_phone=normalized,
+                reset_code_requested=True,
+            ),
+            status_code=400,
+        )
+    password_error = _password_error(password, password_confirm)
+    if password_error:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_login.html",
+            context=_login_context(
+                request,
+                reset_error=password_error,
+                reset_phone=normalized,
+                reset_code_requested=True,
+            ),
+            status_code=400,
+        )
+    account.password_hash = _hash_password(password)
+    account.password_set_at = _now()
+    account.failed_login_attempts = 0
+    account.locked_until = None
+    token_row.consumed_at = _now()
+    _revoke_web_sessions(session, account)
+    session.commit()
+    return _start_web_session(request, session, account)
+
+
+@router.get("/password/reset/email/{raw_token}", response_class=HTMLResponse)
+def password_reset_email_page(
+    request: Request,
+    raw_token: str,
+    session: Session = Depends(get_db),
+):
+    token_row = _valid_password_reset_token(session, raw_token)
+    return templates.TemplateResponse(
+        request=request,
+        name="site_password_reset_email.html",
+        context={
+            "app_name": settings.app_name,
+            "account": _get_session_account(request, session),
+            "reset_token": raw_token,
+            "reset_token_valid": token_row is not None,
+            "reset_error": None,
+        },
+        status_code=200 if token_row is not None else 400,
+    )
+
+
+@router.post("/password/reset/email/{raw_token}")
+def complete_password_reset_email(
+    request: Request,
+    raw_token: str,
+    password: str = Form(""),
+    password_confirm: str = Form(""),
+    session: Session = Depends(get_db),
+):
+    token_row = _valid_password_reset_token(session, raw_token)
+    if token_row is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_password_reset_email.html",
+            context={
+                "app_name": settings.app_name,
+                "account": _get_session_account(request, session),
+                "reset_token": raw_token,
+                "reset_token_valid": False,
+                "reset_error": None,
+            },
+            status_code=400,
+        )
+    password_error = _password_error(password, password_confirm)
+    if password_error:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_password_reset_email.html",
+            context={
+                "app_name": settings.app_name,
+                "account": _get_session_account(request, session),
+                "reset_token": raw_token,
+                "reset_token_valid": True,
+                "reset_error": password_error,
+            },
+            status_code=400,
+        )
+    account = session.get(Account, token_row.account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+    account.password_hash = _hash_password(password)
+    account.password_set_at = _now()
+    account.failed_login_attempts = 0
+    account.locked_until = None
+    token_row.consumed_at = _now()
+    _revoke_web_sessions(session, account)
+    session.commit()
+    return _start_web_session(request, session, account)
 
 
 @router.post("/password/reset/request-code", response_class=HTMLResponse)
@@ -1799,10 +3151,14 @@ def request_password_reset_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                reset_error="Слишком много неуспешных запросов с вашего IP. Попробуйте позже.",
+                reset_error=(
+                    "Слишком много запросов кода с вашего IP. "
+                    f"{_retry_after_message(sms_ip_state.retry_after_seconds)}"
+                ),
                 reset_phone=normalized,
             ),
             status_code=429,
+            headers={"Retry-After": str(sms_ip_state.retry_after_seconds)},
         )
     sms_phone_state = consume_rate_limit(
         f"web:password_reset:phone:{normalized}",
@@ -1815,10 +3171,14 @@ def request_password_reset_code(
             name="site_login.html",
             context=_login_context(
                 request,
-                reset_error="Слишком много SMS-кодов для этого номера. Попробуйте позже.",
+                reset_error=(
+                    "Слишком много кодов подтверждения для этого номера. "
+                    f"{_retry_after_message(sms_phone_state.retry_after_seconds)}"
+                ),
                 reset_phone=normalized,
             ),
             status_code=429,
+            headers={"Retry-After": str(sms_phone_state.retry_after_seconds)},
         )
     account = session.scalar(select(Account).where(Account.phone == normalized))
     if account is None or not account.password_hash:
@@ -1845,7 +3205,7 @@ def request_password_reset_code(
         )
     _, code = _create_sms_code(session, phone=normalized, purpose="password_reset")
     try:
-        send_login_code(normalized, code)
+        _send_login_code_with_telegram_fallback(account, normalized, code)
     except Exception as exc:
         logger.warning("Could not send password reset SMS to %s: %s", normalized, exc)
         session.rollback()
@@ -2007,11 +3367,17 @@ def cabinet_payment(
 ):
     account_has_permanent_access(session, account)
     requested_plan = request.query_params.get("plan") or ""
-    target_plan = requested_plan if requested_plan in {INVESTOR_PLAN, TEAM_PLAN} else None
+    target_plan = requested_plan if requested_plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN} else None
     payment = latest_account_payment(session, account)
-    needs_payment = not account_has_paid_access(account) or bool(
-        target_plan == TEAM_PLAN and account.auction_plan != TEAM_PLAN
+    current_plan = (
+        PRO_PLAN
+        if account_has_paid_access(account) and account.auction_plan in {PRO_PLAN, PRO_YEAR_PLAN, TEAM_PLAN, INVESTOR_PLAN}
+        else LITE_PLAN
     )
+    selected_plan = target_plan or current_plan
+    needs_payment = not account_has_paid_access(account) or (
+        selected_plan in {PRO_PLAN, PRO_YEAR_PLAN} and current_plan not in {PRO_PLAN, PRO_YEAR_PLAN}
+    ) or selected_plan == PRO_YEAR_PLAN
     if needs_payment:
         try:
             if (
@@ -2035,17 +3401,12 @@ def cabinet_payment(
         context=_cabinet_context(
             session,
             account,
-            price_kzt=settings.platform_access_price_kzt,
-            team_price_kzt=settings.auction_team_price_kzt,
-            selected_plan=(
-                target_plan
-                or (
-                    account.auction_plan
-                    if account_has_paid_access(account)
-                    and account.auction_plan in {INVESTOR_PLAN, TEAM_PLAN}
-                    else (payment.target_plan if payment else INVESTOR_PLAN)
-                )
-            ),
+            price_kzt=settings.lite_plan_price_kzt,
+            team_price_kzt=settings.pro_plan_price_kzt,
+            lite_price_kzt=settings.lite_plan_price_kzt,
+            pro_price_kzt=settings.pro_plan_price_kzt,
+            pro_year_price_kzt=settings.pro_year_plan_price_kzt,
+            selected_plan=selected_plan,
             apipay_enabled=settings.apipay_enabled,
             started=request.query_params.get("started") == "1",
             refreshed=request.query_params.get("refreshed") == "1",
@@ -2055,16 +3416,62 @@ def cabinet_payment(
     )
 
 
+@router.get("/cabinet/payment/start-and-open")
+def open_cabinet_payment_link(
+    plan: str = LITE_PLAN,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    target_plan = plan if plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN} else LITE_PLAN
+    if account_has_permanent_access(session, account) and (
+        target_plan == LITE_PLAN
+        or (target_plan == PRO_PLAN and account.auction_plan in {PRO_PLAN, PRO_YEAR_PLAN, TEAM_PLAN, INVESTOR_PLAN})
+    ):
+        session.commit()
+        return RedirectResponse("/cabinet/payment?paid=1", status_code=303)
+    try:
+        payment = start_account_payment(session, account, target_plan=target_plan)
+    except ValueError:
+        return RedirectResponse("/cabinet/payment?error=unavailable", status_code=303)
+    payment_url = _payment_context(payment)["payment_url"]
+    if not isinstance(payment_url, str) or not payment_url.startswith("https://"):
+        return RedirectResponse("/cabinet/payment?error=unavailable", status_code=303)
+    return RedirectResponse(payment_url, status_code=303)
+
+
+@router.post("/cabinet/payment/start-and-open")
+def start_and_open_cabinet_payment(
+    plan: str = Form(LITE_PLAN),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    target_plan = plan if plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN} else LITE_PLAN
+    if account_has_permanent_access(session, account) and (
+        target_plan == LITE_PLAN
+        or (target_plan == PRO_PLAN and account.auction_plan in {PRO_PLAN, PRO_YEAR_PLAN, TEAM_PLAN, INVESTOR_PLAN})
+    ):
+        session.commit()
+        return RedirectResponse("/cabinet/payment?paid=1", status_code=303)
+    try:
+        payment = start_account_payment(session, account, target_plan=target_plan)
+    except ValueError:
+        return RedirectResponse("/cabinet/payment?error=unavailable", status_code=303)
+    payment_url = _payment_context(payment)["payment_url"]
+    if not isinstance(payment_url, str) or not payment_url.startswith("https://"):
+        return RedirectResponse("/cabinet/payment?error=unavailable", status_code=303)
+    return RedirectResponse(payment_url, status_code=303)
+
+
 @router.post("/cabinet/payment/start")
 def start_cabinet_payment(
     plan: str = Form(INVESTOR_PLAN),
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    target_plan = plan if plan in {INVESTOR_PLAN, TEAM_PLAN} else INVESTOR_PLAN
+    target_plan = plan if plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN} else LITE_PLAN
     if account_has_permanent_access(session, account) and (
-        account.auction_plan == target_plan
-        or (target_plan == INVESTOR_PLAN and account.auction_plan != TEAM_PLAN)
+        target_plan == LITE_PLAN
+        or (target_plan == PRO_PLAN and account.auction_plan in {PRO_PLAN, PRO_YEAR_PLAN, TEAM_PLAN, INVESTOR_PLAN})
     ):
         session.commit()
         return RedirectResponse("/cabinet/payment?paid=1", status_code=303)
@@ -2075,13 +3482,41 @@ def start_cabinet_payment(
     return RedirectResponse("/cabinet/payment?started=1", status_code=303)
 
 
+@router.post("/cabinet/payment/start-json")
+def start_cabinet_payment_json(
+    plan: str = Form(LITE_PLAN),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    target_plan = plan if plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN} else LITE_PLAN
+    if account_has_permanent_access(session, account) and (
+        target_plan == LITE_PLAN
+        or (target_plan == PRO_PLAN and account.auction_plan in {PRO_PLAN, PRO_YEAR_PLAN, TEAM_PLAN, INVESTOR_PLAN})
+    ):
+        session.commit()
+        return {"ok": False, "error": "Тариф уже куплен"}
+    try:
+        payment = start_account_payment(session, account, target_plan=target_plan)
+    except ValueError:
+        return {"ok": False, "error": "Автоматическая оплата временно недоступна"}
+    context = _payment_context(payment)
+    return {
+        "ok": True,
+        "payment_id": payment.id,
+        "payment_url": context["payment_url"],
+        "payment_qr": context["payment_qr"],
+        "amount": context["payment_amount"],
+        "status": context["payment_status"],
+    }
+
+
 @router.post("/cabinet/payment/refresh")
 def refresh_cabinet_payment(
     plan: str = Form(""),
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    target_plan = plan if plan in {INVESTOR_PLAN, TEAM_PLAN} else None
+    target_plan = plan if plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN} else None
     try:
         renew_account_payment(session, account, target_plan=target_plan)
     except Exception:
@@ -2103,7 +3538,12 @@ def cabinet_payment_status(
             and payment.target_plan == TEAM_PLAN
             and account.auction_plan != TEAM_PLAN
         ):
-            payment = refresh_account_payment(session, account)
+            desired_plan = (
+                payment.target_plan
+                if payment and payment.target_plan in {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN, TEAM_PLAN, INVESTOR_PLAN}
+                else LITE_PLAN
+            )
+            payment = refresh_account_payment(session, account, target_plan=desired_plan)
     except Exception:
         session.rollback()
         logger.exception("Could not refresh web account payment status for account %s", account.id)
@@ -2293,8 +3733,63 @@ def cabinet_settings(
             session,
             account,
             password_changed=request.query_params.get("password_changed") == "1",
+            email_updated=request.query_params.get("email_updated") == "1",
         ),
     )
+
+
+@router.post("/cabinet/settings/email", response_class=HTMLResponse)
+def update_recovery_email(
+    request: Request,
+    email: str = Form(""),
+    current_password: str = Form(""),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    if not _verify_password(current_password, account.password_hash):
+        return templates.TemplateResponse(
+            request=request,
+            name="site_settings.html",
+            context=_cabinet_context(
+                session,
+                account,
+                email_error="Текущий пароль указан неверно.",
+            ),
+            status_code=400,
+        )
+    try:
+        normalized_email = _normalize_email(email)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_settings.html",
+            context=_cabinet_context(
+                session,
+                account,
+                email_error=str(exc),
+            ),
+            status_code=400,
+        )
+    existing = session.scalar(
+        select(Account).where(
+            Account.email == normalized_email,
+            Account.id != account.id,
+        )
+    )
+    if existing is not None:
+        return templates.TemplateResponse(
+            request=request,
+            name="site_settings.html",
+            context=_cabinet_context(
+                session,
+                account,
+                email_error="Этот email уже используется другим аккаунтом.",
+            ),
+            status_code=400,
+        )
+    account.email = normalized_email
+    session.commit()
+    return RedirectResponse("/cabinet/settings?email_updated=1", status_code=303)
 
 
 @router.post("/cabinet/settings/password", response_class=HTMLResponse)
@@ -2350,7 +3845,9 @@ def cabinet_feedback(
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
-    conversation = get_or_create_feedback_conversation(session, account=account, language="ru")
+    conversation = get_or_create_feedback_conversation(
+        session, account=account, language=_selected_language(request)
+    )
     session.commit()
     session.refresh(conversation)
     return templates.TemplateResponse(
@@ -2474,7 +3971,7 @@ def submit_search(
     if not search_ip_state.allowed:
         raise HTTPException(status_code=429, detail="Too many search requests from this IP.")
     payload = SearchCreate(
-        language="ru",
+        language=_selected_language(request),
         region=region,
         district=district,
         locality=locality or None,
@@ -2509,6 +4006,8 @@ def search_detail(
         language=search.language,
         manual_files_root=settings.manual_genplan_files_root,
     )
+    search_unlocked = _search_report_unlocked(session, account)
+    genplan_preview_candidates = _genplan_preview_candidates(search)
     return templates.TemplateResponse(
         request=request,
         name="site_search_detail.html",
@@ -2517,9 +4016,11 @@ def search_detail(
             account,
             search=search,
             displayed_candidates=_visible_search_candidates(search),
+            genplan_preview_candidates=genplan_preview_candidates,
+            can_show_without_genplan=bool(genplan_preview_candidates),
             search_explanation=_search_explanation_payload(search),
             genplan_reference=genplan_reference,
-            genplan_map_url=_search_genplan_map_url(search),
+            genplan_map_url=_search_genplan_map_url(search) if search_unlocked else None,
             search_urban_plan_badge=urban_plan_badge_payload(
                 search.urban_plan_status,
                 language=search.language,
@@ -2527,7 +4028,8 @@ def search_detail(
             ),
             urban_plan_badge=urban_plan_badge_payload,
             can_request_next_batch=_can_request_next_batch(session, account, search),
-            search_unlocked=account_access_kind(session, account) in {"paid", "trial"},
+            search_unlocked=_search_report_unlocked(session, account),
+            direct_payment_url=_payment_context(latest_account_payment(session, account))["payment_url"],
             next_error=request.query_params.get("next_error"),
         ),
     )
@@ -2541,6 +4043,7 @@ def search_genplan_map(
     session: Session = Depends(get_db),
 ):
     search = _get_accessible_search(session, account, search_id)
+    _require_paid_search_report_access(session, account)
     genplan_reference = genplan_reference_payload(
         search,
         language=search.language,
@@ -2556,7 +4059,7 @@ def search_genplan_map(
             search=search,
             genplan_reference=genplan_reference,
             planning_scope=scope,
-            search_unlocked=account_access_kind(session, account) in {"paid", "trial"},
+            search_unlocked=_search_report_unlocked(session, account),
             candidates=_visible_search_candidates(search),
         ),
     )
@@ -2569,6 +4072,7 @@ def search_genplan_map_geojson(
     session: Session = Depends(get_db),
 ) -> dict:
     search = _get_accessible_search(session, account, search_id)
+    _require_paid_search_report_access(session, account)
     scope = _search_planning_scope(search)
     rows = session.scalars(
         select(UrbanPlanLayer)
@@ -2592,6 +4096,7 @@ def search_genplan_coverage_json(
     session: Session = Depends(get_db),
 ) -> dict:
     search = _get_accessible_search(session, account, search_id)
+    _require_paid_search_report_access(session, account)
     scope = _search_planning_scope(search)
     try:
         return planning_coverage(
@@ -2675,22 +4180,12 @@ def web_auction_regions(
     lot_scope: str = "active",
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
-) -> list[dict[str, object]]:
-    auction_rows = _auction_catalog_count_pairs(
-        session,
-        AuctionLot.region,
-        lot_scope=lot_scope,
-    )
+) -> list[dict[str, str]]:
+    auction_rows = _auction_catalog_count_pairs(session, AuctionLot.region, lot_scope=lot_scope)
     try:
         official_rows = _egkn_region_rows()
-    except Exception as exc:
-        fallback_rows = _fallback_region_rows()
-        if fallback_rows or auction_rows:
-            return _merge_official_catalog_with_auction_counts(fallback_rows, auction_rows)
-        raise HTTPException(
-            status_code=502,
-            detail="Справочник областей ЕГКН недоступен, а локальных аукционных данных пока нет",
-        ) from exc
+    except Exception:
+        official_rows = _fallback_region_rows()
     if not official_rows:
         official_rows = _fallback_region_rows()
     return _merge_official_catalog_with_auction_counts(official_rows, auction_rows)
@@ -2711,14 +4206,8 @@ def web_auction_districts(
     )
     try:
         official_rows = _egkn_district_rows(region)
-    except Exception as exc:
-        fallback_rows = _manual_genplan_district_rows(region)
-        if fallback_rows or auction_rows:
-            return _merge_official_catalog_with_auction_counts(fallback_rows, auction_rows)
-        raise HTTPException(
-            status_code=502,
-            detail="Справочник районов ЕГКН недоступен, а локальных аукционных данных по региону пока нет",
-        ) from exc
+    except Exception:
+        official_rows = _manual_genplan_district_rows(region)
     if not official_rows:
         official_rows = _manual_genplan_district_rows(region)
     return _merge_official_catalog_with_auction_counts(official_rows, auction_rows)
@@ -2740,27 +4229,15 @@ def web_auction_localities(
         district=district,
         lot_scope=lot_scope,
     )
-    fallback_rows = _manual_genplan_locality_rows(region=region, district=district)
-    if district_id:
+    official_rows: list[dict[str, object]] = []
+    if district_id is not None:
         try:
             official_rows = _egkn_settlement_rows(district_id)
-        except EgknProviderError:
-            return _merge_official_catalog_with_auction_counts(fallback_rows, auction_rows)
-        except Exception as exc:
-            if fallback_rows or auction_rows:
-                return _merge_official_catalog_with_auction_counts(fallback_rows, auction_rows)
-            raise HTTPException(
-                status_code=502,
-                detail="Справочник населенных пунктов ЕГКН недоступен, а локальных аукционных данных по району пока нет",
-            ) from exc
-        if not official_rows:
-            official_rows = fallback_rows
-        merged = _merge_official_catalog_with_auction_counts(official_rows, auction_rows)
-        if merged:
-            return merged
-    if fallback_rows:
-        return _merge_official_catalog_with_auction_counts(fallback_rows, auction_rows)
-    return _auction_catalog_rows_from_pairs(auction_rows)
+        except Exception:
+            official_rows = []
+    if not official_rows:
+        official_rows = _manual_genplan_locality_rows(region=region, district=district)
+    return _merge_official_catalog_with_auction_counts(official_rows, auction_rows)
 
 
 @router.get("/cabinet/auctions/catalog/purposes")
@@ -3141,6 +4618,13 @@ def web_auctions_v2(
     stage: str = "",
     deadline_status: str = "",
     geo_status: str = "",
+    right_type: str = "",
+    lease_duration: str = "",
+    use_scenario: str = "",
+    investment_verdict: str = "",
+    bid_limit_status: str = "",
+    data_readiness: str = "",
+    repeat_auction: str = "",
     page: int = 1,
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
@@ -3168,6 +4652,13 @@ def web_auctions_v2(
         stage=stage,
         deadline_status=deadline_status,
         geo_status=geo_status,
+        right_type=right_type,
+        lease_duration=lease_duration,
+        use_scenario=use_scenario,
+        investment_verdict=investment_verdict,
+        bid_limit_status=bid_limit_status,
+        data_readiness=data_readiness,
+        repeat_auction=repeat_auction,
     )
     filter_query = _auction_v2_filter_query(filter_values)
     try:
@@ -3197,6 +4688,14 @@ def web_auctions_v2(
                 eqazyna_status_labels=EQAZYNA_STATUS_FILTER_LABELS,
                 lot_scope_labels=LOT_SCOPE_LABELS,
                 sort_labels=AUCTION_V2_SORT_LABELS,
+                right_type_labels=RIGHT_TYPE_LABELS,
+                lease_duration_labels=LEASE_DURATION_LABELS,
+                use_scenario_labels=USE_SCENARIO_LABELS,
+                scenario_counts={},
+                investment_verdict_labels=INVESTMENT_VERDICT_LABELS,
+                bid_limit_status_labels=BID_LIMIT_STATUS_LABELS,
+                data_readiness_labels=DATA_READINESS_LABELS,
+                repeat_auction_labels=REPEAT_AUCTION_LABELS,
                 stage_options=pipeline_stage_options(),
                 refresh_stats={"checked": 0},
                 all_lots_filter_query=_auction_v2_query_with(
@@ -3236,6 +4735,11 @@ def web_auctions_v2(
         current_total=total,
     )
     dashboard = cached_auction_v2_dashboard(session)
+    scenario_counts = _auction_v2_scenario_counts(
+        session,
+        filters,
+        account_id=scope_account_id,
+    )
     session.commit()
     return templates.TemplateResponse(
         request=request,
@@ -3260,6 +4764,14 @@ def web_auctions_v2(
             eqazyna_status_labels=EQAZYNA_STATUS_FILTER_LABELS,
             lot_scope_labels=LOT_SCOPE_LABELS,
             sort_labels=AUCTION_V2_SORT_LABELS,
+            right_type_labels=RIGHT_TYPE_LABELS,
+            lease_duration_labels=LEASE_DURATION_LABELS,
+            use_scenario_labels=USE_SCENARIO_LABELS,
+            scenario_counts=scenario_counts,
+            investment_verdict_labels=INVESTMENT_VERDICT_LABELS,
+            bid_limit_status_labels=BID_LIMIT_STATUS_LABELS,
+            data_readiness_labels=DATA_READINESS_LABELS,
+            repeat_auction_labels=REPEAT_AUCTION_LABELS,
             stage_options=pipeline_stage_options(),
             refresh_stats=refresh_stats,
             all_lots_filter_query=_auction_v2_query_with(
@@ -3305,6 +4817,13 @@ def web_auctions_v2_map(
     stage: str = "",
     deadline_status: str = "",
     geo_status: str = "",
+    right_type: str = "",
+    lease_duration: str = "",
+    use_scenario: str = "",
+    investment_verdict: str = "",
+    bid_limit_status: str = "",
+    data_readiness: str = "",
+    repeat_auction: str = "",
     account: Account = Depends(require_web_account),
     session: Session = Depends(get_db),
 ):
@@ -3329,6 +4848,13 @@ def web_auctions_v2_map(
         stage=stage,
         deadline_status=deadline_status,
         geo_status=geo_status,
+        right_type=right_type,
+        lease_duration=lease_duration,
+        use_scenario=use_scenario,
+        investment_verdict=investment_verdict,
+        bid_limit_status=bid_limit_status,
+        data_readiness=data_readiness,
+        repeat_auction=repeat_auction,
     )
     filter_query = _auction_v2_filter_query(filter_values)
     try:
@@ -3379,7 +4905,6 @@ def web_auctions_v2_map(
         )
 
     refresh_stats = {"checked": 0}
-    ensure_default_auction_v2_watchlist(session, scope_account_id)
     map_data = list_auction_v2_map_markers(
         session,
         filters,
@@ -3428,10 +4953,6 @@ def web_auctions_v2_analytics(
         locality=locality,
     )
     refresh_stats = {"checked": 0}
-    ensure_default_auction_v2_watchlist(
-        session,
-        _auction_scope_account_id(session, account),
-    )
     analytics = auction_v2_analytics_payload(
         session,
         region=filter_values["region"],
@@ -3439,6 +4960,12 @@ def web_auctions_v2_analytics(
         locality=filter_values["locality"],
     )
     dashboard = cached_auction_v2_dashboard(session)
+    annual_history = annual_history_cohorts(
+        session,
+        region_key=filter_values["region"] or None,
+        district_key=filter_values["district"] or None,
+        locality_key=filter_values["locality"] or None,
+    )
     session.commit()
     return templates.TemplateResponse(
         request=request,
@@ -3448,6 +4975,7 @@ def web_auctions_v2_analytics(
             account,
             dashboard=dashboard,
             analytics=analytics,
+            annual_history=annual_history,
             filters=filter_values,
             filter_query=_auction_v2_filter_query(filter_values),
             refresh_stats=refresh_stats,
@@ -3491,7 +5019,6 @@ def web_auctions_v2_subscriptions(
     )
     scope_account_id = _auction_scope_account_id(session, account)
     if entitlement.can_monitor:
-        ensure_default_auction_v2_watchlist(session, scope_account_id)
         watchlists = list_auction_v2_watchlists(session, scope_account_id)
         notifications = list_auction_v2_web_notifications(
             session,
@@ -3754,6 +5281,174 @@ def web_auction_v2_dossier(
     )
 
 
+@router.get("/cabinet/auctions-v2/{lot_id}/documents/{document_id}")
+def web_auction_v2_document(
+    lot_id: str,
+    document_id: int,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_open_detail")
+    scope_account_id = _auction_scope_account_id(session, account)
+    payload = get_auction_v2_payload(session, lot_id, account_id=scope_account_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Лот не найден")
+    document = session.get(AuctionDocument, document_id)
+    if document is None or document.lot_id != lot_id:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    return _auction_document_file_response(document)
+
+
+@router.post("/cabinet/auctions-v2/{lot_id}/due-diligence/requests")
+def web_auction_v2_create_due_diligence_request(
+    lot_id: str,
+    check_code: str = Form(...),
+    response_due_at: str = Form(""),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_edit")
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Генератор обращений отключён. Пользователь самостоятельно обращается "
+            "в орган и загружает в Жертап уже полученный официальный ответ."
+        ),
+    )
+
+
+@router.post("/cabinet/auctions-v2/{lot_id}/due-diligence/requests/{request_id}")
+def web_auction_v2_update_due_diligence_request(
+    lot_id: str,
+    request_id: str,
+    status: str = Form(...),
+    external_reference: str = Form(""),
+    response_due_at: str = Form(""),
+    response_summary: str = Form(""),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_edit")
+    due_at = _parse_almaty_datetime_local(response_due_at) if response_due_at else None
+    try:
+        update_due_diligence_request(
+            session,
+            account_id=account.id,
+            request_id=request_id,
+            status=status,
+            external_reference=external_reference,
+            response_due_at=due_at,
+            response_summary=response_summary,
+        )
+        session.commit()
+    except ValueError as exc:
+        session.rollback()
+        return _redirect_with_query(
+            f"/cabinet/auctions-v2/{lot_id}", request="invalid", reason=str(exc)
+        )
+    return _redirect_with_query(f"/cabinet/auctions-v2/{lot_id}", request="updated")
+
+
+@router.post("/cabinet/auctions-v2/{lot_id}/due-diligence/requests/{request_id}/attachments")
+async def web_auction_v2_upload_due_diligence_attachment(
+    lot_id: str,
+    request_id: str,
+    document: UploadFile = File(...),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_edit")
+    request = session.scalar(
+        select(AuctionDueDiligenceRequest).where(
+            AuctionDueDiligenceRequest.id == request_id,
+            AuctionDueDiligenceRequest.account_id == account.id,
+            AuctionDueDiligenceRequest.lot_id == lot_id,
+        )
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Обращение не найдено")
+    try:
+        suffix = _safe_upload_suffix(document)
+        content = await document.read()
+        if len(content) > _MANUAL_CHECK_MAX_BYTES:
+            raise ValueError("Файл ответа не должен превышать 20 МБ")
+        if not _upload_content_matches_suffix(content, suffix):
+            raise ValueError("Содержимое файла не соответствует заявленному типу")
+        attachment_id = secrets.token_urlsafe(18)
+        relative_path = (
+            Path("due-diligence") / account.id / lot_id / request_id / f"{attachment_id}{suffix}"
+        )
+        storage_root = Path(settings.auction_v2_document_storage_dir)
+        file_path = storage_root / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(content)
+        session.add(
+            AuctionDueDiligenceAttachment(
+                id=attachment_id,
+                request_id=request_id,
+                account_id=account.id,
+                title=Path(document.filename or "Ответ органа").name[:320],
+                content_type=document.content_type or "application/octet-stream",
+                local_path=relative_path.as_posix(),
+                content_sha256=hashlib.sha256(content).hexdigest(),
+                size_bytes=len(content),
+            )
+        )
+        if request.status in {"draft", "prepared", "sent", "waiting"}:
+            request.status = "received"
+            request.received_at = datetime.now(UTC)
+        session.commit()
+        from app.tasks import analyze_due_diligence_attachment_task
+
+        analyze_due_diligence_attachment_task.delay(attachment_id)
+    except ValueError as exc:
+        session.rollback()
+        return _redirect_with_query(
+            f"/cabinet/auctions-v2/{lot_id}", request="invalid", reason=str(exc)
+        )
+    return _redirect_with_query(f"/cabinet/auctions-v2/{lot_id}", request="attachment")
+
+
+@router.get(
+    "/cabinet/auctions-v2/{lot_id}/due-diligence/requests/{request_id}/attachments/{attachment_id}"
+)
+def web_auction_v2_download_due_diligence_attachment(
+    lot_id: str,
+    request_id: str,
+    attachment_id: str,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_open_detail")
+    attachment = session.scalar(
+        select(AuctionDueDiligenceAttachment).where(
+            AuctionDueDiligenceAttachment.id == attachment_id,
+            AuctionDueDiligenceAttachment.request_id == request_id,
+            AuctionDueDiligenceAttachment.account_id == account.id,
+        )
+    )
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Файл ответа не найден")
+    request = session.scalar(
+        select(AuctionDueDiligenceRequest).where(
+            AuctionDueDiligenceRequest.id == request_id,
+            AuctionDueDiligenceRequest.lot_id == lot_id,
+            AuctionDueDiligenceRequest.account_id == account.id,
+        )
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Обращение не найдено")
+    storage_root = Path(settings.auction_v2_document_storage_dir).resolve()
+    file_path = (storage_root / attachment.local_path).resolve()
+    if storage_root not in file_path.parents or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Файл ответа не найден")
+    return FileResponse(
+        file_path,
+        media_type=attachment.content_type,
+        filename=attachment.title,
+    )
+
+
 @router.get("/cabinet/auctions-v2/{lot_id}", response_class=HTMLResponse)
 def web_auction_v2_detail(
     request: Request,
@@ -3779,18 +5474,79 @@ def web_auction_v2_detail(
         limit=12,
     )
     history = auction_lot_history(session, lot_id)[:10]
+    object_history = auction_object_history(session, payload.lot)
+    decision_history = list(
+        session.scalars(
+            select(AuctionDecisionSnapshot)
+            .where(AuctionDecisionSnapshot.lot_id == lot_id)
+            .order_by(AuctionDecisionSnapshot.checked_at.desc())
+            .limit(20)
+        ).all()
+    )
+    legal_passport = cached_auction_legal_passport(session, lot_id)
     parcel_history = auction_lot_publication_history(
         session,
         cadastre_number=payload.lot.cadastre_number,
     ) if payload.lot.cadastre_number else None
     changes = auction_lot_changes(session, lot_id)[:12]
     market_comparables = list_auction_v2_market_comparables(session, lot_id)
+    market_comparable_cards_payload = market_comparable_cards(market_comparables)
+    lot_documents = unique_auction_documents(payload.lot.documents)
+    due_diligence_requests = list_due_diligence_requests(
+        session,
+        account_id=scope_account_id,
+        lot_id=lot_id,
+    )
+    due_diligence_attachments = [
+        attachment
+        for response_record in due_diligence_requests
+        for attachment in response_record.attachments
+    ]
+    due_diligence_analysis_cards = due_diligence_attachment_cards(
+        due_diligence_attachments
+    )
+    due_diligence_responses = [
+        {
+            "request": response_record,
+            "attachment": attachment,
+            "analysis": due_diligence_analysis_cards.get(str(attachment.id), {}),
+        }
+        for response_record in due_diligence_requests
+        for attachment in response_record.attachments
+    ]
+    due_diligence_checklist = build_due_diligence_checklist(
+        payload.lot,
+        requests=due_diligence_requests,
+        manual_checks=payload.field_inspection.get("manual_checks", {}),
+        documents_count=len(lot_documents),
+        planning_status=str(payload.planning_status.get("status") or "unknown"),
+    )
+    decision_price = decision_price_card(payload.decision_snapshot)
+    document_extractions = _auction_document_extraction_cards(session, lot_documents)
     evidence = session.scalars(
         select(AuctionEvidence)
         .where(AuctionEvidence.lot_id == lot_id)
         .order_by(AuctionEvidence.observed_at.desc(), AuctionEvidence.id.desc())
         .limit(40)
     ).all()
+    nsdi_water_evidence = session.scalar(
+        select(AuctionEvidence)
+        .where(
+            AuctionEvidence.lot_id == lot_id,
+            AuctionEvidence.evidence_type == "nsdi_water_protection",
+        )
+        .order_by(AuctionEvidence.observed_at.desc(), AuctionEvidence.id.desc())
+        .limit(1)
+    )
+    neighbor_evidence = session.scalar(
+        select(AuctionEvidence)
+        .where(
+            AuctionEvidence.lot_id == lot_id,
+            AuctionEvidence.evidence_type == "neighbor_parcels_polygon",
+        )
+        .order_by(AuctionEvidence.observed_at.desc(), AuctionEvidence.id.desc())
+        .limit(1)
+    )
     mark_auction_v2_web_notifications_seen(
         session,
         account_id=scope_account_id,
@@ -3805,21 +5561,33 @@ def web_auction_v2_detail(
             account,
             item=payload,
             lot=payload.lot,
-            lot_documents=unique_auction_documents(payload.lot.documents),
+            lot_documents=lot_documents,
+            document_extractions=document_extractions,
             analysis=payload.analysis,
             geo_check=payload.geo_check,
             metrics=payload.metrics,
             lot_context=lot_context,
+            legal_passport=legal_passport,
             history=history,
+            object_history=object_history,
+            decision_history=decision_history,
             parcel_history=parcel_history,
             changes=changes,
             market_comparables=market_comparables,
+            market_comparable_cards=market_comparable_cards_payload,
+            due_diligence_checklist=due_diligence_checklist,
+            due_diligence_responses=due_diligence_responses,
+            decision_price=decision_price,
             evidence=evidence,
+            nsdi_water_evidence=nsdi_water_evidence,
+            neighbor_evidence=neighbor_evidence,
             evidence_type_labels=EVIDENCE_TYPE_LABELS,
             evidence_status_labels=EVIDENCE_STATUS_LABELS,
             stage_options=pipeline_stage_options(),
             investment_strategies=INVESTMENT_STRATEGIES,
             field_inspection_options=FIELD_INSPECTION_OPTIONS,
+            manual_check_types=MANUAL_CHECK_TYPES,
+            manual_check_status_options=MANUAL_CHECK_STATUS_OPTIONS,
             pipeline_reminder_at=_format_almaty(
                 payload.pipeline.reminder_at if payload.pipeline else None,
                 "%Y-%m-%dT%H:%M",
@@ -3923,6 +5691,119 @@ def web_auction_v2_pipeline(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.commit()
     return _redirect_with_query(f"/cabinet/auctions-v2/{lot.id}", pipeline="saved")
+
+
+@router.post("/cabinet/auctions-v2/{lot_id}/manual-check")
+async def web_auction_v2_manual_check(
+    lot_id: str,
+    check_code: str = Form(...),
+    status: str = Form("no_data"),
+    note: str = Form(""),
+    document: UploadFile | None = File(None),
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_edit")
+    scope_account_id = _auction_scope_account_id(session, account)
+    lot = get_auction_lot(session, lot_id)
+    if lot is None:
+        raise HTTPException(status_code=404, detail="Лот не найден")
+    analysis_attachment_id: str | None = None
+    try:
+        document_meta = await _store_manual_check_upload(
+            account_id=scope_account_id,
+            lot_id=lot.id,
+            check_code=check_code,
+            upload=document,
+        )
+        update_auction_v2_manual_check(
+            session,
+            account_id=scope_account_id,
+            lot_id=lot.id,
+            check_code=check_code,
+            status=status,
+            note=note,
+            document=document_meta,
+        )
+        if document_meta is not None:
+            response_record = AuctionDueDiligenceRequest(
+                account_id=scope_account_id,
+                lot_id=lot.id,
+                check_code=check_code,
+                authority="Определяется из загруженного ответа",
+                question="Полученный пользователем официальный ответ",
+                why="Сохранить и проанализировать ответ без генерации обращения",
+                status="received",
+                received_at=datetime.now(UTC),
+            )
+            session.add(response_record)
+            session.flush()
+            analysis_attachment_id = str(document_meta["id"])
+            session.add(
+                AuctionDueDiligenceAttachment(
+                    id=analysis_attachment_id,
+                    request_id=response_record.id,
+                    account_id=scope_account_id,
+                    title=str(document_meta["title"]),
+                    content_type=str(document_meta["content_type"]),
+                    local_path=str(document_meta["path"]),
+                    content_sha256=str(document_meta["content_sha256"]),
+                    size_bytes=int(document_meta["size_bytes"]),
+                )
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session.commit()
+    if analysis_attachment_id is not None:
+        from app.tasks import analyze_due_diligence_attachment_task
+
+        analyze_due_diligence_attachment_task.delay(analysis_attachment_id)
+    return _redirect_with_query(f"/cabinet/auctions-v2/{lot.id}", check="saved")
+
+
+@router.get("/cabinet/auctions-v2/{lot_id}/manual-check-documents/{document_id}")
+def web_auction_v2_manual_check_document(
+    lot_id: str,
+    document_id: str,
+    account: Account = Depends(require_web_account),
+    session: Session = Depends(get_db),
+):
+    _require_auction_feature(session, account, "can_open_detail")
+    scope_account_id = _auction_scope_account_id(session, account)
+    payload = get_auction_v2_payload(session, lot_id, account_id=scope_account_id)
+    if payload is None or payload.pipeline is None:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    try:
+        inspection = json.loads(payload.pipeline.inspection_json or "{}")
+    except json.JSONDecodeError:
+        inspection = {}
+    manual_checks = inspection.get("manual_checks") if isinstance(inspection, dict) else None
+    if not isinstance(manual_checks, dict):
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    matched: dict[str, object] | None = None
+    for item in manual_checks.values():
+        if not isinstance(item, dict):
+            continue
+        documents = item.get("documents")
+        if not isinstance(documents, list):
+            continue
+        for candidate in documents:
+            if isinstance(candidate, dict) and candidate.get("id") == document_id:
+                matched = candidate
+                break
+        if matched:
+            break
+    if not matched:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    storage_root = Path(settings.auction_v2_document_storage_dir).resolve()
+    file_path = (storage_root / str(matched.get("path") or "")).resolve()
+    if storage_root not in file_path.parents or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    return FileResponse(
+        file_path,
+        media_type=str(matched.get("content_type") or "application/octet-stream"),
+        filename=str(matched.get("title") or "document"),
+    )
 
 
 @router.post("/cabinet/auctions-v2/{lot_id}/activity")

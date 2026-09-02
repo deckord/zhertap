@@ -7,6 +7,8 @@ import httpx
 from shapely.geometry import LineString, Point, Polygon
 
 from app.config import settings
+from app.provider_backpressure import ProviderBackpressure
+from app.provider_guard import bounded_http_request, guarded_http_call
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,9 @@ class Surroundings:
 
 
 class OsmProvider:
+    def __init__(self, *, backpressure: ProviderBackpressure | None = None) -> None:
+        self.backpressure = backpressure
+
     def nearest_cemetery(self, lat: float, lon: float, radius_m: int) -> float | None:
         if not settings.enable_live_osm:
             return None
@@ -50,13 +55,22 @@ class OsmProvider:
         return min(distances) if distances else None
 
     def analyze_points(
-        self, points: list[tuple[float, float]], radius_m: int = 2000
+        self,
+        points: list[tuple[float, float]],
+        radius_m: int = 2000,
+        *,
+        time_budget_seconds: int | float | None = None,
     ) -> list[Surroundings]:
         if not points or not settings.enable_live_osm:
             return [Surroundings() for _ in points]
 
         results = [Surroundings() for _ in points]
-        deadline = time.monotonic() + settings.osm_time_budget_seconds
+        budget = (
+            settings.osm_time_budget_seconds
+            if time_budget_seconds is None
+            else max(0.0, float(time_budget_seconds))
+        )
+        deadline = time.monotonic() + budget
         successful_batches = 0
         batch_size = settings.osm_batch_size
         for start in range(0, len(points), batch_size):
@@ -90,37 +104,54 @@ class OsmProvider:
             )
         return results
 
+    def analyze_batch(
+        self, points: list[tuple[float, float]], radius_m: int = 2000
+    ) -> list[Surroundings]:
+        """One durable workflow unit maps to exactly one Overpass request."""
+        if not points or len(points) > settings.osm_batch_size:
+            raise ValueError("OSM workflow batch is outside bounds")
+        payload = self._request(build_point_query(points, radius_m=radius_m))
+        return surroundings_from_payload(points, payload, radius_m=radius_m)
+
     def _request(
         self,
         query: str,
         *,
         deadline: float | None = None,
     ) -> dict:
-        last_error: Exception | None = None
-        for url in overpass_urls():
-            remaining = (
-                settings.osm_query_timeout_seconds
-                if deadline is None
-                else min(
-                    settings.osm_query_timeout_seconds,
-                    max(0, deadline - time.monotonic()),
-                )
+        url = overpass_urls()[0]
+        remaining = (
+            settings.osm_query_timeout_seconds
+            if deadline is None
+            else min(
+                settings.osm_query_timeout_seconds,
+                max(0, deadline - time.monotonic()),
             )
-            if remaining < 1:
-                break
-            try:
-                response = httpx.post(
-                    url,
-                    data={"data": query},
-                    timeout=remaining,
-                    headers={"User-Agent": "LandScoutKZ/0.3 (preliminary land research)"},
-                )
-                response.raise_for_status()
-                return response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                last_error = exc
-                logger.warning("Overpass endpoint %s failed: %s", url, exc)
-        raise OsmProviderError(f"Все настроенные серверы Overpass недоступны: {last_error}")
+        )
+        if remaining < 1:
+            raise OsmProviderError("OSM request deadline expired")
+        try:
+            def request() -> httpx.Response:
+                with httpx.Client(timeout=remaining) as client:
+                    return bounded_http_request(
+                        client,
+                        "POST",
+                        url,
+                        data={"data": query},
+                        headers={
+                            "User-Agent": "LandScoutKZ/0.3 (preliminary land research)"
+                        },
+                        total_deadline_seconds=min(remaining, 120.0),
+                    )
+
+            response = guarded_http_call(
+                "osm_overpass",
+                request,
+                backpressure=self.backpressure,
+            )
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise OsmProviderError(f"Overpass response is unusable: {exc}") from exc
 
 
 def overpass_urls() -> list[str]:

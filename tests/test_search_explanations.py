@@ -1,5 +1,6 @@
 from app.models import SearchRequest
 from app.search_explanations import explain_search_result
+from app.web import _search_explanation_payload, _search_status_message
 
 
 def test_explains_large_egkn_layer_with_next_step() -> None:
@@ -60,3 +61,23 @@ def test_explains_missing_urban_plan_layer() -> None:
     assert "Нет цифрового слоя генплана" in explanation.title
     assert "красные линии" in explanation.body
     assert "акимате" in explanation.next_step
+
+
+def test_running_provider_backpressure_is_not_rendered_as_final_failure() -> None:
+    search = SearchRequest(
+        language="ru",
+        region="Акмолинская область",
+        district="Бурабайский район",
+        locality="Бурабай",
+        purpose="ЛПХ(новый поиск)",
+        area_ha=0.15,
+        status="queued",
+        progress=20,
+        error_message="Публичный сервис egkn временно ограничил запросы; повтор через 30 сек.",
+    )
+
+    message = _search_status_message(search)
+
+    assert "Заявка остается в очереди" in message
+    assert "автоматически" in message
+    assert _search_explanation_payload(search) is None

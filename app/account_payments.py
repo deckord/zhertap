@@ -19,10 +19,19 @@ TERMINAL_PROVIDER_STATUSES = {"cancelled", "expired", "error"}
 ACTIVE_PROVIDER_STATUSES = {"pending", "processing", "cancelling"}
 QR_REFRESH_AFTER_SECONDS = 270
 logger = logging.getLogger(__name__)
-SUPPORTED_ACCOUNT_PLANS = {"investor", "team"}
+LITE_PLAN = "lite"
+PRO_PLAN = "pro"
+PRO_YEAR_PLAN = "pro_year"
+SUPPORTED_ACCOUNT_PLANS = {LITE_PLAN, PRO_PLAN, PRO_YEAR_PLAN, "investor", "team"}
 
 
 def account_plan_price_kzt(plan: str) -> int:
+    if plan == LITE_PLAN:
+        return settings.lite_plan_price_kzt
+    if plan == PRO_PLAN:
+        return settings.pro_plan_price_kzt
+    if plan == PRO_YEAR_PLAN:
+        return settings.pro_year_plan_price_kzt
     if plan == "team":
         return settings.auction_team_price_kzt
     return settings.platform_access_price_kzt
@@ -125,11 +134,12 @@ def start_account_payment(
     invoice = create_qr_invoice(
         request_id=f"{ACCOUNT_ORDER_PREFIX}{payment.id}",
         amount_kzt=amount_kzt,
-        description=(
-            "Жертап: тариф Команда на 1 месяц"
-            if target_plan == "team"
-            else "Жертап: тариф Инвестор Pro на 1 месяц"
-        ),
+        description={
+            LITE_PLAN: "Жертап Lite: Новый анализ на 1 месяц",
+            PRO_PLAN: "Жертап PRO: Новый анализ и Аукционы на 1 месяц",
+            PRO_YEAR_PLAN: "Жертап PRO: Новый анализ и Аукционы на 12 месяцев",
+            "team": "Жертап: тариф Команда на 1 месяц",
+        }.get(target_plan, "Жертап: тариф Инвестор Pro на 1 месяц"),
         idempotency_key=_account_invoice_idempotency_key(payment),
     )
     payment.payment_provider_invoice_id = invoice.invoice_id
@@ -209,9 +219,11 @@ def apply_account_apipay_invoice(
             if payment.target_plan in SUPPORTED_ACCOUNT_PLANS
             else "investor"
         )
-        if paid_plan == "team" or account.auction_plan != "team":
+        if paid_plan in {LITE_PLAN, PRO_PLAN}:
             account.auction_plan = paid_plan
-        grant_account_paid_access(account)
+        elif paid_plan == "team" or account.auction_plan != "team":
+            account.auction_plan = paid_plan
+        grant_account_paid_access(account, months=12 if paid_plan == PRO_YEAR_PLAN else None)
         activated = not was_active
     elif provider_status in {"cancelled", "expired", "error"}:
         if payment.payment_status != PaymentStatus.paid.value:

@@ -1,17 +1,23 @@
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -86,6 +92,7 @@ class Account(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     phone: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True)
     phone_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     password_hash: Mapped[str | None] = mapped_column(String(220))
     password_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -175,6 +182,20 @@ class WebLoginCode(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    request_ip: Mapped[str | None] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    account: Mapped[Account] = relationship()
 
 
 class WebSession(Base):
@@ -698,10 +719,165 @@ class PlanningCandidateReview(Base):
     )
 
 
+class AuctionLandObject(Base):
+    """Canonical land identity shared by repeated E-Qazyna auction lots."""
+
+    __tablename__ = "auction_land_objects"
+    __table_args__ = (
+        UniqueConstraint("canonical_key", name="uq_auction_land_object_canonical_key"),
+        Index("ix_auction_land_objects_egkn_id", "egkn_id"),
+        Index("ix_auction_land_objects_cadastre_number", "cadastre_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    canonical_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    egkn_id: Mapped[str | None] = mapped_column(String(64))
+    cadastre_number: Mapped[str | None] = mapped_column(String(64))
+    jerler_object_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    identity_confidence: Mapped[str] = mapped_column(String(16), default="unverified")
+    boundary_geojson: Mapped[str | None] = mapped_column(Text)
+    boundary_source: Mapped[str | None] = mapped_column(String(120))
+    boundary_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    lots: Mapped[list["AuctionLot"]] = relationship(back_populates="land_object")
+
+    @classmethod
+    def from_identifiers(
+        cls,
+        *,
+        egkn_id: str | None = None,
+        cadastre_number: str | None = None,
+        jerler_object_id: str | None = None,
+    ) -> "AuctionLandObject":
+        egkn = (egkn_id or "").strip()
+        cadastre = (cadastre_number or "").strip()
+        jerler = (jerler_object_id or "").strip()
+        if not egkn and not cadastre and not jerler:
+            raise ValueError("At least one official land identifier is required")
+        canonical_key = (
+            f"egkn:{egkn}" if egkn else f"cadastre:{cadastre}" if cadastre else f"jerler:{jerler}"
+        )
+        return cls(
+            canonical_key=canonical_key,
+            egkn_id=egkn or None,
+            cadastre_number=cadastre or None,
+            jerler_object_id=jerler or None,
+            identity_confidence="official" if egkn else "cadastre" if cadastre else "jerler",
+        )
+
+
+class AuctionLandIdentityBackfillCursor(Base):
+    """Durable keyset checkpoint for conservative canonical-land reconciliation."""
+
+    __tablename__ = "auction_land_identity_backfill_cursors"
+
+    cursor_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    after_lot_id: Mapped[str | None] = mapped_column(String(36))
+    high_water_lot_id: Mapped[str | None] = mapped_column(String(36))
+    cycle_count: Mapped[int] = mapped_column(Integer, default=0)
+    scanned_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    linked_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    conflict_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AuctionTerritoryObservation(Base):
+    """Immutable revision of one structured fact from an official authority."""
+
+    __tablename__ = "auction_territory_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "identity_key", "source_revision", name="uq_auction_territory_identity_revision"
+        ),
+        CheckConstraint(
+            "record_kind IN ('event','demographic')",
+            name="ck_auction_territory_record_kind",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64 AND "
+            "(geometry_sha256 IS NULL OR length(geometry_sha256) = 64)",
+            name="ck_auction_territory_hashes",
+        ),
+        Index(
+            "ix_auction_territory_provider_record",
+            "provider_id",
+            "source_record_id",
+            "source_revision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    identity_key: Mapped[str] = mapped_column(String(71), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_record_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    record_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    authority_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    territory_code: Mapped[str | None] = mapped_column(String(64))
+    geometry_geojson: Mapped[str | None] = mapped_column(Text)
+    geometry_sha256: Mapped[str | None] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuctionTerritoryApplicability(Base):
+    """Boundary-versioned relation between an official fact and an auction lot."""
+
+    __tablename__ = "auction_territory_applicability"
+    __table_args__ = (
+        UniqueConstraint(
+            "observation_id", "lot_id", name="uq_auction_territory_observation_lot"
+        ),
+        CheckConstraint(
+            "status IN ('applicable','not_applicable','manual_required')",
+            name="ck_auction_territory_applicability_status",
+        ),
+        CheckConstraint(
+            "scope IN ('parcel','territory','unknown')",
+            name="ck_auction_territory_applicability_scope",
+        ),
+        CheckConstraint(
+            "parcel_boundary_sha256 IS NULL OR length(parcel_boundary_sha256) = 64",
+            name="ck_auction_territory_boundary_hash",
+        ),
+        Index("ix_auction_territory_applicability_lot", "lot_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    observation_id: Mapped[int] = mapped_column(
+        ForeignKey("auction_territory_observations.id", ondelete="CASCADE"), nullable=False
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    basis: Mapped[str] = mapped_column(String(64), nullable=False)
+    overlap_ratio: Mapped[float | None] = mapped_column(Float)
+    parcel_boundary_sha256: Mapped[str | None] = mapped_column(String(64))
+    assessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuctionLot(Base):
     __tablename__ = "auction_lots"
     __table_args__ = (
         UniqueConstraint("source", "source_lot_id", name="uq_auction_lot_source_id"),
+        Index("ix_auction_lots_history_snapshot", "object_type", "created_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -719,8 +895,16 @@ class AuctionLot(Base):
     locality: Mapped[str | None] = mapped_column(String(160))
     location_text: Mapped[str | None] = mapped_column(Text)
     cadastre_number: Mapped[str | None] = mapped_column(String(64), index=True)
+    land_object_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    land_object_ref_id: Mapped[str | None] = mapped_column(
+        ForeignKey("auction_land_objects.id"), index=True
+    )
     area_ha: Mapped[float | None] = mapped_column(Float, index=True)
     land_rights: Mapped[str | None] = mapped_column(String(240))
+    lease_term_years: Mapped[float | None] = mapped_column(Float, index=True)
+    divisible: Mapped[bool | None] = mapped_column(Boolean)
+    additional_payment_kzt: Mapped[float | None] = mapped_column(Float)
+    annual_rent_kzt: Mapped[float | None] = mapped_column(Float)
     functional_purpose_level2: Mapped[str | None] = mapped_column(String(240), index=True)
     functional_purpose_level3: Mapped[str | None] = mapped_column(String(320))
     functional_purpose_level4: Mapped[str | None] = mapped_column(String(320))
@@ -746,6 +930,8 @@ class AuctionLot(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
+    land_object: Mapped[AuctionLandObject | None] = relationship(back_populates="lots")
+
     documents: Mapped[list["AuctionDocument"]] = relationship(
         back_populates="lot", cascade="all, delete-orphan", order_by="AuctionDocument.id"
     )
@@ -757,10 +943,82 @@ class AuctionLot(Base):
     )
 
 
+class AuctionDueDiligenceRequest(Base):
+    __tablename__ = "auction_due_diligence_requests"
+    __table_args__ = (
+        Index(
+            "ix_auction_dd_requests_account_lot_status",
+            "account_id",
+            "lot_id",
+            "status",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'prepared', 'sent', 'waiting', 'received', 'verified', "
+            "'risk', 'cancelled')",
+            name="ck_auction_dd_request_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), index=True
+    )
+    check_code: Mapped[str] = mapped_column(String(32), index=True)
+    authority: Mapped[str] = mapped_column(String(240))
+    question: Mapped[str] = mapped_column(Text)
+    why: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    external_reference: Mapped[str | None] = mapped_column(String(160))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    response_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    response_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    account: Mapped[Account] = relationship()
+    lot: Mapped[AuctionLot] = relationship()
+    attachments: Mapped[list["AuctionDueDiligenceAttachment"]] = relationship(
+        cascade="all, delete-orphan", order_by="AuctionDueDiligenceAttachment.created_at"
+    )
+
+
+class AuctionDueDiligenceAttachment(Base):
+    __tablename__ = "auction_due_diligence_attachments"
+    __table_args__ = (
+        Index("ix_auction_dd_attachments_request", "request_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_due_diligence_requests.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(320))
+    content_type: Mapped[str] = mapped_column(String(128))
+    local_path: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    extraction_status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    extraction_json: Mapped[str | None] = mapped_column(Text)
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuctionDocument(Base):
     __tablename__ = "auction_documents"
     __table_args__ = (
         UniqueConstraint("lot_id", "source_url", name="uq_auction_document_lot_url"),
+        Index("ix_auction_documents_downloaded_id", "downloaded_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -778,6 +1036,83 @@ class AuctionDocument(Base):
     lot: Mapped[AuctionLot] = relationship(back_populates="documents")
 
 
+class AuctionDocumentExtractionState(Base):
+    """Durable worker state; immutable extraction facts remain AuctionEvidence rows."""
+
+    __tablename__ = "auction_document_extraction_states"
+    __table_args__ = (
+        Index(
+            "ix_auction_document_extraction_state_work",
+            "status",
+            "next_attempt_at",
+            "document_id",
+        ),
+        Index(
+            "ix_auction_document_extraction_state_validation",
+            "status",
+            "last_validated_at",
+            "document_id",
+        ),
+        Index(
+            "ix_auction_document_extraction_state_claim",
+            "status",
+            "claim_expires_at",
+            "document_id",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'ready', 'terminal', 'retryable')",
+            name="ck_auction_document_extraction_state_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0 AND attempts <= 10000",
+            name="ck_auction_document_extraction_state_attempts",
+        ),
+    )
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("auction_documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), index=True
+    )
+    document_signature: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    document_path: Mapped[str] = mapped_column(String(2048))
+    extractor_version: Mapped[str] = mapped_column(String(64))
+    writer_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    current_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("auction_evidence.id", ondelete="SET NULL")
+    )
+    current_evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_token: Mapped[str | None] = mapped_column(String(36))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_message: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AuctionDocumentExtractionCursor(Base):
+    """Singleton durable checkpoint for bounded legacy/new-document reconciliation."""
+
+    __tablename__ = "auction_document_extraction_cursors"
+
+    cursor_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    backfill_document_id: Mapped[int] = mapped_column(Integer, default=0)
+    backfill_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    watermark_downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    watermark_document_id: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class AuctionLotHistory(Base):
     __tablename__ = "auction_lot_history"
 
@@ -790,6 +1125,358 @@ class AuctionLotHistory(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     lot: Mapped[AuctionLot] = relationship(back_populates="history")
+
+
+class AuctionHistoryGeneration(Base):
+    __tablename__ = "auction_history_generations"
+    __table_args__ = (
+        Index(
+            "uq_auction_history_generations_one_building",
+            "status",
+            unique=True,
+            postgresql_where=text("status = 'building'"),
+            sqlite_where=text("status = 'building'"),
+        ),
+        Index(
+            "uq_auction_history_generations_one_active",
+            "status",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
+
+    generation: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    normalization_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    source_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_high_water_lot_id: Mapped[str | None] = mapped_column(String(36))
+    expected_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    processed_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    error_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    checkpoint_lot_id: Mapped[str | None] = mapped_column(String(36))
+    scan_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AuctionHistoryGenerationLot(Base):
+    __tablename__ = "auction_history_generation_lots"
+    __table_args__ = (
+        Index("ix_auction_history_generation_lots_lot_id", "lot_id"),
+    )
+
+    generation: Mapped[int] = mapped_column(
+        ForeignKey("auction_history_generations.generation", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+
+_AUCTION_HISTORY_ELIGIBLE = text(
+    "right_status = 'found' AND purpose_status = 'found' AND area_status = 'found'"
+)
+
+
+class AuctionHistoryNormalized(Base):
+    __tablename__ = "auction_history_normalized"
+    __table_args__ = (
+        Index(
+            "ix_auction_history_norm_locality_dims",
+            "generation",
+            "locality_key",
+            "right_kind",
+            "purpose_group",
+            "lease_band",
+            postgresql_where=_AUCTION_HISTORY_ELIGIBLE,
+            sqlite_where=_AUCTION_HISTORY_ELIGIBLE,
+        ),
+        Index(
+            "ix_auction_history_norm_district_dims",
+            "generation",
+            "district_key",
+            "right_kind",
+            "purpose_group",
+            "lease_band",
+            postgresql_where=_AUCTION_HISTORY_ELIGIBLE,
+            sqlite_where=_AUCTION_HISTORY_ELIGIBLE,
+        ),
+        Index(
+            "ix_auction_history_norm_region_dims",
+            "generation",
+            "region_key",
+            "right_kind",
+            "purpose_group",
+            "lease_band",
+            postgresql_where=_AUCTION_HISTORY_ELIGIBLE,
+            sqlite_where=_AUCTION_HISTORY_ELIGIBLE,
+        ),
+        Index(
+            "ix_auction_history_norm_area_date",
+            "generation",
+            "area_ha",
+            "event_date",
+            postgresql_where=_AUCTION_HISTORY_ELIGIBLE,
+            sqlite_where=_AUCTION_HISTORY_ELIGIBLE,
+        ),
+        Index(
+            "ix_auction_history_norm_outcome_date",
+            "generation",
+            "outcome",
+            "event_date",
+        ),
+    )
+
+    generation: Mapped[int] = mapped_column(
+        ForeignKey("auction_history_generations.generation", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    normalization_version: Mapped[str] = mapped_column(String(64))
+    normalization_key: Mapped[str] = mapped_column(String(64), index=True)
+    right_kind: Mapped[str] = mapped_column(String(16))
+    right_status: Mapped[str] = mapped_column(String(16))
+    purpose_group: Mapped[str] = mapped_column(String(32))
+    purpose_status: Mapped[str] = mapped_column(String(16))
+    lease_band: Mapped[str] = mapped_column(String(24))
+    lease_status: Mapped[str] = mapped_column(String(16))
+    event_date: Mapped[date | None] = mapped_column(Date)
+    event_date_status: Mapped[str] = mapped_column(String(16))
+    outcome: Mapped[str] = mapped_column(String(16))
+    outcome_status: Mapped[str] = mapped_column(String(16))
+    area_ha: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    area_status: Mapped[str] = mapped_column(String(16))
+    start_price_kzt: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    start_price_status: Mapped[str] = mapped_column(String(16))
+    sale_price_kzt: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+    sale_price_status: Mapped[str] = mapped_column(String(16))
+    sale_to_start_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    start_price_per_ha_kzt: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    sale_price_per_ha_kzt: Mapped[Decimal | None] = mapped_column(Numeric(24, 2))
+    region_key: Mapped[str | None] = mapped_column(String(160))
+    district_key: Mapped[str | None] = mapped_column(String(160))
+    locality_key: Mapped[str | None] = mapped_column(String(160))
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    issues_json: Mapped[str] = mapped_column(Text, default="[]")
+    normalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuctionDecisionSnapshot(Base):
+    __tablename__ = "auction_decision_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "lot_id",
+            "engine_version",
+            "rules_version",
+            "input_hash",
+            name="uq_auction_decision_snapshot_input",
+        ),
+        Index(
+            "uq_auction_decision_snapshot_current",
+            "lot_id",
+            "engine_version",
+            "rules_version",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+            sqlite_where=text("is_current = 1"),
+        ),
+        Index(
+            "ix_auction_decision_snapshot_verdict_current",
+            "verdict",
+            "is_current",
+            "checked_at",
+        ),
+        Index(
+            "ix_auction_decision_snapshot_readiness_current",
+            "data_readiness",
+            "is_current",
+            "checked_at",
+        ),
+        Index(
+            "ix_auction_decision_snapshot_scenario_current",
+            "scenario_key",
+            "is_current",
+            "checked_at",
+        ),
+        Index(
+            "ix_auction_decision_snapshot_repeat_current",
+            "has_repeat",
+            "repeat_attempt_count",
+            "is_current",
+        ),
+        Index(
+            "ix_auction_decision_snapshot_stale_current",
+            "stale",
+            "is_current",
+            "checked_at",
+        ),
+        CheckConstraint(
+            "bid_ceiling_kzt IS NULL OR "
+            "(bid_ceiling_kzt >= 0 AND bid_ceiling_kzt <= 1000000000000000)",
+            name="ck_auction_decision_snapshot_bid_bounds",
+        ),
+        CheckConstraint(
+            "fair_value_low_kzt IS NULL OR "
+            "(fair_value_low_kzt >= 0 AND fair_value_low_kzt <= 1000000000000000)",
+            name="ck_auction_decision_snapshot_fair_low_bounds",
+        ),
+        CheckConstraint(
+            "fair_value_high_kzt IS NULL OR "
+            "(fair_value_high_kzt >= 0 AND fair_value_high_kzt <= 1000000000000000)",
+            name="ck_auction_decision_snapshot_fair_high_bounds",
+        ),
+        CheckConstraint(
+            "fair_value_low_kzt IS NULL OR fair_value_high_kzt IS NULL OR "
+            "fair_value_low_kzt <= fair_value_high_kzt",
+            name="ck_auction_decision_snapshot_fair_order",
+        ),
+        CheckConstraint(
+            "(verdict = 'participate_up_to' AND bid_ceiling_kzt IS NOT NULL) OR "
+            "(verdict <> 'participate_up_to' AND bid_ceiling_kzt IS NULL)",
+            name="ck_auction_decision_snapshot_bid_verdict",
+        ),
+        CheckConstraint(
+            "verdict IN ('participate', 'participate_up_to', 'requires_check', "
+            "'high_risk', 'do_not_participate')",
+            name="ck_auction_decision_snapshot_verdict",
+        ),
+        CheckConstraint(
+            "data_readiness IN ('complete', 'partial', 'insufficient', 'error')",
+            name="ck_auction_decision_snapshot_readiness",
+        ),
+        CheckConstraint(
+            "repeat_attempt_count >= 0 AND repeat_attempt_count <= 10000",
+            name="ck_auction_decision_snapshot_repeat_bounds",
+        ),
+        CheckConstraint(
+            "validated_evidence_id >= 0",
+            name="ck_auction_decision_snapshot_validated_evidence_nonnegative",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), index=True
+    )
+    engine_version: Mapped[str] = mapped_column(String(64))
+    rules_version: Mapped[str] = mapped_column(String(64))
+    verdict_engine_version: Mapped[str] = mapped_column(String(64))
+    scenario_engine_version: Mapped[str | None] = mapped_column(String(64))
+    price_engine_version: Mapped[str | None] = mapped_column(String(64))
+    formula_version: Mapped[str | None] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    verdict: Mapped[str] = mapped_column(String(32))
+    data_readiness: Mapped[str] = mapped_column(String(24))
+    scenario_key: Mapped[str] = mapped_column(String(64))
+    repeat_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_repeat: Mapped[bool] = mapped_column(Boolean, default=False)
+    bid_ceiling_kzt: Mapped[int | None] = mapped_column(BigInteger)
+    fair_value_low_kzt: Mapped[int | None] = mapped_column(BigInteger)
+    fair_value_high_kzt: Mapped[int | None] = mapped_column(BigInteger)
+    evidence_generation_ids_json: Mapped[str] = mapped_column(Text, default="{}")
+    source_freshness_json: Mapped[str] = mapped_column(Text, default="{}")
+    stale_reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    payload_json: Mapped[str] = mapped_column(Text)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_validated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    validated_evidence_id: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    lot: Mapped[AuctionLot] = relationship()
+
+
+class AuctionDecisionInputState(Base):
+    """Mutable worker checkpoint; assembled decision evidence remains immutable."""
+
+    __tablename__ = "auction_decision_input_states"
+    __table_args__ = (
+        Index(
+            "ix_auction_decision_input_state_work",
+            "status",
+            "next_attempt_at",
+            "updated_at",
+        ),
+        Index(
+            "ix_auction_decision_input_state_watermark",
+            "source_watermark_id",
+            "validated_at",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'ready', 'insufficient', 'error')",
+            name="ck_auction_decision_input_state_status",
+        ),
+        CheckConstraint(
+            "source_watermark_id >= 0 AND market_watermark_id >= 0 AND "
+            "market_row_count >= 0 AND document_watermark_id >= 0 AND "
+            "document_row_count >= 0 AND retry_count >= 0 AND retry_count <= 20",
+            name="ck_auction_decision_input_state_counters",
+        ),
+    )
+
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    source_watermark_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    source_watermark_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    lot_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    history_generation: Mapped[int | None] = mapped_column(BigInteger)
+    market_signature: Mapped[str | None] = mapped_column(String(64))
+    market_watermark_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    market_watermark_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    market_row_count: Mapped[int] = mapped_column(Integer, default=0)
+    document_signature: Mapped[str | None] = mapped_column(String(64))
+    document_watermark_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    document_watermark_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    document_row_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    assembler_version: Mapped[str] = mapped_column(String(64))
+    spatial_assembler_version: Mapped[str] = mapped_column(String(64))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    claim_token: Mapped[str | None] = mapped_column(String(36), index=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_message: Mapped[str | None] = mapped_column(String(500))
+    validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    lot: Mapped[AuctionLot] = relationship()
 
 
 class AuctionLotChange(Base):
@@ -990,6 +1677,191 @@ class AuctionEvidence(Base):
     source: Mapped[AuctionSource | None] = relationship()
 
 
+class AuctionSpatialFeedState(Base):
+    """Current durable worker state for one signed spatial feed identity."""
+
+    __tablename__ = "auction_spatial_feed_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "lot_id",
+            "module",
+            "provider_id",
+            "feed_id",
+            name="uq_auction_spatial_feed_identity",
+        ),
+        UniqueConstraint("identity_key", name="uq_auction_spatial_feed_identity_key"),
+        CheckConstraint(
+            "module IN ('restrictions','site','planning')",
+            name="ck_auction_spatial_feed_module",
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','ready','conflict','retryable',"
+            "'terminal','quarantined','expired')",
+            name="ck_auction_spatial_feed_status",
+        ),
+        CheckConstraint(
+            "attempts BETWEEN 0 AND 10000",
+            name="ck_auction_spatial_feed_attempts",
+        ),
+        CheckConstraint(
+            "length(identity_key) = 64 AND length(input_signature) = 64 AND "
+            "(current_generation_id IS NULL OR length(current_generation_id) = 64) AND "
+            "(current_payload_hash IS NULL OR length(current_payload_hash) = 64)",
+            name="ck_auction_spatial_feed_hashes",
+        ),
+        CheckConstraint(
+            "status != 'processing' OR "
+            "(claim_token IS NOT NULL AND claim_expires_at IS NOT NULL "
+            "AND claimed_from_status IS NOT NULL)",
+            name="ck_auction_spatial_feed_claim",
+        ),
+        Index("ix_auction_spatial_feed_lot_module", "lot_id", "module", "id"),
+        Index("ix_auction_spatial_feed_pending", "status", "id"),
+        Index(
+            "ix_auction_spatial_feed_retry_due",
+            "status",
+            "next_attempt_at",
+            "id",
+        ),
+        Index(
+            "ix_auction_spatial_feed_claim_due",
+            "status",
+            "claim_expires_at",
+            "id",
+        ),
+        Index(
+            "ix_auction_spatial_feed_validation_due",
+            "status",
+            "next_validation_at",
+            "expires_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE")
+    )
+    module: Mapped[str] = mapped_column(String(16))
+    provider_id: Mapped[str] = mapped_column(String(128))
+    feed_id: Mapped[str] = mapped_column(String(128))
+    identity_key: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    input_signature: Mapped[str] = mapped_column(String(64))
+    current_evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("auction_evidence.id", ondelete="SET NULL")
+    )
+    current_generation_id: Mapped[str | None] = mapped_column(String(64))
+    current_payload_hash: Mapped[str | None] = mapped_column(String(64))
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_validation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_token: Mapped[str | None] = mapped_column(String(128))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_from_status: Mapped[str | None] = mapped_column(String(24))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AuctionSpatialManifestExpectation(Base):
+    """Versioned authoritative feed checklist used for atomic lot reconciliation."""
+
+    __tablename__ = "auction_spatial_manifest_expectations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(checklist_hash) = 64 AND length(required_feed_keys_json) <= 16384",
+            name="ck_auction_spatial_expectation_bounds",
+        ),
+    )
+
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[str] = mapped_column(String(128))
+    checklist_hash: Mapped[str] = mapped_column(String(64))
+    required_feed_keys_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AuctionSpatialGenerationManifest(Base):
+    """One current atomic restriction/site/planning generation per lot."""
+
+    __tablename__ = "auction_spatial_generation_manifests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('complete','incomplete','conflict')",
+            name="ck_auction_spatial_manifest_status",
+        ),
+        CheckConstraint(
+            "length(manifest_hash) = 64 AND length(module_generations_json) <= 8192 "
+            "AND length(missing_feed_keys_json) <= 8192 "
+            "AND length(blocking_feed_keys_json) <= 8192",
+            name="ck_auction_spatial_manifest_bounds",
+        ),
+        CheckConstraint("watermark >= 1", name="ck_auction_spatial_manifest_watermark"),
+        Index("ix_auction_spatial_manifest_status", "status", "settled", "updated_at"),
+        Index("ix_auction_spatial_manifest_expiry", "expires_at", "lot_id"),
+    )
+
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(16))
+    settled: Mapped[bool] = mapped_column(Boolean, default=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64))
+    module_generations_json: Mapped[str] = mapped_column(Text, default="{}")
+    missing_feed_keys_json: Mapped[str] = mapped_column(Text, default="[]")
+    blocking_feed_keys_json: Mapped[str] = mapped_column(Text, default="[]")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[str] = mapped_column(String(128))
+    watermark: Mapped[int] = mapped_column(BigInteger, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuctionSpatialDecisionSignal(Base):
+    """Transactional outbox; dispatcher schedules W14 only after commit."""
+
+    __tablename__ = "auction_spatial_decision_signals"
+    __table_args__ = (
+        UniqueConstraint(
+            "lot_id", "manifest_watermark", name="uq_auction_spatial_signal_watermark"
+        ),
+        CheckConstraint(
+            "status IN ('pending','dispatched','failed')",
+            name="ck_auction_spatial_signal_status",
+        ),
+        CheckConstraint(
+            "length(manifest_hash) = 64 AND manifest_watermark >= 1 "
+            "AND attempts BETWEEN 0 AND 10000",
+            name="ck_auction_spatial_signal_bounds",
+        ),
+        Index("ix_auction_spatial_signal_due", "status", "next_attempt_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE")
+    )
+    manifest_hash: Mapped[str] = mapped_column(String(64))
+    manifest_watermark: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AuctionLotV2Analysis(Base):
     __tablename__ = "auction_lot_v2_analysis"
     __table_args__ = (
@@ -1091,6 +1963,580 @@ class AuctionMarketComparable(Base):
     )
 
     lot: Mapped[AuctionLot | None] = relationship()
+
+
+class AuctionVerifiedComparableObservation(Base):
+    """Immutable provider observation for the global verified-comparable inventory."""
+
+    __tablename__ = "auction_verified_comparable_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_identity_key",
+            "content_hash",
+            name="uq_auction_verified_comparable_observation_content",
+        ),
+        CheckConstraint(
+            "fact_status IN ('found', 'conflict', 'error')",
+            name="ck_auction_verified_comparable_observation_status",
+        ),
+        CheckConstraint(
+            "source_sequence_id > 0",
+            name="ck_auction_verified_comparable_observation_sequence",
+        ),
+        CheckConstraint(
+            "length(source_identity_key) = 71 AND length(generation_signature) = 64 "
+            "AND length(content_hash) = 64",
+            name="ck_auction_verified_comparable_observation_hashes",
+        ),
+        CheckConstraint(
+            "price_kind IN ('verified_sale', 'listing')",
+            name="ck_auction_verified_comparable_observation_price_kind",
+        ),
+        CheckConstraint(
+            "(price_kind = 'verified_sale' AND source_sale_id IS NOT NULL) OR "
+            "(price_kind = 'listing' AND source_listing_id IS NOT NULL)",
+            name="ck_auction_verified_comparable_observation_identity",
+        ),
+        CheckConstraint(
+            "fact_status != 'found' OR (source_url IS NOT NULL AND title IS NOT NULL "
+            "AND right_type IS NOT NULL AND purpose_group IS NOT NULL AND area_ha IS NOT NULL "
+            "AND price_kzt IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL)",
+            name="ck_auction_verified_comparable_observation_found_complete",
+        ),
+        CheckConstraint(
+            "fact_status != 'found' OR price_kind != 'verified_sale' OR "
+            "(event_at IS NOT NULL AND verification_status = 'verified' "
+            "AND verification_ref IS NOT NULL)",
+            name="ck_auction_verified_comparable_observation_verified_sale",
+        ),
+        CheckConstraint(
+            "right_type IS NULL OR right_type IN ('ownership', 'lease')",
+            name="ck_auction_verified_comparable_observation_right",
+        ),
+        CheckConstraint(
+            "(right_type IS NULL AND lease_term_years IS NULL AND lease_band IS NULL) OR "
+            "(right_type = 'ownership' AND lease_term_years IS NULL AND lease_band IS NULL) OR "
+            "(right_type = 'lease' AND lease_term_years > 0 AND lease_term_years <= 99 AND "
+            "((lease_term_years <= 3 AND lease_band = 'short_3') OR "
+            "(lease_term_years > 3 AND lease_term_years <= 10 AND lease_band = 'medium_10') OR "
+            "(lease_term_years > 10 AND lease_band = 'long_99')))",
+            name="ck_auction_verified_comparable_observation_lease",
+        ),
+        CheckConstraint(
+            "access_readiness IS NULL OR access_readiness IN "
+            "('none', 'partial', 'ready', 'unknown')",
+            name="ck_auction_verified_comparable_observation_access",
+        ),
+        CheckConstraint(
+            "infrastructure_readiness IS NULL OR infrastructure_readiness IN "
+            "('none', 'partial', 'ready', 'unknown')",
+            name="ck_auction_verified_comparable_observation_infrastructure",
+        ),
+        CheckConstraint(
+            "latitude IS NULL OR latitude BETWEEN 40 AND 56",
+            name="ck_auction_verified_comparable_observation_latitude",
+        ),
+        CheckConstraint(
+            "longitude IS NULL OR longitude BETWEEN 46 AND 88",
+            name="ck_auction_verified_comparable_observation_longitude",
+        ),
+        CheckConstraint(
+            "area_ha IS NULL OR (area_ha >= 0.0001 AND area_ha <= 1000000)",
+            name="ck_auction_verified_comparable_observation_area",
+        ),
+        CheckConstraint(
+            "price_kzt IS NULL OR (price_kzt >= 1 AND price_kzt <= 1000000000000000)",
+            name="ck_auction_verified_comparable_observation_price",
+        ),
+        CheckConstraint(
+            "length(provenance_json) <= 16384 AND length(conflicts_json) <= 8192 "
+            "AND (raw_payload_json IS NULL OR length(raw_payload_json) <= 64000)",
+            name="ck_auction_verified_comparable_observation_payload_bounds",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    source_sequence_id: Mapped[int] = mapped_column(BigInteger)
+    source_identity_key: Mapped[str] = mapped_column(String(71))
+    source_name: Mapped[str] = mapped_column(String(128))
+    source_record_id: Mapped[str] = mapped_column(String(128))
+    source_sale_id: Mapped[str | None] = mapped_column(String(128))
+    source_listing_id: Mapped[str | None] = mapped_column(String(128))
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    object_id: Mapped[str | None] = mapped_column(String(128))
+    fact_status: Mapped[str] = mapped_column(String(16))
+    price_kind: Mapped[str] = mapped_column(String(20))
+    verification_status: Mapped[str | None] = mapped_column(String(32))
+    verification_ref: Mapped[str | None] = mapped_column(String(512))
+    right_type: Mapped[str | None] = mapped_column(String(16))
+    purpose_group: Mapped[str | None] = mapped_column(String(160))
+    lease_term_years: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    lease_band: Mapped[str | None] = mapped_column(String(16))
+    area_ha: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    price_kzt: Mapped[Decimal | None] = mapped_column(Numeric(20, 0))
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    access_readiness: Mapped[str | None] = mapped_column(String(16))
+    infrastructure_readiness: Mapped[str | None] = mapped_column(String(16))
+    event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    title: Mapped[str | None] = mapped_column(String(320))
+    locality: Mapped[str | None] = mapped_column(String(160))
+    provenance_json: Mapped[str] = mapped_column(Text)
+    conflicts_json: Mapped[str] = mapped_column(Text, default="[]")
+    raw_payload_json: Mapped[str | None] = mapped_column(Text)
+    generation_signature: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    contract_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuctionVerifiedComparableCurrent(Base):
+    """One authoritative latest observation per provider identity, indexed for W9."""
+
+    __tablename__ = "auction_verified_comparable_current"
+    __table_args__ = (
+        UniqueConstraint(
+            "observation_id", name="uq_auction_verified_comparable_current_observation"
+        ),
+        CheckConstraint(
+            "fact_status IN ('found', 'conflict', 'error')",
+            name="ck_auction_verified_comparable_current_status",
+        ),
+        CheckConstraint(
+            "source_sequence_id > 0",
+            name="ck_auction_verified_comparable_current_sequence",
+        ),
+        CheckConstraint(
+            "length(source_identity_key) = 71 AND length(generation_signature) = 64 "
+            "AND length(content_hash) = 64",
+            name="ck_auction_verified_comparable_current_hashes",
+        ),
+        CheckConstraint(
+            "price_kind IN ('verified_sale', 'listing')",
+            name="ck_auction_verified_comparable_current_price_kind",
+        ),
+        CheckConstraint(
+            "(price_kind = 'verified_sale' AND source_sale_id IS NOT NULL) OR "
+            "(price_kind = 'listing' AND source_listing_id IS NOT NULL)",
+            name="ck_auction_verified_comparable_current_identity",
+        ),
+        CheckConstraint(
+            "fact_status != 'found' OR (source_url IS NOT NULL AND title IS NOT NULL "
+            "AND right_type IS NOT NULL AND purpose_group IS NOT NULL AND area_ha IS NOT NULL "
+            "AND price_kzt IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL)",
+            name="ck_auction_verified_comparable_current_found_complete",
+        ),
+        CheckConstraint(
+            "fact_status != 'found' OR price_kind != 'verified_sale' OR "
+            "(event_at IS NOT NULL AND verification_status = 'verified' "
+            "AND verification_ref IS NOT NULL)",
+            name="ck_auction_verified_comparable_current_verified_sale",
+        ),
+        CheckConstraint(
+            "latitude IS NULL OR latitude BETWEEN 40 AND 56",
+            name="ck_auction_verified_comparable_current_latitude",
+        ),
+        CheckConstraint(
+            "longitude IS NULL OR longitude BETWEEN 46 AND 88",
+            name="ck_auction_verified_comparable_current_longitude",
+        ),
+        CheckConstraint(
+            "area_ha IS NULL OR (area_ha >= 0.0001 AND area_ha <= 1000000)",
+            name="ck_auction_verified_comparable_current_area",
+        ),
+        CheckConstraint(
+            "price_kzt IS NULL OR (price_kzt >= 1 AND price_kzt <= 1000000000000000)",
+            name="ck_auction_verified_comparable_current_price",
+        ),
+        CheckConstraint(
+            "(right_type IS NULL AND lease_term_years IS NULL AND lease_band IS NULL) OR "
+            "(right_type = 'ownership' AND lease_term_years IS NULL AND lease_band IS NULL) OR "
+            "(right_type = 'lease' AND lease_term_years > 0 AND lease_term_years <= 99 AND "
+            "((lease_term_years <= 3 AND lease_band = 'short_3') OR "
+            "(lease_term_years > 3 AND lease_term_years <= 10 AND lease_band = 'medium_10') OR "
+            "(lease_term_years > 10 AND lease_band = 'long_99')))",
+            name="ck_auction_verified_comparable_current_lease",
+        ),
+        CheckConstraint(
+            "access_readiness IS NULL OR access_readiness IN "
+            "('none', 'partial', 'ready', 'unknown')",
+            name="ck_auction_verified_comparable_current_access",
+        ),
+        CheckConstraint(
+            "infrastructure_readiness IS NULL OR infrastructure_readiness IN "
+            "('none', 'partial', 'ready', 'unknown')",
+            name="ck_auction_verified_comparable_current_infrastructure",
+        ),
+        CheckConstraint(
+            "length(provenance_json) <= 16384 AND length(conflicts_json) <= 8192",
+            name="ck_auction_verified_comparable_current_payload_bounds",
+        ),
+        Index(
+            "ix_auction_verified_comparable_current_target_geo",
+            "right_type",
+            "purpose_group",
+            "lease_band",
+            "latitude",
+            "longitude",
+            "area_ha",
+            "event_at",
+            "observed_at",
+            "observation_id",
+            postgresql_where=text(
+                "fact_status = 'found' AND price_kind = 'verified_sale' "
+                "AND verification_status = 'verified' AND verification_ref IS NOT NULL "
+                "AND conflicts_json = '[]'"
+            ),
+            sqlite_where=text(
+                "fact_status = 'found' AND price_kind = 'verified_sale' "
+                "AND verification_status = 'verified' AND verification_ref IS NOT NULL "
+                "AND conflicts_json = '[]'"
+            ),
+        ),
+        Index(
+            "ix_auction_verified_comparable_current_target_event",
+            "right_type",
+            "purpose_group",
+            "lease_band",
+            "event_at",
+            "observed_at",
+            "observation_id",
+            postgresql_where=text(
+                "fact_status = 'found' AND price_kind = 'verified_sale' "
+                "AND verification_status = 'verified' AND verification_ref IS NOT NULL "
+                "AND conflicts_json = '[]'"
+            ),
+            sqlite_where=text(
+                "fact_status = 'found' AND price_kind = 'verified_sale' "
+                "AND verification_status = 'verified' AND verification_ref IS NOT NULL "
+                "AND conflicts_json = '[]'"
+            ),
+        ),
+        Index(
+            "ix_auction_verified_comparable_current_keyset",
+            "observed_at",
+            "observation_id",
+        ),
+    )
+
+    source_identity_key: Mapped[str] = mapped_column(String(71), primary_key=True)
+    observation_id: Mapped[int] = mapped_column(
+        ForeignKey("auction_verified_comparable_observations.id", ondelete="RESTRICT")
+    )
+    source_sequence_id: Mapped[int] = mapped_column(BigInteger)
+    source_name: Mapped[str] = mapped_column(String(128))
+    source_record_id: Mapped[str] = mapped_column(String(128))
+    source_sale_id: Mapped[str | None] = mapped_column(String(128))
+    source_listing_id: Mapped[str | None] = mapped_column(String(128))
+    source_url: Mapped[str | None] = mapped_column(String(2048))
+    object_id: Mapped[str | None] = mapped_column(String(128))
+    fact_status: Mapped[str] = mapped_column(String(16))
+    price_kind: Mapped[str] = mapped_column(String(20))
+    verification_status: Mapped[str | None] = mapped_column(String(32))
+    verification_ref: Mapped[str | None] = mapped_column(String(512))
+    right_type: Mapped[str | None] = mapped_column(String(16))
+    purpose_group: Mapped[str | None] = mapped_column(String(160))
+    lease_term_years: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    lease_band: Mapped[str | None] = mapped_column(String(16))
+    area_ha: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    price_kzt: Mapped[Decimal | None] = mapped_column(Numeric(20, 0))
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
+    access_readiness: Mapped[str | None] = mapped_column(String(16))
+    infrastructure_readiness: Mapped[str | None] = mapped_column(String(16))
+    event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    title: Mapped[str | None] = mapped_column(String(320))
+    locality: Mapped[str | None] = mapped_column(String(160))
+    provenance_json: Mapped[str] = mapped_column(Text)
+    conflicts_json: Mapped[str] = mapped_column(Text, default="[]")
+    generation_signature: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    contract_version: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuctionMarketInventoryGeneration(Base):
+    """Immutable cell delta committed with a comparable-current batch."""
+
+    __tablename__ = "auction_market_inventory_generations"
+    __table_args__ = (
+        CheckConstraint("generation > 0", name="ck_auction_market_generation_positive"),
+        CheckConstraint(
+            "changed_identity_count BETWEEN 0 AND 1000",
+            name="ck_auction_market_generation_identity_count",
+        ),
+        CheckConstraint(
+            "length(generation_signature) = 64 AND length(policy_version) <= 64",
+            name="ck_auction_market_generation_signatures",
+        ),
+        CheckConstraint(
+            "length(changed_cells_json) <= 32000",
+            name="ck_auction_market_generation_cells_bound",
+        ),
+    )
+
+    generation: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    generation_signature: Mapped[str] = mapped_column(String(64), unique=True)
+    changed_cells_json: Mapped[str] = mapped_column(Text, default="[]")
+    global_reconciliation: Mapped[bool] = mapped_column(Boolean, default=False)
+    changed_identity_count: Mapped[int] = mapped_column(Integer)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class AuctionMarketTargetState(Base):
+    """Durable W9 target watermark, claim ownership and retry schedule."""
+
+    __tablename__ = "auction_market_target_states"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ready','insufficient','error','pending','processing')",
+            name="ck_auction_market_target_state_status",
+        ),
+        CheckConstraint(
+            "validated_generation >= 0 AND attempts BETWEEN 0 AND 10000",
+            name="ck_auction_market_target_state_counters",
+        ),
+        CheckConstraint(
+            "length(target_signature) = 64 AND length(coverage_cells_json) <= 2048",
+            name="ck_auction_market_target_state_bounds",
+        ),
+        CheckConstraint(
+            "status != 'processing' OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL)",
+            name="ck_auction_market_target_state_claim",
+        ),
+        Index(
+            "ix_auction_market_target_state_due",
+            "status",
+            "next_attempt_at",
+            "claim_expires_at",
+            "lot_id",
+        ),
+        Index(
+            "ix_auction_market_target_state_watermark",
+            "validated_generation",
+            "lot_id",
+        ),
+    )
+
+    lot_id: Mapped[str] = mapped_column(
+        ForeignKey("auction_lots.id", ondelete="CASCADE"), primary_key=True
+    )
+    target_signature: Mapped[str] = mapped_column(String(64))
+    coverage_cells_json: Mapped[str] = mapped_column(Text, default="[]")
+    validated_generation: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuctionMarketScanCursor(Base):
+    """Durable independent active-target scan cursor for sparse dirty pages."""
+
+    __tablename__ = "auction_market_scan_cursors"
+
+    policy_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_cursor_lot_id: Mapped[str | None] = mapped_column(String(36))
+    high_water_lot_id: Mapped[str | None] = mapped_column(String(36))
+    latest_generation: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderSyncRun(Base):
+    """One idempotent provider generation and its downstream barrier."""
+
+    __tablename__ = "provider_sync_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "run_kind IN ('current','full','history','sources')",
+            name="ck_provider_sync_run_kind",
+        ),
+        CheckConstraint(
+            "status IN ('active','finalizing','complete','error')",
+            name="ck_provider_sync_run_status",
+        ),
+        CheckConstraint(
+            "child_count BETWEEN 0 AND 1000 AND completed_children BETWEEN 0 AND child_count "
+            "AND detail_limit BETWEEN 0 AND 100000 AND details_enqueued BETWEEN 0 AND detail_limit",
+            name="ck_provider_sync_run_counters",
+        ),
+        CheckConstraint(
+            "length(config_json) <= 16000 AND length(policy_version) <= 64",
+            name="ck_provider_sync_run_bounds",
+        ),
+        Index(
+            "uq_provider_sync_run_active_kind",
+            "run_kind",
+            unique=True,
+            postgresql_where=text("status IN ('active','finalizing')"),
+            sqlite_where=text("status IN ('active','finalizing')"),
+        ),
+    )
+
+    run_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_kind: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    child_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed_children: Mapped[int] = mapped_column(Integer, default=0)
+    detail_limit: Mapped[int] = mapped_column(Integer, default=0)
+    details_enqueued: Mapped[int] = mapped_column(Integer, default=0)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    downstream_dispatched: Mapped[bool] = mapped_column(Boolean, default=False)
+    policy_version: Mapped[str] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderWorkflowState(Base):
+    """Compact durable cursor for a bounded provider crawl; response bodies are never stored."""
+
+    __tablename__ = "provider_workflow_states"
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('eqazyna','egkn','osm_overpass','gov_kz','auction_documents','jerler')",
+            name="ck_provider_workflow_provider",
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','deferred','complete','error')",
+            name="ck_provider_workflow_status",
+        ),
+        CheckConstraint(
+            "completed_units >= 0 AND failed_units >= 0 AND attempts BETWEEN 0 AND 10000",
+            name="ck_provider_workflow_counters",
+        ),
+        CheckConstraint(
+            "length(cursor_json) <= 16000 AND length(policy_version) <= 64",
+            name="ck_provider_workflow_bounds",
+        ),
+        CheckConstraint(
+            "status != 'processing' OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL)",
+            name="ck_provider_workflow_claim",
+        ),
+        Index(
+            "ix_provider_workflow_due",
+            "status",
+            "next_attempt_at",
+            "claim_expires_at",
+            "workflow_key",
+        ),
+    )
+
+    workflow_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    run_key: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_sync_runs.run_key", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    workflow_kind: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    cursor_json: Mapped[str] = mapped_column(Text, default="{}")
+    completed_units: Mapped[int] = mapped_column(Integer, default=0)
+    failed_units: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(1000))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderRunDispatch(Base):
+    """Durable broker outbox for provider-run barrier continuations."""
+
+    __tablename__ = "provider_run_dispatches"
+    __table_args__ = (
+        UniqueConstraint("run_key", "action", name="uq_provider_run_dispatch_action"),
+        CheckConstraint(
+            "action IN ('start_sources','normalize_history','decision_input')",
+            name="ck_provider_run_dispatch_action",
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','dispatched','error')",
+            name="ck_provider_run_dispatch_status",
+        ),
+        CheckConstraint(
+            "attempts BETWEEN 0 AND 10000 AND length(payload_json) <= 4000",
+            name="ck_provider_run_dispatch_bounds",
+        ),
+        Index(
+            "ix_provider_run_dispatch_due",
+            "status",
+            "next_attempt_at",
+            "claim_expires_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_key: Mapped[str] = mapped_column(
+        ForeignKey("provider_sync_runs.run_key", ondelete="CASCADE"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderWorkflowUnit(Base):
+    """Small request identity/input record; parsed domain data is persisted elsewhere."""
+
+    __tablename__ = "provider_workflow_units"
+    __table_args__ = (
+        UniqueConstraint("workflow_key", "unit_key", name="uq_provider_workflow_unit_key"),
+        CheckConstraint(
+            "status IN ('pending','processing','done','error','terminal')",
+            name="ck_provider_workflow_unit_status",
+        ),
+        CheckConstraint(
+            "attempts BETWEEN 0 AND 100 AND length(input_json) <= 8000",
+            name="ck_provider_workflow_unit_bounds",
+        ),
+        CheckConstraint(
+            "status != 'processing' OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL)",
+            name="ck_provider_workflow_unit_claim",
+        ),
+        Index(
+            "ix_provider_workflow_unit_due",
+            "workflow_key",
+            "status",
+            "next_attempt_at",
+            "claim_expires_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workflow_key: Mapped[str] = mapped_column(
+        ForeignKey("provider_workflow_states.workflow_key", ondelete="CASCADE"), index=True
+    )
+    unit_key: Mapped[str] = mapped_column(String(128))
+    unit_kind: Mapped[str] = mapped_column(String(64))
+    input_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_ref: Mapped[str | None] = mapped_column(String(512))
+    last_error: Mapped[str | None] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuctionWatchlist(Base):

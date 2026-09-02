@@ -7,6 +7,7 @@ from shapely.ops import unary_union
 
 from app.config import settings
 from app.live_search import LiveSearchEngine
+from app.provider_guard import ProviderCallDeferred
 from app.providers.egkn import DistrictInfo, EgknProviderError, ParcelRecord, SettlementInfo
 from app.providers.osm import Surroundings
 from app.schemas import ALL_DISTRICTS, SearchCreate
@@ -192,6 +193,17 @@ class BlockingWaterOsm:
         return [Surroundings(open_water_distance_m=1, checked=True) for _ in points]
 
 
+class DeferredOsm:
+    def analyze_points(
+        self,
+        points: list[tuple[float, float]],
+        radius_m: int,
+        *,
+        time_budget_seconds: int | float | None = None,
+    ) -> list[Surroundings]:
+        raise ProviderCallDeferred("osm_overpass", "circuit_open", 900)
+
+
 class LargePlotOsm(FakeOsm):
     def analyze_points(
         self, points: list[tuple[float, float]], radius_m: int
@@ -311,6 +323,22 @@ def test_live_search_rejects_open_water_crossing_plot() -> None:
     results = LiveSearchEngine(FakeEgkn(), BlockingWaterOsm()).search(query)
 
     assert results == []
+
+
+def test_live_search_returns_egkn_candidates_when_osm_is_deferred() -> None:
+    query = SearchCreate(
+        region="Акмолинская область",
+        district="Зерендинский район",
+        locality="Зеренда",
+        area_ha=0.10,
+        result_limit=5,
+    )
+
+    results = LiveSearchEngine(FakeEgkn(), DeferredOsm()).search(query)
+
+    assert results
+    assert all(item.road_distance_m is None for item in results)
+    assert all("OSM" in item.risk_notes for item in results)
 
 
 def test_live_search_accepts_district_boundary_without_settlement() -> None:

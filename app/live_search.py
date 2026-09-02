@@ -14,6 +14,7 @@ from shapely.strtree import STRtree
 
 from app.config import settings
 from app.legal_rules import legal_restriction_reason
+from app.provider_guard import ProviderCallDeferred
 from app.providers.egkn import (
     DistrictInfo,
     EgknProvider,
@@ -32,6 +33,8 @@ from app.schemas import ALL_DISTRICTS, SearchCreate
 from app.search_types import CandidateResult
 
 logger = logging.getLogger(__name__)
+LAND_OSM_TIME_BUDGET_SECONDS = 45
+LAND_OSM_DEADLINE_RESERVE_SECONDS = 20
 
 
 @dataclass(slots=True)
@@ -258,7 +261,7 @@ class LiveSearchEngine:
 
         if progress_callback:
             progress_callback("objects")
-        surroundings = self._surroundings(drafts)
+        surroundings = self._surroundings(drafts, deadline=deadline)
         osm_checked = any(context.checked for context in surroundings)
         if not osm_checked:
             logger.warning(
@@ -486,10 +489,32 @@ class LiveSearchEngine:
                         return drafts
         return drafts
 
-    def _surroundings(self, drafts: list[DraftCandidate]) -> list[Surroundings]:
-        return self.osm.analyze_points(
-            [(draft.latitude, draft.longitude) for draft in drafts], radius_m=2000
-        )
+    def _surroundings(
+        self, drafts: list[DraftCandidate], *, deadline: float
+    ) -> list[Surroundings]:
+        remaining = deadline - time.monotonic() - LAND_OSM_DEADLINE_RESERVE_SECONDS
+        if remaining < 5:
+            logger.warning(
+                "Skipping OSM surroundings: only %.1fs remain before search deadline",
+                remaining + LAND_OSM_DEADLINE_RESERVE_SECONDS,
+            )
+            return [Surroundings() for _ in drafts]
+        points = [(draft.latitude, draft.longitude) for draft in drafts]
+        try:
+            return self.osm.analyze_points(
+                points,
+                radius_m=2000,
+                time_budget_seconds=min(LAND_OSM_TIME_BUDGET_SECONDS, remaining),
+            )
+        except ProviderCallDeferred as exc:
+            # OSM is supplementary evidence. A provider circuit/rate-limit must
+            # not prevent the primary EGKN search from returning candidates.
+            logger.warning("Skipping OSM surroundings after deferred provider call: %s", exc)
+            return [Surroundings() for _ in drafts]
+        except TypeError as exc:
+            if "time_budget_seconds" not in str(exc):
+                raise
+            return self.osm.analyze_points(points, radius_m=2000)
 
     def _to_result(
         self,

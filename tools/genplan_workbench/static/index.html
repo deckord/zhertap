@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Genplan Workbench</title>
   <link rel="stylesheet" href="/static/leaflet.css">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260826-map-center-crosshair">
 </head>
 <body>
   <header class="app-header">
@@ -102,8 +102,16 @@
           <button id="cancelPairButton" class="secondary" type="button" disabled>
             Cancel pair
           </button>
+          <button id="mapCenterPointButton" type="button" disabled>
+            Set point at map center
+          </button>
         </div>
-        <div id="map"></div>
+        <div class="map-stage">
+          <div id="map"></div>
+          <div class="map-center-crosshair" aria-hidden="true">
+            <span></span>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -156,6 +164,6 @@
   </main>
 
   <script src="/static/leaflet.js"></script>
-  <script src="/static/workbench.js"></script>
+  <script src="/static/workbench.js?v=20260826-http-uuid-fix"></script>
 </body>
 </html>

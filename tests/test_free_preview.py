@@ -367,6 +367,29 @@ def test_next_batch_is_idempotent_and_tracks_previous_delivery(monkeypatch) -> N
         assert len(services.delivered_coordinates(session, next_request)) == 10
 
 
+def test_new_search_does_not_exclude_previous_delivered_coordinates(monkeypatch) -> None:
+    configure_free_preview(monkeypatch)
+    with build_session() as session:
+        previous = add_request(session, user_id="7010", candidate_count=10)
+        previous.payment_status = PaymentStatus.paid.value
+        session.commit()
+        services.deliver_request(session, previous.id)
+
+        fresh = SearchRequest(
+            region=previous.region,
+            district=previous.district,
+            locality=previous.locality,
+            telegram_user_id=previous.telegram_user_id,
+            telegram_chat_id=previous.telegram_chat_id,
+            status=SearchStatus.queued.value,
+        )
+        session.add(fresh)
+        session.commit()
+
+        assert fresh.continuation_of_request_id is None
+        assert services.delivered_coordinates(session, fresh) == []
+
+
 def test_web_next_batch_marks_visible_candidates_as_delivered(monkeypatch) -> None:
     configure_free_preview(monkeypatch)
     with build_session() as session:

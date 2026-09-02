@@ -99,7 +99,7 @@ def test_register_request_code_rate_limit_blocks_repeated_requests(monkeypatch) 
     send_calls: list[str] = []
     monkeypatch.setattr(web, "send_login_code", lambda phone, code: send_calls.append(phone))
     monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_PER_PHONE_PER_HOUR", 1)
-    monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR", 1)
+    monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR", 10)
     monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS", 3600)
     reset_rate_limit_state(monkeypatch)
     with client_for(build_session()) as client:
@@ -113,6 +113,9 @@ def test_register_request_code_rate_limit_blocks_repeated_requests(monkeypatch) 
         )
     assert first.status_code == 200
     assert second.status_code == 429
+    assert "Слишком много кодов подтверждения для этого номера" in second.text
+    assert "Повторите через 60 минут" in second.text
+    assert second.headers["Retry-After"]
     assert len(send_calls) == 1
 
 
@@ -120,7 +123,7 @@ def test_password_reset_request_code_rate_limit_blocks_repeated_requests(monkeyp
     send_calls: list[str] = []
     monkeypatch.setattr(web, "send_login_code", lambda phone, code: send_calls.append(phone))
     monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_PER_PHONE_PER_HOUR", 1)
-    monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR", 1)
+    monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_PER_IP_PER_HOUR", 10)
     monkeypatch.setattr(web, "SMS_REQUEST_RATE_LIMIT_WINDOW_SECONDS", 3600)
     reset_rate_limit_state(monkeypatch)
 
@@ -145,7 +148,16 @@ def test_password_reset_request_code_rate_limit_blocks_repeated_requests(monkeyp
 
     assert first.status_code == 200
     assert second.status_code == 429
+    assert "Слишком много кодов подтверждения для этого номера" in second.text
+    assert "Повторите через 60 минут" in second.text
+    assert second.headers["Retry-After"]
     assert len(send_calls) == 1
+
+
+def test_retry_after_message_uses_seconds_and_rounded_up_minutes() -> None:
+    assert web._retry_after_message(30) == "Повторите через 30 секунд."
+    assert web._retry_after_message(61) == "Повторите через 2 минуты."
+    assert web._retry_after_message(3600) == "Повторите через 60 минут."
 
 
 def test_cabinet_search_rate_limit_blocks_flooding(monkeypatch) -> None:

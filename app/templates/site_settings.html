@@ -20,11 +20,18 @@
     {% if password_error %}
       <div class="form-alert">{{ password_error }}</div>
     {% endif %}
+    {% if email_updated %}
+      <div class="form-alert neutral">Email для восстановления обновлён.</div>
+    {% endif %}
+    {% if email_error %}
+      <div class="form-alert">{{ email_error }}</div>
+    {% endif %}
 
     <section class="panel-modern">
       <div class="panel-head"><h2>Профиль</h2><span>{{ "Telegram привязан" if account.telegram_user_id else "Telegram не привязан" }}</span></div>
       <div class="fact-grid">
         <div><span>Телефон</span><strong>{{ account.phone }}</strong></div>
+        <div><span>Email восстановления</span><strong>{{ account.email or "Не указан" }}</strong></div>
         <div>
           <span>Доступ</span>
           <strong>
@@ -50,7 +57,21 @@
     </section>
 
     <section class="panel-modern">
-      <div class="panel-head"><h2>Сменить пароль</h2><span>Без SMS</span></div>
+      <div class="panel-head"><h2>Email для восстановления</h2><span>Защищён текущим паролем</span></div>
+      <form class="modern-form settings-form" method="post" action="/cabinet/settings/email">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <label>Email
+          <input name="email" type="email" value="{{ account.email or '' }}" autocomplete="email" required>
+        </label>
+        <label>Текущий пароль
+          <input name="current_password" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="primary-action" type="submit">Сохранить email</button>
+      </form>
+    </section>
+
+    <section class="panel-modern">
+      <div class="panel-head"><h2>Сменить пароль</h2><span>Без кодов</span></div>
       <form class="modern-form settings-form" method="post" action="/cabinet/settings/password">
         <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
         <label>Текущий пароль

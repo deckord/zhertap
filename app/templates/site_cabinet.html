@@ -34,7 +34,7 @@
     {% endif %}
     {% if trial_active %}
       <div class="form-alert neutral">
-        Тестовый доступ активен до {{ trial_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по времени Алматы. В тестовый период открыты все функции. Оплатить месяц через Kaspi можно уже сейчас.
+        Тестовый доступ активен до {{ trial_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по времени Алматы. Можно запускать поиск и смотреть предварительные варианты. Кадастровые номера, координаты, карта, генплан и ЕГКН открываются после оплаты.
       </div>
     {% endif %}
 
@@ -86,7 +86,7 @@
         <span class="kpi-icon success"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg></span>
         <div>
           <span>Доступ</span>
-          <strong>{% if access_kind in ["paid", "trial"] %}Активен{% else %}Ограничен{% endif %}</strong>
+          <strong>{% if access_kind == "paid" %}Полный{% elif access_kind == "trial" %}Тестовый{% else %}Ограничен{% endif %}</strong>
           <small>{{ access_label }}</small>
         </div>
       </article>

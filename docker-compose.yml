@@ -1,5 +1,7 @@
 x-manual-genplan-volume: &manual-genplan-volume
   - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+x-host-gateway: &host-gateway
+  - "host.docker.internal:host-gateway"
 
 services:
   db:
@@ -29,20 +31,33 @@ services:
       timeout: 3s
       retries: 20
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+
   web:
     build: .
     restart: unless-stopped
     env_file: .env
+    extra_hosts: *host-gateway
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "2"
+      DB_STATEMENT_TIMEOUT_MS: "7000"
+      DB_LOCK_TIMEOUT_MS: "2000"
     ports:
       - "127.0.0.1:8000:8000"
-    volumes: *manual-genplan-volume
+    volumes:
+      - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+      - auction_documents:/app/var/auction-documents
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -52,49 +67,74 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_started
 
   worker:
     build: .
     restart: unless-stopped
     command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 -Q critical
     env_file: .env
+    extra_hosts: *host-gateway
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
-    volumes: *manual-genplan-volume
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "1"
+      DB_STATEMENT_TIMEOUT_MS: "120000"
+      DB_LOCK_TIMEOUT_MS: "5000"
+    volumes:
+      - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+      - auction_documents:/app/var/auction-documents
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_started
 
   auction_worker:
     build: .
     restart: unless-stopped
     command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=1 -Q auctions
     env_file: .env
+    extra_hosts: *host-gateway
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
-    volumes: *manual-genplan-volume
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "1"
+      DB_STATEMENT_TIMEOUT_MS: "120000"
+      DB_LOCK_TIMEOUT_MS: "5000"
+    volumes:
+      - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+      - auction_documents:/app/var/auction-documents
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_started
 
   beat:
     build: .
     restart: unless-stopped
     command: celery -A app.tasks.celery_app beat --loglevel=INFO --schedule /app/var/celerybeat-schedule
     env_file: .env
+    extra_hosts: *host-gateway
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
-    volumes: *manual-genplan-volume
+      DB_POOL_SIZE: "1"
+      DB_MAX_OVERFLOW: "0"
+    volumes:
+      - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+      - auction_documents:/app/var/auction-documents
     depends_on:
       db:
         condition: service_healthy
@@ -106,11 +146,14 @@ services:
     restart: unless-stopped
     command: python -m tools.production_monitor
     env_file: .env
+    extra_hosts: *host-gateway
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       MONITOR_BASE_URL: http://web:8000
       RUN_TASKS_INLINE: "false"
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "0"
     depends_on:
       web:
         condition: service_started
@@ -124,11 +167,16 @@ services:
     restart: unless-stopped
     command: python -m app.bot
     env_file: .env
+    extra_hosts: *host-gateway
     environment:
       DATABASE_URL: postgresql+psycopg://land_scout:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/land_scout
       REDIS_URL: redis://redis:6379/0
       RUN_TASKS_INLINE: "false"
-    volumes: *manual-genplan-volume
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "0"
+    volumes:
+      - "${MANUAL_GENPLAN_FILES_HOST_ROOT:-./.manual-genplans-empty}:/opt/land-scout/manual-genplans/extracted:ro"
+      - auction_documents:/app/var/auction-documents
     depends_on:
       db:
         condition: service_healthy
@@ -138,3 +186,5 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  ollama_data:
+  auction_documents:

@@ -252,26 +252,33 @@
       <div class="auction-v2-filter-intro">
         <div>
           <strong>Найти лот</strong>
-          <span>Начните с поиска, статуса и сортировки. Остальные параметры — в расширенном отборе.</span>
+          <span>Сначала выберите, что приобретаете, сценарий использования и допустимый результат проверки.</span>
         </div>
         <span class="auction-v2-filter-count">{{ total }} лотов по текущему отбору</span>
       </div>
       <label class="auction-v2-search-field">Поиск по номеру, кадастру или названию
         <input name="q" value="{{ filters.q }}" placeholder="Например 01-005-061-079 или номер лота">
       </label>
-      <label>Показать
-        <select name="lot_scope">
-          {% for value, label in lot_scope_labels.items() %}
-            <option value="{{ value }}" {% if (filters.lot_scope or "active") == value %}selected{% endif %}>{{ label }}</option>
+      <label>Что приобретается
+        <select name="right_type">
+          <option value="">Любой вид права</option>
+          <option value="ownership" {% if filters.right_type == "ownership" %}selected{% endif %}>Частная собственность</option>
+          <option value="lease" {% if filters.right_type == "lease" %}selected{% endif %}>Право аренды</option>
+          <option value="unknown" {% if filters.right_type == "unknown" %}selected{% endif %}>Право не определено</option>
+        </select>
+      </label>
+      <label>Сценарий участка
+        <select name="use_scenario">
+          <option value="">Любое назначение</option>
+          {% for value, label in use_scenario_labels.items() %}
+            {% if value not in ("other", "unknown") %}<option value="{{ value }}" {% if filters.use_scenario == value %}selected{% endif %}>{{ label }}</option>{% endif %}
           {% endfor %}
         </select>
       </label>
-      <label>Официальный статус
-        <select name="eqazyna_status">
-          <option value="">Все статусы E-Qazyna</option>
-          {% for value, label in eqazyna_status_labels.items() %}
-            <option value="{{ value }}" {% if filters.eqazyna_status == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
+      <label>Статус проверки
+        <select name="investment_verdict">
+          <option value="">Любой результат</option>
+          {% for value, label in investment_verdict_labels.items() %}{% if value not in ("participate", "participate_up_to") %}<option value="{{ value }}" {% if filters.investment_verdict == value %}selected{% endif %}>{{ label }}</option>{% endif %}{% endfor %}
         </select>
       </label>
       <label>Сначала показать
@@ -285,7 +292,7 @@
       <a class="secondary-action compact" href="/cabinet/auctions-v2/map{% if filter_query %}?{{ filter_query }}{% endif %}">Карта</a>
 
       <details class="auction-v2-filter-advanced">
-        <summary><span>Расширенный отбор</span><small>регион, цена, площадь, риск и готовность проверки</small></summary>
+        <summary><span>Расширенный отбор</span><small>статус торгов, срок аренды, цена, территория и полнота проверки</small></summary>
         <div class="auction-v2-catalog-explain">
           <span><strong>Регионы</strong> загружаются сразу из ЕГКН и базы E-Qazyna.</span>
           <span><strong>Район</strong> появится после выбора региона.</span>
@@ -297,6 +304,24 @@
           <span data-auction-catalog-step="locality"><strong>3. Населенный пункт</strong><small>После района</small></span>
         </div>
         <div class="auction-v2-filter-fields">
+          <label>Показать
+            <select name="lot_scope">{% for value, label in lot_scope_labels.items() %}<option value="{{ value }}" {% if (filters.lot_scope or "active") == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          </label>
+          <label>Официальный статус
+            <select name="eqazyna_status"><option value="">Все статусы E-Qazyna</option>{% for value, label in eqazyna_status_labels.items() %}<option value="{{ value }}" {% if filters.eqazyna_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          </label>
+          <label>Срок аренды
+            <select name="lease_duration"><option value="">Любой срок</option>{% for value, label in lease_duration_labels.items() %}<option value="{{ value }}" {% if filters.lease_duration == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          </label>
+          <label>Предельная цена
+            <select name="bid_limit_status"><option value="">Любой статус</option>{% for value, label in bid_limit_status_labels.items() %}{% if value != "calculated" %}<option value="{{ value }}" {% if filters.bid_limit_status == value %}selected{% endif %}>{{ label }}</option>{% endif %}{% endfor %}</select>
+          </label>
+          <label>Готовность анализа
+            <select name="data_readiness"><option value="">Любая готовность</option>{% for value, label in data_readiness_labels.items() %}<option value="{{ value }}" {% if filters.data_readiness == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          </label>
+          <label>История размещений
+            <select name="repeat_auction"><option value="">Любая история</option>{% for value, label in repeat_auction_labels.items() %}<option value="{{ value }}" {% if filters.repeat_auction == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          </label>
           <label>Регион
             <select id="auction-region" name="region" data-selected="{{ filters.region }}"><option value="">Загрузка регионов...</option></select>
           </label>
@@ -313,7 +338,6 @@
           <label>Цена до <input name="max_price_kzt" value="{{ filters.max_price_kzt }}" inputmode="decimal"></label>
           <label>Площадь от, га <input name="min_area_ha" value="{{ filters.min_area_ha }}" inputmode="decimal"></label>
           <label>Площадь до, га <input name="max_area_ha" value="{{ filters.max_area_ha }}" inputmode="decimal"></label>
-          <label>Индекс от <input name="min_score" value="{{ filters.min_score }}" inputmode="numeric"></label>
           <label>Риск
             <select name="risk_level"><option value="">Любой риск</option>{% for value, label in risk_labels.items() %}{% if value != "unknown" %}<option value="{{ value }}" {% if filters.risk_level == value %}selected{% endif %}>{{ label }}</option>{% endif %}{% endfor %}</select>
           </label>
@@ -348,20 +372,70 @@
           {% set lot = item.lot %}
           {% set analysis = item.analysis %}
           {% set next_action = item.next_actions[0] if item.next_actions else none %}
-          <article class="auction-v2-card risk-{{ analysis.risk_level }}">
-            <div class="auction-v2-score">
-              <strong>{{ analysis.score }}</strong>
-              <span>/100</span>
+          <article class="auction-v2-card risk-{{ analysis.risk_level }} verdict-{{ item.investment_verdict }}">
+            <div class="auction-v2-card-verdict">
+              <span>Предварительный статус</span>
+              <strong>{{ item.investment_verdict_label }}</strong>
+              {% if item.decision_snapshot and item.decision_snapshot.bid_ceiling_kzt is not none %}<b>до {{ "{:,.0f}".format(item.decision_snapshot.bid_ceiling_kzt).replace(",", " ") }} ₸</b>{% else %}<b>предел не рассчитан</b>{% endif %}
             </div>
             <div class="auction-v2-card-main">
               <div class="auction-v2-card-top">
                 <span class="auction-v2-badge eqazyna-status" title="{{ item.eqazyna_status_note }}">{{ item.eqazyna_status_label }}</span>
                 <span class="auction-v2-badge deadline-{{ item.deadline_status }}">{{ item.deadline_label }}</span>
                 <span class="auction-v2-badge risk-{{ analysis.risk_level }}">Риск: {{ item.risk_label|lower }}</span>
+                <span class="auction-v2-badge">{{ analysis.score }}/100</span>
                 {% if item.stage_label %}<span class="auction-v2-badge stage">{{ item.stage_label }}</span>{% endif %}
+                {% if item.decision_snapshot and item.decision_snapshot.has_repeat %}<span class="auction-v2-badge">Повторные торги · {{ item.decision_snapshot.repeat_attempt_count + 1 }}</span>{% endif %}
               </div>
               <h3><a href="{{ '/cabinet/auctions-v2/' ~ lot.id if auction_access.can_open_detail else '/cabinet/auctions-v2/plans?required=detail' }}">{{ lot.title }}</a></h3>
               <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}</p>
+              <div class="auction-v2-card-facts"><span><b>{{ item.right_type_label }}</b>{% if item.lease_years %} · {{ item.lease_years|int }} лет{% endif %}</span><span>{{ item.use_scenario_label }}</span></div>
+              {% set shortlist = item.shortlist_result %}
+              {% if shortlist and shortlist.eligible %}
+                <section class="auction-shortlist {% if shortlist.interesting %}is-interesting{% elif shortlist.manual_required %}is-manual{% else %}is-neutral{% endif %}" aria-label="Проверка интересного лота">
+                  <div class="auction-shortlist-head">
+                    {% if shortlist.interesting %}
+                      <strong>Интересные лоты · стоит проверить</strong>
+                    {% elif shortlist.manual_required %}
+                      <strong>Требуется ручная проверка источника</strong>
+                    {% else %}
+                      <strong>Не выделен среди похожих лотов</strong>
+                    {% endif %}
+                    <span>{{ shortlist.summary }}</span>
+                  </div>
+                  {% for reason in shortlist.reasons %}
+                    <article class="auction-shortlist-reason">
+                      <span class="auction-shortlist-kind">{{ "Подтверждено" if reason.classification == "confirmed" else "Индикатор" }}</span>
+                      <strong>{{ reason.statement }}</strong>
+                      <dl>
+                        <div><dt>Метрика</dt><dd>{{ reason.metric }}</dd></div>
+                        <div><dt>По сравнению с чем</dt><dd>{{ reason.compared_with }}</dd></div>
+                        <div><dt>Способ сравнения</dt><dd>{{ reason.comparison_method }}</dd></div>
+                        <div><dt>Источник и дата</dt><dd><a href="{{ reason.source_url }}" target="_blank" rel="noopener noreferrer">{{ reason.source }}</a> · {{ reason.source_date }}</dd></div>
+                      </dl>
+                    </article>
+                  {% endfor %}
+                  {% if shortlist.risks %}
+                    <div class="auction-shortlist-checks risk">
+                      <b>Риск</b>
+                      {% for risk in shortlist.risks %}<span>{{ risk }}</span>{% endfor %}
+                    </div>
+                  {% endif %}
+                  {% if shortlist.unchecked %}
+                    <div class="auction-shortlist-checks">
+                      <b>Не проверено</b>
+                      {% for message in shortlist.unchecked %}<span>{{ message }}</span>{% endfor %}
+                    </div>
+                  {% endif %}
+                  {% if shortlist.actions %}
+                    <div class="auction-shortlist-checks action">
+                      <b>Действие</b>
+                      {% for action in shortlist.actions %}<span>{{ action }}</span>{% endfor %}
+                    </div>
+                  {% endif %}
+                  <div class="auction-shortlist-readiness"><b>Готовность данных</b><span>{{ shortlist.readiness_line }}</span></div>
+                </section>
+              {% endif %}
               {% if next_action %}
                 <span class="auction-v2-card-data">Следующее действие: {{ next_action.title }}</span>
               {% endif %}
@@ -369,6 +443,7 @@
             <div class="auction-v2-card-side">
               <div><span>Стартовая цена</span><strong>{% if lot.start_price_kzt is not none %}{{ "{:,.0f}".format(lot.start_price_kzt).replace(",", " ") }} ₸{% else %}—{% endif %}</strong></div>
               <div><span>Площадь</span><strong>{% if lot.area_ha is not none %}{{ "{:g}".format(lot.area_ha) }} га{% else %}—{% endif %}</strong></div>
+              <small>{{ item.bid_limit_reason }}</small>
               <a class="primary-action compact" href="{{ '/cabinet/auctions-v2/' ~ lot.id if auction_access.can_open_detail else '/cabinet/auctions-v2/plans?required=detail' }}">{{ 'Открыть лот' if auction_access.can_open_detail else 'Открыть в Pro' }}</a>
             </div>
           </article>

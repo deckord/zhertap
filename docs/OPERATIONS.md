@@ -54,11 +54,13 @@ sudo docker compose up -d --build bot
 
 ## Применение схемы БД
 
-Миграции пока ручные внутри `app/db.py`, вызываются через `init_db()`.
+Production-схема изменяется только Alembic-миграциями до запуска web/worker.
+`init_db()` оставлен для локальной разработки и тестов; в production его не
+запускают, чтобы несколько процессов не конкурировали за DDL-блокировки.
 
 ```bash
 cd /opt/land-scout/land-scout-bot
-sudo docker compose run --rm -T --no-deps web python -c "from app.db import init_db; init_db(); print('DB schema updated')"
+sudo docker compose run --rm web alembic upgrade heads
 ```
 
 ## Проверка, что приложение импортируется
@@ -539,10 +541,69 @@ AUCTION_ACCESS_PRICE_KZT=1990
 PLATFORM_ACCESS_MONTHS=1
 FREE_PREVIEW_PLOT_LIMIT=3
 AUCTION_FREE_PREVIEW_LOTS=1
+AUCTION_CACHE_ENABLED=true
+AUCTION_CACHE_TTL_SECONDS=60
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=2
+DB_STATEMENT_TIMEOUT_MS=30000
+DB_LOCK_TIMEOUT_MS=5000
 ANALYTICS_EXCLUDED_TELEGRAM_USER_IDS=70557953
 ```
 
+Перед первым запуском новой версии production обязательно применить миграции
+отдельным deploy-шагом, до старта web и Celery:
+
+```bash
+sudo docker compose run --rm web alembic upgrade heads
+```
+
+Production-задачи больше не выполняют compatibility DDL при каждом запуске.
+`AUCTION_CACHE_ENABLED=true` обязателен: каталог, юридический паспорт и сводки
+аукционов используют общий Redis-кэш между web-процессами. После запуска
+проверьте `/ready`: PostgreSQL и Redis должны вернуть успешный статус. `/health`
+остаётся лёгкой liveness-проверкой процесса и не проверяет зависимости.
+
 ## Типовые проблемы
+
+## Нагрузочная проверка аукционов (1000 активных пользователей)
+
+Запускать только на staging с копией обезличенных данных и отдельной тестовой
+учётной записью. Перед тестом заполнить `LOT_IDS` существующими UUID лотов:
+
+```bash
+k6 run \
+  -e BASE_URL=https://staging.example.kz \
+  -e SESSION_COOKIE='land_scout_session=<staging-session>' \
+  -e LOT_IDS='uuid-1,uuid-2,uuid-3' \
+  tests/load/auction_1000_users.js
+```
+
+Профиль постепенно поднимает нагрузку до 1000 VU и держит её 10 минут. Gate:
+ошибки `<1%`, p95 каталога `<500 ms`, p95 карточки/карты/аналитики `<700 ms`.
+Во время прогона обязательно наблюдать saturation DB pool, число соединений,
+Redis latency/cache hit ratio, Celery queue lag, CPU/RAM и slow queries. Сам факт
+наличия сценария не является доказательством ёмкости — нужны сохранённые метрики
+успешного staging-прогона.
+
+Первый запуск с одним `SESSION_COOKIE` — это hot-cache throughput, но не
+доказательство 1000 независимых пользователей. Для итогового capacity gate
+передайте пул выделенных staging-сессий через `SESSION_COOKIES`, разделяя cookie
+символом `|`, и разнообразьте ключи фильтров:
+
+```bash
+k6 run \
+  -e BASE_URL=https://staging.example.kz \
+  -e SESSION_COOKIES='cookie-account-1|cookie-account-2|cookie-account-3' \
+  -e LOT_IDS='uuid-1,uuid-2,uuid-3,...' \
+  -e FILTER_QUERIES='?region=Абай&lot_scope=active|?region=ВКО&right_type=ownership' \
+  -e DATASET_LOT_COUNT=10000 \
+  -e MIN_DATASET_LOTS=10000 \
+  tests/load/auction_1000_users.js
+```
+
+Чем ближе число тестовых аккаунтов к реальной конкурентности, тем надёжнее
+результат. Сохраняйте отчёт отдельно для hot-cache и multi-account mixed-key
+прогонов; один не заменяет другой.
 
 ### Бот не отвечает на `/start`
 

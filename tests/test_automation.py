@@ -12,6 +12,7 @@ from app.models import (
     SearchStatus,
     UrbanPlanCoverage,
 )
+from app.provider_guard import ProviderCallDeferred
 from app.schemas import SearchCreate
 from app.search_types import CandidateResult
 
@@ -65,6 +66,11 @@ class FakeSearchEngine:
 class EmptySearchEngine:
     def search(self, query: SearchCreate) -> list[CandidateResult]:
         return []
+
+
+class DeferredSearchEngine:
+    def search(self, query: SearchCreate) -> list[CandidateResult]:
+        raise ProviderCallDeferred("egkn", "rate_limited", 30)
 
 
 class CountingSearchEngine(FakeSearchEngine):
@@ -133,6 +139,32 @@ def test_search_verifies_egkn_geometry_and_offers_payment(monkeypatch) -> None:
         assert keyboard[1][0]["copy_text"]["text"] == "4111111111111111"
         assert keyboard[2][0]["text"] == "✅ Я оплатил"
         assert "Телефон:" not in sent[1]["text"]
+
+
+def test_provider_backpressure_does_not_mark_search_failed(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "urban_plan_check_mode", "off")
+
+    with build_session() as session:
+        request = SearchRequest(
+            region="Акмолинская область",
+            district="Бурабайский район",
+            locality="Бурабай",
+        )
+        session.add(request)
+        session.commit()
+
+        try:
+            services.process_search(session, request.id, search_engine=DeferredSearchEngine())
+        except ProviderCallDeferred:
+            pass
+        else:
+            raise AssertionError("ProviderCallDeferred was not propagated")
+
+        session.refresh(request)
+        assert request.status == SearchStatus.queued.value
+        assert request.progress == 10
+        assert request.search_outcome is None
+        assert "повтор" in (request.error_message or "").lower()
 
 
 def test_process_search_does_not_reprocess_non_queued_request(monkeypatch) -> None:

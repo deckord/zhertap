@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import app.web as web
@@ -49,7 +50,7 @@ from app.auction_service import (
     list_auction_lots,
 )
 from app.config import settings
-from app.db import engine, get_db, init_db
+from app.db import engine, get_db, init_db, validate_production_schema
 from app.feedback import (
     DEFAULT_FEEDBACK_KZ,
     DEFAULT_FEEDBACK_RU,
@@ -164,6 +165,7 @@ CSP_POLICY = (
     "img-src 'self' data: https://*.tile.openstreetmap.org; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
+    "frame-src 'self' https://www.google.com https://maps.google.com; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
@@ -234,7 +236,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()
+    if settings.app_env.strip().lower() in {"production", "prod"}:
+        validate_production_schema(engine)
+    else:
+        init_db()
     yield
 
 
@@ -270,7 +275,10 @@ async def enforce_api_rate_limit(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api") or path.startswith("/admin"):
         is_admin = path.startswith("/admin")
-        state = consume_rate_limit(
+        # The Redis client is synchronous. Keep its network wait off the ASGI
+        # event loop so one slow Redis command cannot stall unrelated requests.
+        state = await run_in_threadpool(
+            consume_rate_limit,
             f"{'admin' if is_admin else 'api'}:ip:{_request_client_ip(request)}",
             limit=ADMIN_RATE_LIMIT_PER_MINUTE if is_admin else API_RATE_LIMIT_PER_MINUTE,
             window_seconds=(

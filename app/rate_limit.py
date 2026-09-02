@@ -83,7 +83,12 @@ class _RedisRateLimiter(_RateLimiter):
     def __init__(self, redis_url: str, *, fail_closed: bool) -> None:
         if redis is None:
             raise RuntimeError("redis package is not available")
-        self._redis = redis.Redis.from_url(redis_url)
+        self._redis = redis.Redis.from_url(
+            redis_url,
+            socket_connect_timeout=0.35,
+            socket_timeout=0.35,
+            health_check_interval=30,
+        )
         self._script = self._redis.register_script(self._SCRIPT)
         self._fallback: _RateLimiter = (
             _UnavailableRateLimiter("Redis command failed", log=False)

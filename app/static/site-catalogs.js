@@ -49,6 +49,7 @@
   function initSearchCatalog() {
     const form = document.querySelector('[data-catalog-form="search"]');
     if (!form) return;
+    const catalogBase = form.getAttribute("action") === "/guest-search" ? "/catalog" : "/cabinet/catalog";
     const region = document.querySelector("#search-region");
     const district = document.querySelector("#search-district");
     const locality = document.querySelector("#search-locality");
@@ -92,7 +93,7 @@
     async function loadRegions() {
       if (retry) retry.hidden = true;
       try {
-        const rows = await getJson("/cabinet/catalog/regions");
+        const rows = await getJson(`${catalogBase}/regions`);
         setOptions(region, rows, "Выберите область", "", true);
         region.disabled = false;
         setStatus(status, "Выберите область, затем район и населенный пункт.");
@@ -113,7 +114,7 @@
       setOptions(locality, [], "Сначала выберите район", "", true);
       if (!region.value) return;
       try {
-        const rows = await getJson("/cabinet/catalog/districts", {region: region.value});
+        const rows = await getJson(`${catalogBase}/districts`, {region: region.value});
         setOptions(district, rows, "Выберите район", "", true);
         district.disabled = false;
         setStatus(status, "Теперь выберите район.");
@@ -131,7 +132,7 @@
       setOptions(locality, [], "Загрузка населенных пунктов...", "", true);
       if (!districtId) return;
       try {
-        const rows = await getJson("/cabinet/catalog/settlements", {district_id: districtId});
+        const rows = await getJson(`${catalogBase}/settlements`, {district_id: districtId});
         setOptions(locality, rows, "Искать по всему району", "", true);
         locality.disabled = false;
         setStatus(status, rows.length ? "Можно выбрать населенный пункт или искать по всему району." : "По району можно запускать поиск без населенного пункта.");

@@ -7,6 +7,7 @@ CSP_POLICY = (
     "img-src 'self' data: https://*.tile.openstreetmap.org; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
+    "frame-src 'self' https://www.google.com https://maps.google.com; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"

@@ -1,164 +1,134 @@
 ﻿{% extends "site_base.html" %}
-{% block title %}Жертап - поиск свободных участков, которые можно запросить у государства бесплатно{% endblock %}
+{% block title %}Найти участок под ЛПХ или садоводство — Жертап{% endblock %}
 {% block content %}
-<section class="hero hero-analysis">
-  <div class="hero-copy">
-    <span class="eyebrow">Автоматизация поиска свободной земли</span>
-    <h1>Сократите часы ручного поиска участков, которые можно запросить у государства <span>бесплатно</span></h1>
-    <p>Жертап не продает обучение и не является каталогом участков на продажу в Казахстане. Сервис берет на себя первичный поиск: анализирует открытые кадастровые и картографические данные, находит возможные свободные места и готовит предварительный отчет для дальнейшей проверки.</p>
-    <div class="hero-actions">
-      <a class="primary-action" href="/login">Сократить поиск участка <span aria-hidden="true">→</span></a>
-      <a class="secondary-action" href="#how">Как работает анализ <span aria-hidden="true">▷</span></a>
-    </div>
-    <div class="hero-proof">
-      <span>Цель системы - сократить время на первичный поиск мест, которые потенциально можно запросить у государства бесплатно.</span>
-      <strong>Окончательное решение принимает акимат, мы помогаем быстрее подготовить список вариантов для проверки.</strong>
+<section class="lph-hero" id="search">
+  <div class="lph-hero-copy">
+    <span class="eyebrow">Поиск по открытым земельным данным</span>
+    <h1>Найдите участок под ЛПХ или садоводство за несколько минут</h1>
+    <p class="lph-lead">Выберите область и район — Жертап автоматически проанализирует территорию и покажет возможные свободные участки.</p>
+    <div class="lph-trust-row" aria-label="Преимущества поиска">
+      <span>Без регистрации</span>
+      <span>Предварительный результат до оплаты</span>
+      <span>Работает на смартфоне</span>
     </div>
   </div>
-  <div class="analysis-visual" aria-label="Схема многоэтапного анализа территории">
-    <div class="scan-line"></div>
-    <div class="map-grid"></div>
-    <div class="analysis-step-card step-one">
-      <b>01</b>
-      <strong>ЕГКН и карта</strong>
-      <span>загружаем публичные контуры</span>
+
+  <form class="lph-search-card" method="post" action="/guest-search" data-catalog-form="search">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="lph-form-head">
+      <span class="lph-step">Начните поиск</span>
+      <strong>Куда и для чего ищем землю?</strong>
     </div>
-    <div class="analysis-step-card step-two">
-      <b>02</b>
-      <strong>Фильтрация</strong>
-      <span>исключаем дороги, объекты и пересечения</span>
-    </div>
-    <div class="analysis-step-card step-three">
-      <b>03</b>
-      <strong>Отчет</strong>
-      <span>варианты для дальнейшей проверки</span>
+    {% if request.query_params.get('search_error') %}
+      <div class="form-alert warning" role="alert">Выберите область и район.</div>
+    {% endif %}
+    <label>Область
+      <select id="search-region" name="region" required>
+        <option value="">Загрузка областей...</option>
+      </select>
+    </label>
+    <label>Район
+      <select id="search-district" name="district" required disabled>
+        <option value="">Сначала выберите область</option>
+      </select>
+    </label>
+    <label class="lph-locality-field">Населённый пункт <small>необязательно</small>
+      <select id="search-locality" name="locality" disabled>
+        <option value="">Сначала выберите район</option>
+      </select>
+    </label>
+    <label>Тип участка
+      <select id="search-purpose" name="purpose">
+        <option value="ЛПХ(новый поиск)">ЛПХ</option>
+        <option value="Садоводство">Садоводство</option>
+      </select>
+    </label>
+    <label id="search-irrigation-field">Расчётная площадь для ЛПХ
+      <select id="search-irrigation" name="irrigation_type">
+        <option value="non_irrigated">Неорошаемая земля · 25 соток</option>
+        <option value="irrigated">Орошаемая земля · 15 соток</option>
+      </select>
+    </label>
+    <label id="search-gardening-area-field" class="is-hidden">Расчётная площадь для садоводства
+      <select id="search-gardening-area" name="area_ha" disabled>
+        <option value="0.12">12 соток</option>
+        <option value="0.06">6 соток</option>
+      </select>
+    </label>
+    <div id="search-fixed-area-note" class="catalog-note is-hidden" aria-live="polite"></div>
+    <div class="catalog-note" id="search-catalog-status" aria-live="polite">Загружаем справочник территорий…</div>
+    <button class="secondary-action compact catalog-retry" type="button" data-catalog-retry="search" hidden>Повторить загрузку</button>
+    <button id="search-submit" class="primary-action lph-search-submit" type="submit" disabled>НАЙТИ УЧАСТКИ <span aria-hidden="true">→</span></button>
+    <small class="lph-form-note">Поиск запускается без создания аккаунта. Регистрация понадобится только для получения полного результата.</small>
+  </form>
+</section>
+
+<section class="lph-preview-band" aria-labelledby="preview-title">
+  <div class="lph-preview-copy">
+    <span class="eyebrow">Предварительный результат</span>
+    <h2 id="preview-title">Сначала увидьте ценность, потом решайте</h2>
+    <p>После анализа Жертап покажет количество найденных вариантов, территорию поиска, назначение и обезличенный фрагмент карты. Точные координаты и полный отчёт открываются после входа и оплаты.</p>
+    <ul class="lph-check-list">
+      <li>Карта с найденными зонами</li>
+      <li>Несколько вариантов для дальнейшей проверки</li>
+      <li>Часть информации доступна до регистрации</li>
+    </ul>
+  </div>
+  <div class="lph-result-card" aria-label="Пример реального результата Жертап">
+    <div class="lph-result-top"><span>Пример результата</span><strong>Найдено 7 вариантов</strong></div>
+    <div class="lph-map-preview"><i></i><i></i><i></i><b>1</b><b>2</b><b>3</b></div>
+    <div class="lph-result-facts">
+      <span><small>Площадь</small><strong>0,12 га</strong></span>
+      <span><small>Назначение</small><strong>Садоводство</strong></span>
+      <span><small>Статус</small><strong>Нужна проверка</strong></span>
     </div>
   </div>
 </section>
 
-<section class="metrics-strip">
-  <div><strong>{{ analysis_count }}</strong><span>анализов территории запущено в системе</span></div>
-  <div><strong>Не курс</strong><span>это не обучение, а автоматизация ручного поиска</span></div>
-  <div><strong>Демо</strong><span>предварительные варианты до оплаты</span></div>
-  <div><strong>{{ price_kzt }} ₸</strong><span>полный доступ ко всем точным данным</span></div>
-</section>
-
-<section id="how" class="content-band analysis-band">
+<section id="included" class="lph-section">
   <div class="section-title">
-    <span>Как работает анализ</span>
-    <h2>Система сокращает время на поиск, а не обучает и не продает участки</h2>
-    <p>Пользователь получает не курс и не витрину земли на продажу, а результат автоматической проверки: где по открытым данным могут быть свободные места для дальнейшего обращения в государственные органы.</p>
+    <span>Что вы получите</span>
+    <h2>Результат, с которым можно продолжать проверку участка</h2>
   </div>
-  <div class="analysis-flow">
-    <article><b>01</b><h3>Загружаем исходные данные</h3><p>Берем публичные контуры ЕГКН, выбранный регион, район, населенный пункт и параметры назначения.</p></article>
-    <article><b>02</b><h3>Строим возможные зоны</h3><p>Ищем промежутки рядом с зарегистрированными участками и проверяем, хватает ли площади.</p></article>
-    <article><b>03</b><h3>Исключаем очевидные риски</h3><p>Отсекаем пересечения, дороги, объекты и другие препятствия, которые видны в открытых данных.</p></article>
-    <article><b>04</b><h3>Проверяем ограничения</h3><p>Учитываем генплан/ПДП там, где есть официальный геопривязанный слой для автоматической проверки.</p></article>
-    <article><b>05</b><h3>Формируем отчет</h3><p>Показываем координаты, карту, ориентиры, расстояния, оценку перспективности и комментарии системы, чтобы не собирать все это вручную.</p></article>
+  <div class="lph-value-grid">
+    <article><b>01</b><h3>Участок на карте</h3><p>Расположение найденной зоны и ориентиры на местности.</p></article>
+    <article><b>02</b><h3>Площадь и назначение</h3><p>Расчётная площадь, выбранный тип использования и параметры поиска.</p></article>
+    <article><b>03</b><h3>Точные координаты</h3><p>Координаты открываются в полном результате после регистрации и оплаты.</p></article>
+    <article><b>04</b><h3>Фактические проверки</h3><p>ЕГКН, картографические данные, явные пересечения и доступные слои генплана/ПДП.</p></article>
+    <article><b>05</b><h3>Понятные ограничения</h3><p>Что подтверждено открытыми данными, чего не хватает и что проверить дополнительно.</p></article>
+    <article><b>06</b><h3>Итоговый отчёт</h3><p>Собранная карточка результата для самостоятельной дальнейшей проверки.</p></article>
   </div>
 </section>
 
-<section class="split-section before-after-section">
+<section id="how" class="lph-section lph-how">
+  <div class="section-title"><span>Как работает Жертап</span><h2>Только три шага</h2></div>
+  <div class="lph-steps">
+    <article><span>1</span><div><h3>Выберите территорию</h3><p>Укажите область, район и тип участка.</p></div></article>
+    <article><span>2</span><div><h3>Запустите поиск</h3><p>Жертап анализирует доступные открытые данные без регистрации.</p></div></article>
+    <article><span>3</span><div><h3>Получите результаты</h3><p>Посмотрите варианты на карте и решите, нужен ли полный отчёт.</p></div></article>
+  </div>
+</section>
+
+<section class="lph-price-section">
   <div>
-    <span class="eyebrow">До и после</span>
-    <h2>Вместо хаотичного просмотра карт - готовый список мест для проверки</h2>
-    <p>Жертап не заменяет акимат и не гарантирует выдачу. Он сокращает первый, самый долгий этап: найти варианты, которые вообще стоит изучать дальше.</p>
+    <span class="eyebrow">Полный доступ</span>
+    <h2>{{ price_kzt }} ₸</h2>
+    <p>Точные координаты, полный результат проверок, карта и итоговый отчёт. Цена на лендинге совпадает с ценой оплаты.</p>
   </div>
-  <div class="compare-grid">
-    <article>
-      <span>До</span>
-      <h3>Ручной поиск</h3>
-      <p>Открывать карты, сверять соседние контуры, искать свободные промежутки, проверять дороги и сохранять координаты вручную перед обращением в акимат.</p>
-    </article>
-    <article>
-      <span>После</span>
-      <h3>Анализ Жертап</h3>
-      <p>Вы выбираете район и назначение, система выполняет первичную фильтрацию и показывает список мест, которые можно дальше проверять для обращения в государственные органы.</p>
-    </article>
-  </div>
+  <a class="primary-action" href="#search">Сначала найти участки</a>
 </section>
 
-<section id="included" class="content-band">
-  <div class="section-title">
-    <span>Что входит в полный отчет</span>
-    <h2>Понятная карточка результата, а не обучающий материал и не объявление о продаже</h2>
-  </div>
-  <div class="cards-3 value-cards">
-    <article>
-      <h3>Координаты и карта</h3>
-      <p>Точка результата, ссылка на карту и ориентир рядом с зарегистрированным кадастровым контуром.</p>
-    </article>
-    <article>
-      <h3>Площадь и расстояния</h3>
-      <p>Расчетная площадь, расстояние до соседнего участка, дороги и другие показатели, если они есть в открытых данных.</p>
-    </article>
-    <article>
-      <h3>Оценка перспективности</h3>
-      <p>Внутренний рейтинг по пригодности результата: не гарантия выдачи, а понятный приоритет для ручной проверки.</p>
-    </article>
-    <article>
-      <h3>Проверка ограничений</h3>
-      <p>Статус проверки по генплану/ПДП и комментарии системы, если официальный слой доступен для анализа.</p>
-    </article>
-    <article>
-      <h3>Причины отбора</h3>
-      <p>Почему вариант попал в выдачу: подходит площадь, рядом нужное назначение, не найдено явное пересечение.</p>
-    </article>
-    <article>
-      <h3>Дата анализа</h3>
-      <p>Результат привязан ко времени проверки. Открытые данные могут обновляться, поэтому важные решения нужно перепроверять.</p>
-    </article>
-  </div>
-</section>
-
-<section id="auctions" class="split-section">
-  <div>
-    <span class="eyebrow">Отдельный раздел</span>
-    <h2>Аукционы E-Qazyna - отдельный раздел, не основная задача сервиса</h2>
-    <p>Основная задача Жертап - сократить время на поиск возможных свободных участков для дальнейшей проверки. Аукционы в кабинете вынесены отдельно: это платные лоты E-Qazyna, а не бесплатная выдача земли.</p>
-  </div>
-  <div class="feature-list">
-    <span>Справочники по региону, району и населенному пункту</span>
-    <span>Фильтры по назначению, площади и цене</span>
-    <span>Цена за сотку и сравнение с районом</span>
-    <span>Избранное, сравнение и подписки на новые лоты</span>
-    <span>Документы, история публикаций и изменения карточки</span>
-  </div>
-</section>
-
-<section class="split-section offer-section">
-  <div>
-    <span class="eyebrow">Доступ</span>
-    <h2>Сначала посмотрите найденные варианты, затем откройте полный доступ за {{ price_kzt }} ₸</h2>
-    <p>Бесплатный режим показывает, что система нашла возможные места для дальнейшей проверки. После оплаты открываются точные координаты, карта, ЕГКН, документы, аукционы и связка сайта с Telegram.</p>
-    <div class="hero-actions">
-      <a class="primary-action" href="/login">Сократить поиск участка</a>
-      <a class="secondary-action" href="/offer">Условия сервиса</a>
-    </div>
-  </div>
-  <div class="report-preview">
-    <span class="eyebrow">Пример структуры отчета</span>
-    <dl>
-      <div><dt>Район</dt><dd>выбранный пользователем</dd></div>
-      <div><dt>Площадь</dt><dd>расчетная, в гектарах</dd></div>
-      <div><dt>Дорога</dt><dd>расстояние, если найдено</dd></div>
-      <div><dt>Генплан/ПДП</dt><dd>статус проверки</dd></div>
-      <div><dt>Перспективность</dt><dd>внутренняя оценка /100</dd></div>
-    </dl>
-  </div>
-</section>
-
-<section id="safety" class="content-band subtle">
-  <div class="section-title">
-    <span>FAQ и честные ограничения</span>
-    <h2>Мы сокращаем время поиска, но не обещаем выдачу участка</h2>
-  </div>
-  <div class="faq-grid">
-    <article><h3>Если найден вариант, это гарантия?</h3><p>Нет. Это расчетный результат по открытым данным. Финальное решение зависит от акимата, земельных органов, ограничений и проверки на местности.</p></article>
-    <article><h3>Почему место выглядит свободным?</h3><p>Потому что в доступных публичных данных не найден зарегистрированный контур, который перекрывает расчетную зону. Это не равно официальному статусу “свободно”.</p></article>
-    <article><h3>Почему акимат может отказать?</h3><p>Могут быть ограничения, которых нет в открытых слоях: инженерные сети, санитарные зоны, резервирование, местные планы и другие основания.</p></article>
-    <article><h3>Зачем тогда нужен Жертап?</h3><p>Чтобы не начинать с пустой карты. Сервис быстро собирает варианты, отсекает очевидно неподходящие места и помогает выбрать, какие точки проверять дальше.</p></article>
+<section id="safety" class="lph-section">
+  <div class="section-title"><span>FAQ и ограничения</span><h2>Коротко о главном</h2></div>
+  <div class="lph-faq">
+    <details><summary>Что именно ищет Жертап?</summary><p>Возможные незарегистрированные зоны под ЛПХ или садоводство по доступным открытым кадастровым и картографическим данным.</p></details>
+    <details><summary>Откуда берутся данные?</summary><p>Из открытых данных ЕГКН, картографических источников и официальных градостроительных слоёв, когда они доступны для автоматической проверки.</p></details>
+    <details><summary>Что пользователь получает за {{ price_kzt }} ₸?</summary><p>Точные координаты, карту, параметры найденных вариантов, результаты выполненных проверок и итоговый отчёт.</p></details>
+    <details><summary>Гарантирует ли Жертап получение земли?</summary><p>Нет. Сервис выполняет предварительный анализ. Решение о предоставлении участка принимают государственные органы.</p></details>
+    <details><summary>Почему участок нужно дополнительно проверять?</summary><p>Открытые данные могут быть неполными или обновляться с задержкой. Перед обращением нужно проверить ограничения и актуальный официальный статус.</p></details>
   </div>
 </section>
 {% endblock %}
-
+{% block scripts %}
+<script src="/static/site-catalogs.js?v=20260825-public-search" defer></script>
+{% endblock %}

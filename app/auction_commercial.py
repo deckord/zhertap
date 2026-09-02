@@ -11,11 +11,17 @@ from app.models import Account, AuctionWorkspace, AuctionWorkspaceMember
 OBSERVER_PLAN = "observer"
 INVESTOR_PLAN = "investor"
 TEAM_PLAN = "team"
+LITE_PLAN = "lite"
+PRO_PLAN = "pro"
+PRO_YEAR_PLAN = "pro_year"
 
 PLAN_LABELS = {
     OBSERVER_PLAN: "Наблюдатель",
     INVESTOR_PLAN: "Инвестор Pro",
     TEAM_PLAN: "Команда",
+    LITE_PLAN: "Жертап Lite",
+    PRO_PLAN: "Жертап PRO",
+    PRO_YEAR_PLAN: "Жертап PRO годовой",
 }
 
 TEAM_ROLES = (
@@ -112,7 +118,11 @@ def effective_auction_plan(
     if _team_membership_is_funded(session, membership):
         return TEAM_PLAN
     if account_has_paid_access(account):
-        return TEAM_PLAN if account.auction_plan == TEAM_PLAN else INVESTOR_PLAN
+        if account.auction_plan == TEAM_PLAN:
+            return TEAM_PLAN
+        if account.auction_plan in {LITE_PLAN, "lite"}:
+            return OBSERVER_PLAN
+        return INVESTOR_PLAN
     if account_has_active_trial(account):
         return INVESTOR_PLAN
     return OBSERVER_PLAN

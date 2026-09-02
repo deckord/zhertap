@@ -26,6 +26,12 @@
     {% if filter_error %}
       <div class="form-alert">{{ filter_error }}</div>
     {% endif %}
+    {% if map_data.building %}
+      <div class="form-alert">
+        Карта готовится. Обновите страницу через несколько секунд.
+        <button class="secondary-action compact" type="button" onclick="window.location.reload()">Обновить карту</button>
+      </div>
+    {% endif %}
 
     {% if false %}
     <section class="auction-v2-kpis">
