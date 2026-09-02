@@ -7,7 +7,7 @@ from email.message import EmailMessage
 from app.config import settings
 
 
-def send_password_reset_email(email: str, reset_url: str) -> None:
+def send_password_reset_email(email: str, temporary_password: str) -> None:
     if not settings.smtp_enabled:
         raise RuntimeError("SMTP is disabled")
     if not settings.smtp_host or not settings.smtp_from_email:
@@ -21,9 +21,10 @@ def send_password_reset_email(email: str, reset_url: str) -> None:
     message["To"] = email
     message.set_content(
         "Вы запросили восстановление пароля Жертап.\n\n"
-        f"Откройте ссылку: {reset_url}\n\n"
-        f"Ссылка действует {settings.password_reset_token_minutes} минут "
-        "и может быть использована только один раз.\n\n"
+        f"Одноразовый временный пароль: {temporary_password}\n\n"
+        f"Введите его на странице восстановления в течение "
+        f"{settings.password_reset_token_minutes} минут. "
+        "После проверки задайте новый постоянный пароль.\n\n"
         "Если вы не запрашивали восстановление, проигнорируйте это письмо."
     )
 

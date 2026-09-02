@@ -26,7 +26,7 @@
     {% elif error == "refresh" %}
       <div class="form-alert">Не удалось проверить оплату. Попробуйте еще раз через минуту.</div>
     {% elif started %}
-      <div class="form-alert neutral">Счет создан. Отсканируйте QR или откройте Kaspi по кнопке.</div>
+      <div class="form-alert neutral">Счёт создан. На телефоне нажмите «Оплатить в Kaspi», а на компьютере отсканируйте QR-код.</div>
     {% elif refreshed %}
       <div class="form-alert neutral">Статус оплаты обновлен.</div>
     {% endif %}
@@ -88,7 +88,7 @@
           <p>Полный доступ уже включен{% if access_expires_at_local %} до {{ access_expires_at_local.strftime("%d.%m.%Y %H:%M") }} по времени Алматы{% endif %}. Можно возвращаться к отчетам и аукционам.</p>
           <a class="primary-action compact" href="/cabinet/search">Анализ территории</a>
         {% elif payment and payment_url %}
-          <div class="qr-box">
+          <div class="qr-box" data-payment-qr>
             {% if payment_qr %}
               <img src="{{ payment_qr }}" alt="QR для оплаты Kaspi">
             {% elif payment_qr_image_url %}
@@ -100,7 +100,7 @@
           <h2>{{ payment_amount }} ₸ {% if payment_target_plan == 'pro_year' %}/ год{% else %}/ месяц{% endif %}</h2>
           <p>Сканируйте официальный QR в Kaspi. Если вы уже на телефоне или QR не открылся, нажмите кнопку ниже.</p>
           <div class="payment-action-row">
-            <a class="primary-action compact" href="{{ payment_url }}" target="_blank" rel="noopener">Открыть Kaspi</a>
+            <a class="primary-action compact" data-payment-open href="{{ payment_url }}" target="_blank" rel="noopener">Открыть Kaspi</a>
             <form method="post" action="/cabinet/payment/refresh">
               <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               <input type="hidden" name="plan" value="{{ selected_plan }}">
@@ -116,7 +116,7 @@
             <form method="post" action="/cabinet/payment/start">
               <input type='hidden' name='csrf_token' value='{{ csrf_token(request) }}'>
               <input type="hidden" name="plan" value="{{ selected_plan }}">
-              <button class="primary-action compact" type="submit">Получить QR Kaspi</button>
+              <button class="primary-action compact" type="submit">Сгенерировать QR для оплаты</button>
             </form>
           {% else %}
             <div class="form-alert">ApiPay сейчас выключен.</div>
@@ -165,6 +165,6 @@
     </div>
   </section>
 </div>
-<script src="/static/site-payment.js?v=20260821-payment-modal"></script>
+<script src="/static/site-payment.js?v=20260827-ios-payment-compat"></script>
 {% endblock %}
 

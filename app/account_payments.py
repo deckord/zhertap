@@ -209,22 +209,23 @@ def apply_account_apipay_invoice(
         account = session.get(Account, payment.account_id)
         if account is None:
             raise LookupError("Веб-аккаунт не найден")
-        if payment.payment_status != PaymentStatus.paid.value:
+        newly_paid = payment.payment_status != PaymentStatus.paid.value
+        if newly_paid:
             payment.payment_status = PaymentStatus.paid.value
             payment.payment_confirmed_at = datetime.now(UTC)
             payment.payment_confirmed_by = f"apipay:{invoice_id}"
-        was_active = account_has_paid_access(account)
-        paid_plan = (
-            payment.target_plan
-            if payment.target_plan in SUPPORTED_ACCOUNT_PLANS
-            else "investor"
-        )
-        if paid_plan in {LITE_PLAN, PRO_PLAN}:
-            account.auction_plan = paid_plan
-        elif paid_plan == "team" or account.auction_plan != "team":
-            account.auction_plan = paid_plan
-        grant_account_paid_access(account, months=12 if paid_plan == PRO_YEAR_PLAN else None)
-        activated = not was_active
+            was_active = account_has_paid_access(account)
+            paid_plan = (
+                payment.target_plan
+                if payment.target_plan in SUPPORTED_ACCOUNT_PLANS
+                else "investor"
+            )
+            if paid_plan in {LITE_PLAN, PRO_PLAN}:
+                account.auction_plan = paid_plan
+            elif paid_plan == "team" or account.auction_plan != "team":
+                account.auction_plan = paid_plan
+            grant_account_paid_access(account, months=12 if paid_plan == PRO_YEAR_PLAN else None)
+            activated = not was_active
     elif provider_status in {"cancelled", "expired", "error"}:
         if payment.payment_status != PaymentStatus.paid.value:
             notify_retry = payment.payment_status != PaymentStatus.rejected.value

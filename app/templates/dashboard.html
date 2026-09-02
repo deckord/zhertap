@@ -55,12 +55,29 @@
 
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Создана</th><th>Район</th><th>Площадь</th><th>Статус</th><th>Оплата</th><th>Прогресс</th><th></th></tr></thead>
+    <thead><tr><th>Создана</th><th>Пользователь</th><th>Доступ</th><th>Район</th><th>Площадь</th><th>Статус</th><th>Оплата</th><th>Прогресс</th><th></th></tr></thead>
     <tbody>
       {% for item in searches %}
       {% set status_badge = admin_search_status(item) %}
       <tr>
         <td>{{ item.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+        <td class="user-id-cell">
+          {% if item.web_account_id %}<strong>WEB</strong> <code title="{{ item.web_account_id }}">{{ item.web_account_id[:8] }}</code>{% endif %}
+          {% if item.telegram_user_id %}<br><span class="muted">TG {{ item.telegram_user_id }}</span>{% endif %}
+          {% if not item.web_account_id and not item.telegram_user_id %}<span class="muted">не указан</span>{% endif %}
+        </td>
+        {% set access = account_access.get(item.web_account_id) if item.web_account_id else none %}
+        <td class="access-cell">
+          {% if access and access.paid %}
+            <span class="status payment-paid">Оплачен</span><br><span class="muted">{{ access.plan|upper }}{% if access.expires_at %} · до {{ access.expires_at.strftime('%d.%m.%Y') }}{% endif %}</span>
+          {% elif access and access.paid_flag %}
+            <span class="status payment-rejected">Истёк</span><br><span class="muted">{{ access.plan|upper }}</span>
+          {% elif access %}
+            <span class="muted">нет доступа</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
         <td><strong>{{ item.district }}</strong><br><span class="muted">{{ item.locality or 'весь район' }} · {{ item.purpose }}{% if item.allotment_type %} · {{ 'полевой' if item.allotment_type == 'field' else 'приусадебный' }}{% endif %}</span></td>
         <td>{{ '%.2f'|format(item.area_ha) }} га</td>
         <td>
@@ -72,7 +89,7 @@
         <td><a class="button-link" href="/admin/searches/{{ item.id }}">Открыть</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="7" class="empty">Заявок пока нет.</td></tr>
+      <tr><td colspan="9" class="empty">Заявок пока нет.</td></tr>
       {% endfor %}
     </tbody>
   </table>

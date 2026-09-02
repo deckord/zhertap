@@ -535,6 +535,7 @@ def _add_auction_columns(db_engine: Engine) -> None:
         "functional_purpose_level4": "VARCHAR(320)",
         "use_goal": "VARCHAR(160)",
         "land_object_id": "VARCHAR(64)",
+        "land_object_ref_id": "VARCHAR(36)",
         "lease_term_years": "FLOAT",
         "divisible": "BOOLEAN",
         "additional_payment_kzt": "FLOAT",
@@ -589,6 +590,12 @@ def _add_auction_columns(db_engine: Engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_auction_lots_land_object_id "
                 "ON auction_lots (land_object_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_auction_lots_land_object_ref_id "
+                "ON auction_lots (land_object_ref_id)"
             )
         )
         connection.execute(

@@ -182,6 +182,7 @@ COORDINATE_STATUS_LABELS = {
     "unknown": "Координаты не проверены",
 }
 
+
 CADASTRE_STATUS_LABELS = {
     "verified": "ЕГКН подтвердил",
     "found": "Кадастр найден в лоте",

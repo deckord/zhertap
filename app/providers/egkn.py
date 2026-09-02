@@ -12,6 +12,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as transform_geometry
 from shapely.ops import unary_union
 
+from app.auction_parcel_geometry import GeometryValidationError, validate_parcel_geojson
 from app.config import settings
 from app.provider_backpressure import ProviderBackpressure
 from app.provider_guard import bounded_http_request, guarded_http_call
@@ -87,6 +88,13 @@ class EgknContextFeature:
     feature_id: str
     geometry: dict[str, Any]
     properties: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class EgknParcelNeighborQueryResult:
+    features: tuple[EgknContextFeature, ...]
+    response_status: str
+    truncated: bool
 
 
 def normalize_name(value: str) -> str:
@@ -710,6 +718,61 @@ class EgknProvider:
                 )
             )
         return result
+
+
+    def parcel_features_by_polygon(
+        self,
+        *,
+        parcel_geojson: dict[str, object],
+        max_features: int = 100,
+    ) -> EgknParcelNeighborQueryResult:
+        """Fetch candidate EGKN parcels by trusted polygon bbox, never by cadastre."""
+        bounded = max(1, min(int(max_features), 500))
+        try:
+            parcel = validate_parcel_geojson(parcel_geojson)
+        except GeometryValidationError as exc:
+            raise EgknProviderError("Контур участка не пригоден для поиска соседей") from exc
+        minx, miny, maxx, maxy = parcel.bounds
+        payload = self.get_features(
+            layer="egkn:u_view",
+            bbox=(minx, miny, maxx, maxy, "EPSG:4326"),
+            srs_name="EPSG:4326",
+            max_features=bounded,
+        )
+        raw_features = payload.get("features")
+        if not isinstance(raw_features, list):
+            raise EgknProviderError("ЕГКН вернул некорректный список соседних участков")
+        results: list[EgknContextFeature] = []
+        for feature in raw_features[:bounded]:
+            if not isinstance(feature, dict):
+                continue
+            raw_geometry = feature.get("geometry")
+            properties = feature.get("properties") or {}
+            if not raw_geometry or not isinstance(properties, dict):
+                continue
+            try:
+                geometry = make_valid(shape(raw_geometry))
+            except Exception:
+                continue
+            if geometry.is_empty:
+                continue
+            geometry_payload = mapping(geometry)
+            if geometry_payload.get("type") not in {"Polygon", "MultiPolygon"}:
+                continue
+            feature_id = str(feature.get("id") or properties.get("gid") or properties.get("id") or "")
+            if not feature_id:
+                continue
+            results.append(EgknContextFeature("egkn:u_view", feature_id, dict(geometry_payload), dict(properties)))
+        matched = payload.get("numberMatched", payload.get("totalFeatures"))
+        try:
+            truncated = int(matched) > len(raw_features) or len(raw_features) >= bounded
+        except (TypeError, ValueError):
+            truncated = len(raw_features) >= bounded
+        return EgknParcelNeighborQueryResult(
+            features=tuple(results),
+            response_status="empty" if not raw_features else "ok",
+            truncated=truncated,
+        )
 
 
 def _wgs84_bbox(

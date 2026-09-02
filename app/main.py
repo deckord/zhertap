@@ -29,6 +29,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import app.web as web
+from app.access import account_has_paid_access
 from app.admin_urban_plans import build_urban_plans_admin_context
 from app.analytics import excluded_analytics_user_ids
 from app.apipay import verify_webhook_signature
@@ -1090,11 +1091,27 @@ def dashboard(
         .order_by(SearchRequest.created_at.desc())
         .limit(100)
     ).all()
+    account_ids = {item.web_account_id for item in searches if item.web_account_id}
+    accounts = (
+        session.scalars(select(Account).where(Account.id.in_(account_ids))).all()
+        if account_ids
+        else []
+    )
+    account_access = {
+        account.id: {
+            "paid": account_has_paid_access(account),
+            "paid_flag": bool(account.paid_access),
+            "plan": account.auction_plan or "observer",
+            "expires_at": account.access_expires_at,
+        }
+        for account in accounts
+    }
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
             "searches": searches,
+            "account_access": account_access,
             "app_name": settings.app_name,
             "payment_labels": payment_labels,
             "admin_search_status": admin_search_status,
@@ -1298,19 +1315,20 @@ def analytics_dashboard(
     days = min(max(days, 1), 90)
     since = datetime.now(UTC) - timedelta(days=days)
     excluded_user_ids = excluded_analytics_user_ids()
+    # Keep events without funnel_session_id: payment/report events are
+    # request-scoped and currently carry request_id instead.
     events = session.scalars(
-        select(FunnelEvent).where(
-            FunnelEvent.created_at >= since,
-            FunnelEvent.funnel_session_id.is_not(None),
-        )
+        select(FunnelEvent).where(FunnelEvent.created_at >= since)
     ).all()
     searches = session.scalars(
         select(SearchRequest).where(SearchRequest.created_at >= since)
     ).all()
+    # Web registration is phone + email + password with immediate login.
+    # phone_verified_at belongs to the legacy SMS flow and is intentionally
+    # empty for current password registrations, so it must not gate this KPI.
     web_accounts = session.scalars(
         select(Account).where(
             Account.created_at >= since,
-            Account.phone_verified_at.is_not(None),
             Account.password_hash.is_not(None),
         )
     ).all()
@@ -1361,6 +1379,17 @@ def analytics_dashboard(
             if item.event_name == event_name and item.funnel_session_id
         }
 
+    def request_keys_for(event_name: str) -> set[str]:
+        # Request-scoped events may be duplicated by retries; count each
+        # request once and retain a fallback for legacy session-only events.
+        return {
+            f"request:{item.request_id}" if item.request_id
+            else f"session:{item.funnel_session_id}"
+            for item in events
+            if item.event_name == event_name
+            and (item.request_id or item.funnel_session_id)
+        }
+
     started = sessions_for("start_opened")
     completed_searches = [item for item in searches if item.search_finished_at]
     durations = [
@@ -1393,12 +1422,20 @@ def analytics_dashboard(
         ("Принял условия", len(sessions_for("terms_accepted"))),
         ("Выбрал назначение", len(sessions_for("purpose_selected"))),
         ("Подтвердил поиск", len(sessions_for("search_confirmed"))),
-        ("Поиск завершён", len(sessions_for("search_completed"))),
-        ("Получил бесплатные варианты", len(sessions_for("free_results_delivered"))),
-        ("Увидел предложение открыть остальные", len(sessions_for("paywall_viewed"))),
-        ("Нажал открыть остальные", len(sessions_for("payment_button_clicked"))),
-        ("Счёт создан", len(invoiced_searches)),
-        ("Оплата подтверждена", len(paid_searches)),
+        ("Поиск завершён", len(request_keys_for("search_completed"))),
+        ("Получил бесплатные варианты", len(request_keys_for("free_results_delivered"))),
+        ("Увидел предложение открыть остальные", len(request_keys_for("paywall_viewed"))),
+        ("Нажал открыть остальные", len(request_keys_for("payment_button_clicked"))),
+        ("Счёт создан", len(request_keys_for("invoice_created"))),
+        (
+            "Оплата подтверждена",
+            len(paid_searches)
+            + sum(
+                1
+                for item in web_paid_payments
+                if (item.payment_amount_kzt or 0) > 0
+            ),
+        ),
         ("Получил полный отчёт", len(delivered_paid_searches)),
     ]
     auction_rows = [

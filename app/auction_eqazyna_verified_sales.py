@@ -143,6 +143,11 @@ def _parse_evidence(raw: str | None) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
+def _canonical_target_object_id(lot: AuctionLot) -> str | None:
+    """Prefer the internal canonical object shared across repeated/source listings."""
+    return lot.land_object_ref_id or lot.land_object_id or lot.cadastre_number
+
+
 def build_eqazyna_verified_sale_fact(
     row: EqazynaSaleSourceRow,
     *,
@@ -150,6 +155,8 @@ def build_eqazyna_verified_sale_fact(
     cadastre_payload: dict[str, object],
     site_status: str | None,
     site_payload: dict[str, object],
+    source_object_status: str | None = None,
+    source_object_payload: dict[str, object] | None = None,
 ) -> tuple[InventoryFact | None, str]:
     """Fail closed unless every sale/right/purpose/geometry/readiness fact is exact."""
     status_text = " ".join(
@@ -190,10 +197,25 @@ def build_eqazyna_verified_sale_fact(
         return None, "event_date_unknown_or_conflict"
     if row.right_kind not in {"ownership", "lease"}:
         return None, "right_unknown_or_conflict"
+    lease_term_years = row.lease_term_years
+    lease_term_provenance = "lease_term:normalized_history"
     if row.right_kind == "lease" and (
         row.lease_status != "found"
-        or row.lease_term_years is None
-        or not math.isfinite(row.lease_term_years)
+        or lease_term_years is None
+        or not math.isfinite(lease_term_years)
+    ):
+        official_lease = (source_object_payload or {}).get("lease_term_years")
+        if (
+            source_object_status == "found"
+            and not isinstance(official_lease, bool)
+            and isinstance(official_lease, (int, float))
+            and math.isfinite(float(official_lease))
+            and 0 < float(official_lease) <= 1_000
+        ):
+            lease_term_years = float(official_lease)
+            lease_term_provenance = "lease_term:source_object_card"
+    if row.right_kind == "lease" and (
+        lease_term_years is None or not math.isfinite(lease_term_years)
     ):
         return None, "lease_term_unknown_or_conflict"
     if row.purpose_group in {None, "unknown", "other"}:
@@ -207,28 +229,37 @@ def build_eqazyna_verified_sale_fact(
         return None, "canonical_object_identity_missing"
     geometry = cadastre_payload.get("geometry_geojson") if cadastre_status == "found" else None
     geometry_source = "egkn:cadastre_boundary"
-    if not isinstance(geometry, dict) and row.canonical_boundary_geojson:
+    if geometry is None and row.canonical_boundary_source == "jerler:source_object":
         try:
-            candidate_geometry = json.loads(row.canonical_boundary_geojson)
+            geometry = json.loads(row.canonical_boundary_geojson or "")
         except (TypeError, json.JSONDecodeError):
-            candidate_geometry = None
-        if isinstance(candidate_geometry, dict):
-            geometry = candidate_geometry
-            geometry_source = row.canonical_boundary_source or "canonical_land_object"
+            geometry = None
+        geometry_source = "jerler:source_object"
     if not isinstance(geometry, dict):
         return None, "coordinates_unknown_or_conflict"
     geometry_result = analyze_parcel_geometry(geometry)
     if geometry_result.status != "ok":
         return None, "coordinates_unknown_or_conflict"
     centroid = shape(geometry).centroid
-    readiness = _readiness(site_payload) if site_status == "found" else None
-    if readiness is None:
-        access, infrastructure = "unknown", "unknown"
+    if site_status == "found":
+        readiness = _readiness(site_payload)
+        if readiness is None:
+            return None, "readiness_unknown_or_conflict"
+        access, infrastructure = readiness
+        readiness_provenance = "site_readiness:verified"
+    elif site_status in {None, "missing"}:
+        # A completed official auction remains a verified price observation when
+        # access/infrastructure were not assessed. Keep both dimensions unknown:
+        # strict W9 valuation excludes unknown-readiness rows, while the global
+        # inventory can still expose an auditable official sale as a reference.
+        access = infrastructure = "unknown"
         readiness_provenance = "site_readiness:unknown"
     else:
-        access, infrastructure = readiness
-        readiness_provenance = "site_readiness:authoritative"
-    generation_material = f"{row.generation}:{row.normalization_key}:{PROVIDER_VERSION}".encode()
+        return None, "readiness_unknown_or_conflict"
+    generation_material = (
+        f"{row.generation}:{row.normalization_key}:{lease_term_years}:"
+        f"{lease_term_provenance}:{PROVIDER_VERSION}"
+    ).encode()
     fact = normalize_inventory_fact(
         {
             "sequence_id": _sequence_id(row.source_lot_id),
@@ -244,7 +275,7 @@ def build_eqazyna_verified_sale_fact(
             "verification_ref": f"eqazyna-auction-result:{row.source_lot_id}",
             "right_type": row.right_kind,
             "purpose_group": row.purpose_group,
-            "lease_term_years": (row.lease_term_years if row.right_kind == "lease" else None),
+            "lease_term_years": (lease_term_years if row.right_kind == "lease" else None),
             "area_ha": float(row.area_ha),
             "price_kzt": int(row.sale_price_kzt),
             "latitude": float(centroid.y),
@@ -263,6 +294,7 @@ def build_eqazyna_verified_sale_fact(
                 "event_timestamp_proxy:auction_starts_at",
                 f"parcel_geometry:{geometry_source}",
                 readiness_provenance,
+                lease_term_provenance,
             ],
             "conflict_fields": [],
         }
@@ -363,7 +395,11 @@ def _load_source_batch(
             ).where(
                 AuctionEvidence.lot_id.in_(lot_ids),
                 AuctionEvidence.evidence_type.in_(
-                    ("cadastre_boundary", "decision_input:site_context")
+                    (
+                        "cadastre_boundary",
+                        "decision_input:site_context",
+                        "source_object_card",
+                    )
                 ),
                 AuctionEvidence.status.in_(("found", "conflict")),
             )
@@ -379,7 +415,7 @@ def _load_source_batch(
             )
             .where(ranked.c.row_number == 1)
             .order_by(ranked.c.lot_id, ranked.c.evidence_type)
-            .limit(len(lot_ids) * 2)
+            .limit(len(lot_ids) * 3)
         )
         aggregate_bytes = 0
         for evidence_row in evidence_rows:
@@ -441,12 +477,17 @@ def ingest_eqazyna_verified_sales_batch(
         site_status, site_raw = evidence.get(
             (row.lot_id, "decision_input:site_context"), (None, None)
         )
+        source_object_status, source_object_raw = evidence.get(
+            (row.lot_id, "source_object_card"), (None, None)
+        )
         fact, generation_or_reason = build_eqazyna_verified_sale_fact(
             row,
             cadastre_status=cadastre_status,
             cadastre_payload=_parse_evidence(cadastre_raw),
             site_status=site_status,
             site_payload=_parse_evidence(site_raw),
+            source_object_status=source_object_status,
+            source_object_payload=_parse_evidence(source_object_raw),
         )
         if fact is None:
             rejected += 1
@@ -508,8 +549,11 @@ def ingest_eqazyna_verified_sales_batch(
     )
 
 
-def _market_input_right_type(right_type: str | None, lease_term_years: float | None) -> str | None:
-    """Keep dirty-state inputs valid while preserving fail-closed valuation readiness."""
+def _market_input_right_type(
+    right_type: str | None,
+    lease_term_years: float | None,
+) -> str | None:
+    """Keep incomplete lease targets valid and fail closed for valuation."""
     if right_type == "lease" and lease_term_years is None:
         return None
     return right_type if right_type in {"ownership", "lease"} else None
@@ -524,7 +568,7 @@ def load_global_market_target_input(session_factory, lot_id: str):
         if lot is None:
             raise ValueError("auction lot not found")
         facts = load_authoritative_target_facts(session, lot_id, lot=lot)
-        canonical = lot.land_object_id or lot.cadastre_number
+        canonical = _canonical_target_object_id(lot)
         source_sale = lot.source_lot_id if lot.source == "e-qazyna" else None
     built = build_authoritative_market_target(facts, valuation_at=datetime.now(UTC))
     target = built.target
@@ -556,6 +600,7 @@ def load_global_market_target_inputs(session_factory, lot_ids: list[str]):
                     AuctionLot.id,
                     AuctionLot.source,
                     AuctionLot.source_lot_id,
+                    AuctionLot.land_object_ref_id,
                     AuctionLot.land_object_id,
                     AuctionLot.cadastre_number,
                 ).where(AuctionLot.id.in_(lot_ids))
@@ -577,7 +622,11 @@ def load_global_market_target_inputs(session_factory, lot_ids: list[str]):
                 longitude=target.longitude,
                 access_readiness=target.access_readiness,
                 infrastructure_readiness=target.infrastructure_readiness,
-                canonical_object_id=(identity.land_object_id or identity.cadastre_number),
+                canonical_object_id=(
+                    identity.land_object_ref_id
+                    or identity.land_object_id
+                    or identity.cadastre_number
+                ),
                 source_sale_id=(identity.source_lot_id if identity.source == "e-qazyna" else None),
             )
         )
@@ -599,9 +648,7 @@ def recompute_market_from_global_inventory(
             raise ValueError("auction lot not found")
         target_facts = load_authoritative_target_facts(session, lot_id, lot=lot)
         history = load_history_audit_reference(session, lot)
-        canonical_object_id = (
-            target_facts.canonical_object_id or lot.land_object_id or lot.cadastre_number
-        )
+        canonical_object_id = _canonical_target_object_id(lot)
         target_source_sale_id = lot.source_lot_id if lot.source == "e-qazyna" else None
     target_build = build_authoritative_market_target(target_facts, valuation_at=valuation_at)
     selected = ()
@@ -615,15 +662,15 @@ def recompute_market_from_global_inventory(
         and 40 <= float(target_build.target.latitude) <= 56
         and 46 <= float(target_build.target.longitude) <= 88
     )
-    selection_blockers = set(target_build.missing_reasons) - {
-        "access_readiness_unknown",
-        "infrastructure_readiness_unknown",
-    }
+    reference_only_missing = set(target_build.missing_reasons).issubset(
+        {"access_readiness_unknown", "infrastructure_readiness_unknown"}
+    )
     global_selection_performed = False
-    if not selection_blockers and canonical_object_id is not None and target_has_coordinates:
-        # Unknown site readiness blocks valuation, not discovery of nearby verified
-        # sales. Persisting the selected source rows gives the decision pipeline
-        # auditable market evidence while keeping estimate/STOP fail-closed.
+    if (
+        (target_build.status == "ready" or reference_only_missing)
+        and canonical_object_id is not None
+        and target_has_coordinates
+    ):
         result = query_verified_comparables(
             session_factory,
             latitude=float(target_build.target.latitude),

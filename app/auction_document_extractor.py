@@ -99,7 +99,7 @@ class CandidateConflict:
     values: tuple[object, ...]
     candidate_indexes: tuple[int, ...]
     # Official E-Qazyna/lot-card value is not a document candidate and therefore
-    # cannot be represented by ``candidate_indexes``.  Preserve it explicitly so
+    # cannot be represented by ``candidate_indexes``. Preserve it explicitly so
     # review UIs can show both sides of a card-versus-document contradiction.
     lot_context_value: object | None = None
 

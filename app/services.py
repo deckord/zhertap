@@ -681,9 +681,8 @@ def process_search(
         session.refresh(request)
         return request
     except ProviderCallDeferred as exc:
-        # A deferred provider call is not an active computation.  Persist the
-        # queued state before Celery schedules the next attempt; otherwise the
-        # cabinet shows "processing" for the whole retry window.
+        # A deferred provider call is not an active computation. Persist the
+        # queued state before Celery schedules the next attempt.
         request.status = SearchStatus.queued.value
         request.progress = 10
         request.error_message = (

@@ -384,60 +384,9 @@ textarea {
   font-size: 16px;
 }
 
-.map-stage {
-  position: relative;
-  height: calc(100% - 54px);
-}
-
 #map {
-  height: 100%;
+  height: calc(100% - 54px);
   background: #dbe2de;
-}
-
-.map-center-crosshair {
-  position: absolute;
-  z-index: 650;
-  top: 50%;
-  left: 50%;
-  width: 34px;
-  height: 34px;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-
-.map-center-crosshair::before,
-.map-center-crosshair::after {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  content: "";
-  background: rgb(188 31 31 / 92%);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 85%);
-}
-
-.map-center-crosshair::before {
-  width: 34px;
-  height: 2px;
-  transform: translate(-50%, -50%);
-}
-
-.map-center-crosshair::after {
-  width: 2px;
-  height: 34px;
-  transform: translate(-50%, -50%);
-}
-
-.map-center-crosshair span {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 10px;
-  height: 10px;
-  transform: translate(-50%, -50%);
-  border: 2px solid white;
-  border-radius: 50%;
-  background: rgb(188 31 31 / 92%);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 45%);
 }
 
 .map-point {

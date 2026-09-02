@@ -181,19 +181,13 @@ def record_manual_check_request(
     note: str | None = None,
     has_attachment: bool = False,
 ) -> AuctionDueDiligenceRequest:
-    """Persist the owner's manual-check journal without generating an appeal.
-
-    The manual checklist is the user-facing source of truth. This registry row is
-    only an auditable timeline entry, scoped to the owner and lot. A later upload
-    reuses the same open entry instead of creating duplicate response records.
-    """
-    if check_code not in {code for code, _label in _REQUEST_TEMPLATES.items()}:
+    """Persist an owner-scoped manual-check journal without inventing an appeal."""
+    if check_code not in _REQUEST_TEMPLATES:
         raise ValueError("unknown_check_code")
     target_status = MANUAL_CHECK_REQUEST_STATUS.get(check_status)
     if target_status is None:
         raise ValueError("invalid_manual_check_status")
     if has_attachment and target_status == "verified":
-        # A file has been received, but its extracted facts still need review.
         target_status = "received"
     request = session.scalar(
         select(AuctionDueDiligenceRequest)

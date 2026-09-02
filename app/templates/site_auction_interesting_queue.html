@@ -1,0 +1,98 @@
+{% extends "site_base.html" %}
+{% block title %}Стоит проверить — аукционы Жертап{% endblock %}
+{% block content %}
+<section class="cabinet-layout">
+  {% include "partials/cabinet_sidebar.html" %}
+  <div class="cabinet-main auction-v2-shell interesting-queue-shell">
+    <div class="section-title auction-v2-title">
+      <span>Активные аукционы</span>
+      <h1>Интересные лоты / стоит проверить</h1>
+      <p>Это очередь проверки, а не инвестиционная рекомендация. Лот выделяется только сравнительным или событийным тезисом из проверяемого источника.</p>
+    </div>
+
+    {% include "partials/auction_v2_tabs.html" %}
+
+    <div class="interesting-queue-legend" aria-label="Классы сведений">
+      <span class="iq-confirmed">Подтверждено</span>
+      <span class="iq-indicator">Индикатор</span>
+      <span class="iq-risk">Риск</span>
+      <span class="iq-unverified">Не проверено</span>
+      <span class="iq-action">Действие</span>
+    </div>
+    <p class="interesting-queue-contract">Контракт данных: {{ contract_version }}. Отсутствующий источник всегда показан как <code>manual_required</code> и не считается плюсом или минусом.</p>
+
+    {% if rows %}
+      <div class="interesting-queue-list">
+      {% for row in rows %}
+        {% set lot = row.lot %}
+        {% set evidence = row.evidence %}
+        <article class="interesting-queue-card">
+          <header>
+            <div>
+              <span class="interesting-queue-status">{{ lot.source_search_status }}</span>
+              <h2><a href="/cabinet/auctions-v2/{{ lot.id }}">{{ lot.title or lot.purpose or "Земельный лот" }}</a></h2>
+              <p>{{ lot.region or "Регион не указан" }}{% if lot.district %} · {{ lot.district }}{% endif %}{% if lot.locality %} · {{ lot.locality }}{% endif %}{% if lot.area_ha %} · {{ lot.area_ha }} га{% endif %}</p>
+            </div>
+            <a class="secondary-action compact" href="{{ lot.source_url }}" target="_blank" rel="noopener noreferrer">Официальная карточка</a>
+          </header>
+
+          {% if evidence.eligible %}
+            <p class="interesting-thesis-state iq-confirmed"><strong>Есть подтверждённая причина проверить среди похожих лотов.</strong></p>
+          {% else %}
+            <p class="interesting-thesis-state"><strong>Данных достаточно для проверки, но нет подтверждённой причины выделить его среди похожих лотов.</strong></p>
+          {% endif %}
+
+          <div class="interesting-evidence-groups">
+            <section>
+              <h3 class="iq-confirmed">Подтверждено</h3>
+              {% for item in evidence.reasons if item.classification == 'confirmed' %}
+                <div class="interesting-evidence-item">
+                  <strong>{{ item.title }}</strong><p>{{ item.detail }}</p>
+                  <dl class="interesting-comparison"><dt>По сравнению с чем</dt><dd>{{ item.comparison_basis }}</dd><dt>Метрика</dt><dd>{{ item.metric }}</dd><dt>Способ сравнения</dt><dd>{{ item.comparison_method }}</dd></dl>
+                  <a href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">Источник · {{ item.source_kind }} · {{ item.observed_at.strftime('%d.%m.%Y %H:%M UTC') }}</a>
+                </div>
+              {% else %}<p class="muted-modern">Нет подтверждённых причин.</p>{% endfor %}
+            </section>
+            <section>
+              <h3 class="iq-indicator">Индикатор</h3>
+              {% for item in evidence.reasons if item.classification == 'indicator' %}
+                <div class="interesting-evidence-item"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><dl class="interesting-comparison"><dt>По сравнению с чем</dt><dd>{{ item.comparison_basis }}</dd><dt>Метрика</dt><dd>{{ item.metric }}</dd><dt>Способ сравнения</dt><dd>{{ item.comparison_method }}</dd></dl><a href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">Источник · {{ item.source_kind }} · {{ item.observed_at.strftime('%d.%m.%Y %H:%M UTC') }}</a></div>
+              {% else %}<p class="muted-modern">Нет проверенных индикаторов.</p>{% endfor %}
+            </section>
+            <section>
+              <h3 class="iq-risk">Риск</h3>
+              {% for item in evidence.risks %}
+                <div class="interesting-evidence-item"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p>{% if item.source_url %}<a href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">Источник</a>{% endif %}</div>
+              {% else %}<p class="muted-modern">Риски из проверенных источников не зафиксированы. Это не означает отсутствие рисков.</p>{% endfor %}
+            </section>
+            <section>
+              <h3 class="iq-unverified">Не проверено</h3>
+              {% for item in evidence.unchecked %}
+                <div class="interesting-evidence-item"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><code>{{ item.status }}</code></div>
+              {% else %}<p class="muted-modern">Нет элементов со статусом manual_required.</p>{% endfor %}
+            </section>
+            <section>
+              <h3 class="iq-action">Действие</h3>
+              {% for item in evidence.actions %}
+                <div class="interesting-evidence-item"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p></div>
+              {% else %}<p class="muted-modern">Сначала вручную проверьте пункты выше и первичные источники.</p>{% endfor %}
+            </section>
+          </div>
+          <section class="interesting-readiness">
+            <h3>Данные достаточны для проверки</h3>
+            {% for item in evidence.readiness %}
+              <div class="interesting-evidence-item"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p><a href="{{ item.source_url }}" target="_blank" rel="noopener noreferrer">Источник · {{ item.source_kind }} · {{ item.observed_at.strftime('%d.%m.%Y %H:%M UTC') }}</a></div>
+            {% else %}<p class="muted-modern">Подтверждённые границы, кадастр, документы и иные readiness-данные пока отсутствуют.</p>{% endfor %}
+          </section>
+        </article>
+      {% endfor %}
+      </div>
+    {% else %}
+      <section class="panel-modern"><h2>Очередь пока пуста</h2><p>Нет активных земельных лотов ApplicationsAccept, Pending или Running с допустимой source-backed причиной.</p></section>
+    {% endif %}
+  </div>
+</section>
+<style>
+.interesting-queue-shell{max-width:1500px}.interesting-queue-legend{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0}.interesting-queue-legend span,.interesting-queue-status{padding:.35rem .65rem;border-radius:999px;background:#eef2f0;font-size:.82rem;font-weight:700}.interesting-queue-contract,.interesting-thesis-state{padding:.85rem 1rem;background:#f6f7f6;border-left:3px solid #64746b}.interesting-queue-list{display:grid;gap:1rem}.interesting-queue-card{background:#fff;border:1px solid #dde3df;border-radius:16px;padding:1rem}.interesting-queue-card>header{display:flex;justify-content:space-between;gap:1rem;align-items:flex-start}.interesting-queue-card h2{font-size:1.15rem;margin:.5rem 0}.interesting-evidence-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.75rem;margin-top:1rem}.interesting-evidence-groups>section{padding:.8rem;background:#f8faf9;border-radius:12px}.interesting-evidence-groups h3{margin:0 0 .65rem;font-size:.95rem}.interesting-evidence-item{padding:.55rem 0;border-top:1px solid #e3e8e5}.interesting-evidence-item:first-of-type{border-top:0}.interesting-evidence-item p{margin:.25rem 0;font-size:.9rem}.interesting-evidence-item a{font-size:.78rem;overflow-wrap:anywhere}.iq-confirmed{color:#176b43}.iq-indicator{color:#236a8b}.iq-risk{color:#9c342d}.iq-unverified{color:#665f58}.iq-action{color:#74500f}@media(max-width:700px){.interesting-queue-card>header{display:block}.interesting-queue-card>header>a{display:inline-block;margin-top:.6rem}}
+</style>
+{% endblock %}

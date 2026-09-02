@@ -287,11 +287,17 @@ def _normalize_purpose(record: RawAuctionHistoryRecord) -> tuple[str, DimensionS
     groups: set[str] = set()
     for value in values:
         groups.update(_purpose_claims(value))
-    if len(groups) > 1:
+    # ``other`` means the text carried no supported taxonomy marker; it is not
+    # contradictory evidence. A generic official purpose can therefore coexist
+    # with one specific supported purpose found in another official lot field.
+    specific_groups = groups - {"other"}
+    if len(specific_groups) > 1:
         return "conflict", "conflict"
+    if len(specific_groups) == 1:
+        return next(iter(specific_groups)), "found"
     if not groups:
         return "unknown", "unknown"
-    return next(iter(groups)), "found"
+    return "other", "found"
 
 
 def _lease_band(value: float) -> str:

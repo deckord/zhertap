@@ -27,10 +27,10 @@
 - **29. Checklist аренды — D.** lease fields/labels exist; lease-specific checklist and request lifecycle absent.
 - **30. Checklist собственности — D.** ownership labels exist; ownership checklist and obligations workflow absent.
 - **31. Checklist по назначению — P.** checklist динамически добавляет retail-проверку; профили туризма, производства, склада и остальных назначений с отдельными требованиями отсутствуют.
-- **32. Статусы проверки — P.** manual checklist now writes an owner-scoped DD journal and maps `no_data/in_progress/done` to `draft/waiting/verified` when no file is attached; an uploaded answer is truthfully held at `received` until analysis/confirmation; external reference and explicit `risk` transition still need a dedicated UI.
+- **32. Статусы проверки — P.** pipeline statuses and manual check states exist; requested checklist state machine (`request/sent/waiting/verified/risk`) not complete.
 - **33. Вложения пользователя — P.** private/manual document storage foundation exists; generic user attachments/photo/screenshot/TU/letter/note UX and evidence linkage not proven.
 - **34. AI-анализ ответов — P.** `auction_due_diligence_analysis.py` и worker извлекают bounded candidate facts из загруженного ответа с hash/status/provenance; полноценный OCR для сканов, LLM-разбор ответа и ручное подтверждение фактов остаются следующим шагом.
-- **36. Учёт обращения — P.** Целевой сценарий сохранён: пользователь сам обращается в орган. Ручная проверка теперь всегда создаёт/обновляет owner-scoped журнал ответа, а загруженный файл привязывается к этой записи и анализируется; отдельный UI для номера обращения/срока ответа остаётся.
+- **36. Учёт обращения — P.** Целевой сценарий — пользователь загружает уже полученный ответ через ручную проверку; приватное хранение и анализ документов существуют, но единый generic response-upload UX без журнала обращений ещё требует упрощения.
 - **40. Заметки — P.** activity/note/decision primitives and personal max fields exist; full contacts/calls/strategy/own-max UX and audit are incomplete.
 
 ## Этап 2 — инвестиционная аналитика — осталось 13

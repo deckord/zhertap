@@ -124,12 +124,13 @@ a:hover { color: var(--accent-dark); }
 }
 
 .page {
-  width: min(1280px, calc(100% - 48px));
+  width: 90%;
+  max-width: none;
   margin: 32px auto 88px;
 }
 
 .urban-plans-admin .page {
-  width: min(1680px, calc(100% - 48px));
+  width: 90%;
 }
 
 .urban-plan-quick-nav {

@@ -307,11 +307,12 @@ def read_document_extraction_worklist(
         )
         .limit(bounded_scan + 1),
     )
-    # Preserve urgency-group ordering: pending/retryable work must drain before
-    # optional revalidation of an older ready document.
+    # Reclaim expired processing claims first. Without this precedence, a full
+    # bounded page of pending rows can starve a stale active-lot claim forever.
+    # New/retryable extraction still drains before optional ready revalidation.
     candidate_ids: list[int] = []
     seen_candidate_ids: set[int] = set()
-    for query in state_queries:
+    for query in (state_queries[2], state_queries[0], state_queries[1], state_queries[3]):
         for document_id in session.scalars(query):
             value = int(document_id)
             if value in seen_candidate_ids:

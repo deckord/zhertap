@@ -7,6 +7,7 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,7 +24,7 @@ from app.auction_taxonomy import (
     UNCLASSIFIED_SCENARIO,
     select_decision_scenario_for_profile,
 )
-from app.models import AuctionEvidence
+from app.models import AuctionEvidence, AuctionLandObject, AuctionLot
 
 ASSEMBLER_VERSION = "spatial-decision-input/2026.2"
 MAX_ROWS = 24
@@ -98,7 +99,12 @@ def _strict_json(value: object, *, max_bytes: int, label: str) -> str:
     return encoded
 
 
-def load_spatial_evidence(session: Session, lot_id: str) -> dict[str, SpatialEvidenceInput]:
+def load_spatial_evidence(
+    session: Session,
+    lot_id: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, SpatialEvidenceInput]:
     """Read latest bounded evidence using SQL substr; performs no writes."""
     rows = session.execute(
         select(
@@ -173,6 +179,85 @@ def load_spatial_evidence(session: Session, lot_id: str) -> dict[str, SpatialEvi
             status=row.status,
         )
         priorities[key] = priority
+    if "parcel" not in result:
+        canonical = session.execute(
+            select(
+                AuctionLandObject.id,
+                AuctionLandObject.identity_confidence,
+                AuctionLandObject.boundary_source,
+                AuctionLandObject.boundary_observed_at,
+                func.substr(
+                    AuctionLandObject.boundary_geojson, 1, MAX_ITEM_BYTES + 1
+                ).label("bounded_boundary"),
+                func.substr(AuctionLot.source_object_url, 1, MAX_SOURCE_URL_LENGTH + 1).label(
+                    "bounded_object_url"
+                ),
+            )
+            .select_from(AuctionLot)
+            .join(AuctionLandObject, AuctionLandObject.id == AuctionLot.land_object_ref_id)
+            .where(AuctionLot.id == lot_id)
+            .limit(1)
+        ).one_or_none()
+        checked_at = now or datetime.now(UTC)
+        if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+            raise SpatialInputError("now must be timezone-aware")
+        if canonical is not None:
+            observed_at = canonical.boundary_observed_at
+            if observed_at is not None and observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=UTC)
+            source = str(canonical.boundary_source or "")
+            source_url = canonical.bounded_object_url
+            parsed_url = urlparse(source_url) if isinstance(source_url, str) else None
+            fresh = bool(
+                observed_at
+                and timedelta(0)
+                <= checked_at.astimezone(UTC) - observed_at
+                <= timedelta(days=30)
+            )
+            trusted_jerler = bool(
+                source == "jerler:source_object"
+                # ``cadastre`` is also an exact official object identity in the
+                # canonical layer.  It must not discard a fresh polygon fetched
+                # from the exact Jerler object URL merely because no EGKN ID was
+                # available when the canonical row was created.
+                and canonical.identity_confidence in {"official", "cadastre", "jerler"}
+                and parsed_url
+                and parsed_url.scheme == "https"
+                and parsed_url.hostname == "jerler.e-qazyna.kz"
+                and len(source_url) <= MAX_SOURCE_URL_LENGTH
+            )
+            boundary = canonical.bounded_boundary
+            if (
+                trusted_jerler
+                and fresh
+                and isinstance(boundary, str)
+                and len(boundary.encode("utf-8")) <= MAX_ITEM_BYTES
+            ):
+                try:
+                    geometry = json.loads(boundary)
+                except json.JSONDecodeError:
+                    geometry = None
+                if isinstance(geometry, dict) and geometry.get("type") in {
+                    "Polygon",
+                    "MultiPolygon",
+                }:
+                    result["parcel"] = SpatialEvidenceInput(
+                        key="parcel",
+                        evidence_id=0,
+                        payload={
+                            "parcel_geojson": geometry,
+                            "generation_id": f"canonical_land_object:{canonical.id}",
+                            "source": {
+                                "authoritative": True,
+                                "coverage_complete": True,
+                                "version": source,
+                                "provenance": f"canonical land object polygon: {source}",
+                            },
+                        },
+                        observed_at=observed_at,
+                        source_url=source_url,
+                        status="found",
+                    )
     return result
 
 
@@ -441,10 +526,14 @@ def assemble_spatial_decision_inputs(
         restriction_complete = bool(restrictions.layers) and all(
             layer.coverage_complete for layer in restrictions.layers
         )
+        whole_parcel_tolerance_m2 = max(
+            1e-6,
+            (restrictions.parcel_area_m2 or 0.0) * 1e-9,
+        )
         whole_parcel_prohibited = (
             restriction_complete
             and restrictions.usable_area_m2 is not None
-            and restrictions.usable_area_m2 <= 0
+            and restrictions.usable_area_m2 <= whole_parcel_tolerance_m2
         )
         pdp_coverage = {
             (item.document_type, item.layer): item.complete for item in planning.coverage

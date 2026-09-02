@@ -1029,7 +1029,7 @@ def test_admin_analytics_shows_web_funnel(monkeypatch) -> None:
         assert "Начали поиск" in response.text
         assert "Создали счет Kaspi" in response.text
         assert "Оплатили" in response.text
-        assert "Оплата подтверждена</td><td><strong>1</strong>" in response.text
+        assert "Оплата подтверждена</td><td><strong>2</strong>" in response.text
         assert "Получил полный отчёт</td><td><strong>1</strong>" in response.text
 
 

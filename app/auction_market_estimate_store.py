@@ -677,6 +677,11 @@ def build_authoritative_market_target(
     purpose_group = purpose_claims[0] if len(purpose_claims) == 1 else "other"
     area = _finite(facts.area_ha)
     access, infrastructure = _readiness(site)
+    lease_term_years = _finite(facts.lease_term_years)
+    if right_type == "lease" and lease_term_years is None and facts.legal_status == "found":
+        official_lease_term = _finite(legal.get("lease_term_years"))
+        if official_lease_term is not None and 0 < official_lease_term <= 1_000:
+            lease_term_years = official_lease_term
     if right_type is None:
         missing.append("right_type_unknown")
     if len(purpose_claims) > 1:
@@ -723,7 +728,7 @@ def build_authoritative_market_target(
                 geometry_ref = f"auction_land_object:{facts.canonical_object_id}"
     if latitude is None and not facts.locality:
         missing.append("location_unknown")
-    if right_type == "lease" and _finite(facts.lease_term_years) is None:
+    if right_type == "lease" and lease_term_years is None:
         missing.append("lease_term_unknown")
     target = ComparableTarget(
         target_id=facts.lot_id,
@@ -734,7 +739,7 @@ def build_authoritative_market_target(
         locality=facts.locality,
         latitude=latitude,
         longitude=longitude,
-        lease_term_years=facts.lease_term_years,
+        lease_term_years=lease_term_years,
         access_readiness=access,
         infrastructure_readiness=infrastructure,
     )

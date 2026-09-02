@@ -203,6 +203,12 @@
       if (small) small.textContent = detail;
     }
 
+    function syncPurposeFilter() {
+      const target = form.querySelector('input[type="hidden"][name="purpose"]');
+      if (!target || !purpose) return;
+      target.value = [...purpose.selectedOptions].map((item) => item.value).filter(Boolean).join(",");
+    }
+
     function syncWatchlistFilter() {
       if (!watchlistForm) return;
       const fieldNames = [
@@ -245,8 +251,16 @@
         district: district.value,
         locality: locality.value,
       }));
-      setOptions(purpose, rows, "Все назначения", purpose.dataset.selected || purpose.value, true);
+      const selectedValues = (purpose.dataset.selected || form.querySelector('input[name="purpose"]')?.value || "")
+        .split(",").map((value) => value.trim()).filter(Boolean);
+      purpose.replaceChildren();
+      for (const row of rows) {
+        const item = option(row.value, row.label, row.id === undefined ? {} : {id: row.id});
+        item.selected = selectedValues.includes(row.value);
+        purpose.append(item);
+      }
       purpose.dataset.selected = "";
+      syncPurposeFilter();
       if (updateStatus) {
         setStatus(status, "Назначения обновлены под выбранную географию. Можно уточнить фильтр или сразу показать лоты.");
       }
@@ -393,6 +407,7 @@
       await loadRegions();
       syncWatchlistFilter();
     });
+    purpose?.addEventListener("change", syncPurposeFilter);
     form.addEventListener("input", syncWatchlistFilter);
     form.addEventListener("change", syncWatchlistFilter);
     watchlistForm?.addEventListener("submit", syncWatchlistFilter);

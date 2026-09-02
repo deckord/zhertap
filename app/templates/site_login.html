@@ -64,13 +64,32 @@
     </form>
 
     {% if reset_error %}<div class="form-alert auth-mode" data-auth-mode="reset">{{ reset_error }}</div>{% endif %}
-    {% if email_reset_sent %}<div class="form-alert neutral auth-mode" data-auth-mode="reset">Ссылка отправлена на {{ masked_reset_email }}. Проверьте входящие и папку «Спам».</div>{% endif %}
+    {% if email_reset_sent %}<div class="form-alert neutral auth-mode" data-auth-mode="reset">Одноразовый временный пароль отправлен на {{ masked_reset_email }}. Введите его ниже. Проверьте входящие и папку «Спам».</div>{% endif %}
+    {% if reset_code_requested %}
+    <form class="auth-form auth-mode" data-auth-mode="reset" method="post" action="/password/reset/email/code">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label>Телефон
+        <input name="phone" value="{{ reset_phone or '' }}" autocomplete="tel" required>
+      </label>
+      <label>Временный пароль из письма
+        <input name="temporary_password" type="text" autocomplete="one-time-code" autocapitalize="characters" required>
+      </label>
+      <label>Новый постоянный пароль
+        <input name="password" type="password" minlength="8" autocomplete="new-password" required>
+      </label>
+      <label>Повторите новый пароль
+        <input name="password_confirm" type="password" minlength="8" autocomplete="new-password" required>
+      </label>
+      <button class="primary-action" type="submit">Проверить пароль и войти</button>
+      <button class="text-action" type="button" data-auth-switch="login">Вернуться ко входу</button>
+    </form>
+    {% endif %}
     <form class="auth-form auth-mode" data-auth-mode="reset" method="post" action="/password/reset/request-email">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <label>Телефон
         <input id="reset_phone" name="phone" value="{{ reset_phone or phone or '' }}" placeholder="+7 700 000 00 00" autocomplete="tel" required>
       </label>
-      <button class="primary-action" type="submit">Отправить ссылку на email</button>
+      <button class="primary-action" type="submit">Отправить временный пароль на email</button>
       <button class="text-action" type="button" data-auth-switch="login">Вернуться ко входу</button>
     </form>
   </div>

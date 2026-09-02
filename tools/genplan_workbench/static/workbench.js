@@ -24,7 +24,6 @@
     zoomInput: document.getElementById("zoomInput"),
     zoomOutput: document.getElementById("zoomOutput"),
     cancelPairButton: document.getElementById("cancelPairButton"),
-    mapCenterPointButton: document.getElementById("mapCenterPointButton"),
     pointsBody: document.getElementById("pointsBody"),
     pointCount: document.getElementById("pointCount"),
     clearButton: document.getElementById("clearButton"),
@@ -88,15 +87,6 @@
     } catch {
       return text;
     }
-  }
-
-  function newPointId() {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
-    // HTTP on a private LAN is not a secure browser context, so some
-    // Chromium builds omit crypto.randomUUID(). This is only a local draft ID.
-    return `gcp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   function queueLabel(status) {
@@ -587,57 +577,35 @@
     if (!state.record || !elements.sourceImage.naturalWidth) return;
     state.pendingPixel = sourceCoordinates(event);
     elements.cancelPairButton.disabled = false;
-    elements.mapCenterPointButton.disabled = false;
     renderPending();
     showNotice("Scan point selected. Now click the matching location on the map.");
   });
 
-  function addMapPoint(latlng) {
+  map.on("click", (event) => {
     if (!state.pendingPixel) {
       showNotice("First select a point on the source scan.", "error");
       return;
     }
     state.points.push({
-      id: newPointId(),
+      id: crypto.randomUUID(),
       pixel_x: state.pendingPixel.pixel_x,
       pixel_y: state.pendingPixel.pixel_y,
-      lon: latlng.lng,
-      lat: latlng.lat,
+      lon: event.latlng.lng,
+      lat: event.latlng.lat,
       role: elements.roleSelect.value,
       label: "",
       reference_source: map.hasLayer(satellite) ? "Esri World Imagery" : "OSM",
     });
     state.pendingPixel = null;
     elements.cancelPairButton.disabled = true;
-    elements.mapCenterPointButton.disabled = true;
     state.residuals.clear();
     renderAll();
     showNotice("Coordinate pair added. Add the next point.");
-  }
-
-  // Leaflet's synthetic click can be swallowed by browser/device drag
-  // handling. Use the map container as a fallback while ignoring drags.
-  let mapPointerMoved = false;
-  const mapContainer = map.getContainer();
-  mapContainer.addEventListener("pointerdown", () => {
-    mapPointerMoved = false;
-  });
-  mapContainer.addEventListener("pointermove", (event) => {
-    if (event.buttons) mapPointerMoved = true;
-  });
-  mapContainer.addEventListener("click", (event) => {
-    if (mapPointerMoved) return;
-    addMapPoint(map.mouseEventToLatLng(event));
-  });
-
-  elements.mapCenterPointButton.addEventListener("click", () => {
-    addMapPoint(map.getCenter());
   });
 
   function cancelPair() {
     state.pendingPixel = null;
     elements.cancelPairButton.disabled = true;
-    elements.mapCenterPointButton.disabled = true;
     renderPending();
     showNotice("Unfinished pair cancelled.");
   }
@@ -760,15 +728,8 @@
   function setZoom() {
     const zoom = Number(elements.zoomInput.value);
     elements.zoomOutput.value = `${zoom}%`;
-    if (elements.sourceImage.naturalWidth) {
-      // Keep the image and the absolute marker layer on the same pixel grid.
-      // Percentage widths make the inline-block stage resolve against a
-      // different containing width after zoom, which shifts click markers.
-      const width = Math.max(1, Math.round(elements.sourceImage.naturalWidth * zoom / 100));
-      elements.sourceImage.style.width = `${width}px`;
-      elements.sourceStage.style.width = `${width}px`;
-      elements.sourceStage.style.minWidth = `${width}px`;
-    }
+    elements.sourceImage.style.width = `${zoom}%`;
+    elements.sourceStage.style.minWidth = `${zoom}%`;
     requestAnimationFrame(renderImageMarkers);
   }
 
