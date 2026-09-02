@@ -47,6 +47,22 @@ tmp_*/
 .codex-remote-attachments/
 backups/
 var/
+.backup-*/
+.codex-backups/
+.codex_deployed_sha
+.deploy-*/
+.deploy-backups/
+.hermes/
+.last_*
+.tmp-*/
+*.bak*
+*.backup-*
+*.pre-*
+*.pre_*
+diag_*.py
+readback_*.py
+land_scout_*pre_*.sql
+releases/
 
 # Archives and deployment bundles
 *.tar.gz
