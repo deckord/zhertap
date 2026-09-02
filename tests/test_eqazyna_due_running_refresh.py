@@ -65,6 +65,33 @@ def test_due_refresh_includes_running_detail_status_without_list_code() -> None:
     assert provider.urls == ["https://example.test/running"]
 
 
+def test_due_detail_refresh_preserves_existing_list_status() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    auction_starts_at = datetime.now(UTC) - timedelta(hours=2)
+    provider = _DetailProvider(auction_starts_at)
+    with Session(engine) as session:
+        lot = AuctionLot(
+            source="e-qazyna",
+            source_lot_id="running-no-list-code",
+            source_search_status="Running",
+            object_type="land",
+            status="Проводится",
+            title="Земельный участок",
+            source_url="https://example.test/running",
+            active=True,
+            auction_starts_at=auction_starts_at,
+        )
+        session.add(lot)
+        session.commit()
+
+        result = refresh_due_eqazyna_lot_statuses(session, provider=provider, limit=5)
+        session.refresh(lot)
+
+        assert result["errors"] == 0
+        assert lot.source_search_status == "Running"
+
+
 def test_due_refresh_durable_cursor_prevents_failed_newest_batch_starvation() -> None:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)

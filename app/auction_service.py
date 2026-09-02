@@ -1617,6 +1617,11 @@ def refresh_due_eqazyna_lot_statuses(
     for lot in lots:
         try:
             data = provider.lot_detail(lot.source_url)
+            # The detail page does not expose the technical list searchStatus.
+            # A direct overdue refresh must update the detailed status without
+            # erasing the last list-page provenance used by catalogue filters.
+            if not data.source_search_status:
+                data.source_search_status = lot.source_search_status
             refreshed, _created, lot_changed = upsert_auction_lot(session, data)
             session.commit()
             changed += int(lot_changed)
