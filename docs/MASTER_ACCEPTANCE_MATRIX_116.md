@@ -226,10 +226,13 @@
 
 ### Runtime/release blockers
 
-- Production checkout не воспроизводим: HEAD `ea3bea7...`, marker `.codex_deployed_sha`
-  указывает `ae43839...`, checkout содержит 137 tracked modifications и 298 untracked
-  status entries. Running-container hashes совпадают с dirty checkout, но не с
-  зафиксированным release revision.
+- **RESOLVED 2026-09-02:** production checkout приведён к воспроизводимому release
+  `6c1d063ba5dcd3d15f4f0525a0b14dac0be0723a`: HEAD и `.codex_deployed_sha`
+  совпадают, `git status --porcelain` пуст. До очистки все 309 untracked scratch/
+  deploy/test entries заархивированы в
+  `/opt/land-scout/source-artifacts/untracked_20260902T0645Z.tgz`
+  (SHA-256 `514812a0bb613bf834e6152634347c2094383652e1fab6378a20fb063e6cecea`).
+  Это закрывает runtime/release provenance blocker, но не data gaps пунктов 1–7.
 - `/health` и `/ready` возвращают HTTP 200, Alembic `b0c5d8e1f3a7 (head)`, все девять
   containers running; однако `ollama` имеет исторический `OOMKilled=true`.
 - `AUCTION_V2_LLM_ENABLED=false` и
@@ -282,6 +285,13 @@
   `/health` и `/ready` HTTP 200, Alembic `c2f6a8d1e4b9 (head)`, AI/document extraction
   flags=`false,false`. Это закрывает stale-active starvation, но не upstream database-error
   blocker текущего crawl.
+- Release reconciliation: полный тест baseline против захваченного production source дал
+  `1248 passed, 1 skipped, 4 failed`; четыре найденные регрессии были закрыты узкими
+  patches: global-market selection provenance, trial cadastre/map privacy, genplan
+  diagnostic draft classification и analytics paid/report counters. Повторный focused
+  regression suite дал `12 passed`. Пересобраны только `web` и `auction_worker`;
+  `/health` и `/ready` HTTP 200, Alembic `c2f6a8d1e4b9 (head)`, checkout/container
+  hashes совпадают, AI/document extraction flags=`false,false`.
 
 ## Release-level acceptance — критерий “готово”
 
