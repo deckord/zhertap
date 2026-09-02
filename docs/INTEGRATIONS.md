@@ -218,10 +218,10 @@ PDF/JPG/TIFF из локальной библиотеки генпланов м�
 ```dotenv
 AUCTIONS_ENABLED=true
 EQAZYNA_BASE_URL=https://sauda.e-qazyna.kz
-EQAZYNA_SYNC_STATUSES=ApplicationsAccept,Pending,Running,SuccessProtocolSigned,FailureProtocolSigned,NullifyResultProtocolSigned,CancelBeforeStart
+EQAZYNA_SYNC_STATUSES=ApplicationsAccept,Pending,Running
 EQAZYNA_SYNC_INTERVAL_MINUTES=30
 EQAZYNA_SYNC_MAX_PAGES=10
-EQAZYNA_SYNC_MAX_LOTS=100
+EQAZYNA_SYNC_MAX_LOTS=300
 EQAZYNA_HISTORY_SYNC_STATUSES=SuccessProtocolSigned,FailureProtocolSigned,NullifyResultProtocolSigned,CancelBeforeStart
 EQAZYNA_HISTORY_SYNC_MAX_PAGES=100
 EQAZYNA_HISTORY_SYNC_MAX_LOTS=1000

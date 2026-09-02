@@ -283,17 +283,17 @@ def test_provider_follows_public_list_and_detail_pages() -> None:
     assert lots[0].source_search_status == "ApplicationsAccept"
 
 
-def test_configured_eqazyna_statuses_include_historical_results(monkeypatch) -> None:
+def test_configured_current_eqazyna_statuses_exclude_historical_results(monkeypatch) -> None:
     monkeypatch.setattr(
         settings,
         "eqazyna_sync_statuses",
-        "ApplicationsAccept,FailureProtocolSigned,CancelBeforeStart",
+        "ApplicationsAccept,FailureProtocolSigned,Pending,CancelBeforeStart,Running",
     )
 
     assert configured_search_statuses() == [
         "ApplicationsAccept",
-        "FailureProtocolSigned",
-        "CancelBeforeStart",
+        "Pending",
+        "Running",
     ]
 
 

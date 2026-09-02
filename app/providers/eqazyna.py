@@ -14,6 +14,7 @@ from app.provider_backpressure import ProviderBackpressure
 from app.provider_guard import bounded_http_request, guarded_http_call
 
 AuctionPublishDateWindow = tuple[str, str]
+CURRENT_SEARCH_STATUSES = ("ApplicationsAccept", "Pending", "Running")
 
 
 class EqazynaError(RuntimeError):
@@ -453,8 +454,16 @@ def parse_lot_detail(html: str, source_url: str, base_url: str) -> AuctionLotDat
 
 
 def configured_search_statuses() -> list[str]:
-    values = [item.strip() for item in settings.eqazyna_sync_statuses.split(",") if item.strip()]
-    return values or ["ApplicationsAccept"]
+    configured = [
+        item.strip() for item in settings.eqazyna_sync_statuses.split(",") if item.strip()
+    ]
+    allowed = set(CURRENT_SEARCH_STATUSES)
+    # Current-catalogue completeness is the deactivation safety gate. Historical
+    # result statuses have their own bounded/year-window crawl; allowing them here
+    # can spend the current run's detail cap on old terminal rows and make every
+    # freshness pass incomplete.
+    values = list(dict.fromkeys(item for item in configured if item in allowed))
+    return values or list(CURRENT_SEARCH_STATUSES)
 
 
 class EqazynaProvider:

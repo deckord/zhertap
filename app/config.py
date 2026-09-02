@@ -106,13 +106,10 @@ class Settings(BaseSettings):
     auction_access_price_kzt: int = Field(default=1990, ge=0, le=10_000_000)
     auction_free_preview_lots: int = Field(default=1, ge=0, le=10)
     eqazyna_base_url: str = "https://sauda.e-qazyna.kz"
-    eqazyna_sync_statuses: str = (
-        "ApplicationsAccept,Pending,Running,SuccessProtocolSigned,"
-        "FailureProtocolSigned,NullifyResultProtocolSigned,CancelBeforeStart"
-    )
+    eqazyna_sync_statuses: str = "ApplicationsAccept,Pending,Running"
     eqazyna_sync_interval_minutes: int = Field(default=30, ge=5, le=1440)
     eqazyna_sync_max_pages: int = Field(default=10, ge=1, le=100)
-    eqazyna_sync_max_lots: int = Field(default=100, ge=1, le=1000)
+    eqazyna_sync_max_lots: int = Field(default=300, ge=1, le=1000)
     eqazyna_history_sync_statuses: str = (
         "SuccessProtocolSigned,FailureProtocolSigned,"
         "NullifyResultProtocolSigned,CancelBeforeStart"
